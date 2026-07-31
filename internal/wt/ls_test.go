@@ -96,6 +96,36 @@ func TestRenderAlignsColumns(t *testing.T) {
 	}
 }
 
+// git refuses ASCII control characters in a ref name but accepts a bidi
+// override, so `evil<U+202E>hctap` is a branch anyone who can open a pull
+// request can create — and a terminal draws it as `evilpatch`. The row is
+// escaped rather than dropped: this listing is what a human reads before
+// pruning, so a worktree missing from it is the same hiding by another route.
+func TestRenderEscapesABranchNameThatDrawsAsAnother(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.Git("branch", "--", "evil‮hctap")
+
+	branch := repo.Git("branch", "--list", "--format=%(refname:short)", "evil‮hctap")
+	if !strings.ContainsRune(branch, '‮') {
+		t.Fatalf("git dropped the override, so there is nothing to defend against: %q", branch)
+	}
+
+	var buf bytes.Buffer
+	if err := wt.Render(&buf, []wt.Row{
+		{Branch: branch, WorkspaceID: "-", AgentStatus: "-", Dir: "wt"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if strings.ContainsRune(out, '‮') {
+		t.Errorf("the override reached the terminal: %q", out)
+	}
+	if !strings.Contains(out, `evil\u{202E}hctap`) {
+		t.Errorf("the row must still say which branch it is, got %q", out)
+	}
+}
+
 // End to end over the wire: real git worktrees on disk, a fake herdr answering
 // the same NDJSON protocol as the real one.
 func TestLsAgainstFakeHerdr(t *testing.T) {

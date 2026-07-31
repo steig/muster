@@ -9,6 +9,7 @@ import (
 
 	"github.com/steig/muster/internal/gitx"
 	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/muster/internal/safetext"
 )
 
 // missing is printed for a column with nothing to show.
@@ -59,6 +60,12 @@ func Rows(worktrees *herdrapi.WorktreeListResponse, workspaces *herdrapi.Workspa
 }
 
 // Render writes the rows as an aligned table.
+//
+// Every cell is escaped on the way out. git accepts bidi overrides in a ref
+// name and a directory can hold anything at all, so a cell can otherwise draw
+// as a branch it is not — and this listing is what a human reads before
+// pruning. The escape is applied per cell rather than per line because the
+// separators the table is built from are themselves control characters.
 func Render(w io.Writer, rows []Row) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, row := range rows {
@@ -67,7 +74,8 @@ func Render(w io.Writer, rows []Row) error {
 			marker = "*"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			marker, row.Branch, row.WorkspaceID, row.AgentStatus, row.Dir)
+			marker, safetext.Escape(row.Branch), safetext.Escape(row.WorkspaceID),
+			safetext.Escape(row.AgentStatus), safetext.Escape(row.Dir))
 	}
 	return tw.Flush()
 }
