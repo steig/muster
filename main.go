@@ -255,6 +255,27 @@ func pruneCommand(out io.Writer, apply bool) error {
 		return err
 	}
 
+	// BOTH HALVES NAME THE REPOSITORY THEY RESOLVED, because they do not
+	// resolve it the same way and must not disagree in silence.
+	//
+	// The asymmetry above is deliberate and stays: listing may fall back to the
+	// working directory, applying may not, because herdr runs plugin commands
+	// with cwd set to the plugin root — itself a git repository — so a removal
+	// that fell back there would point at this plugin's own checkout.
+	//
+	// What that asymmetry cost was legibility. `prune` exists to be the thing
+	// you read before running `prune-apply`; splitting them into two actions IS
+	// the confirmation step, and that only holds if the second acts on what the
+	// first described. Where herdr supplies a context carrying no repository,
+	// the two can land on different roots — observed live, as a dry run listing
+	// six worktrees followed by an apply reporting "nothing to do".
+	//
+	// Printing the root does not prevent the divergence. It makes it impossible
+	// to have without seeing it, which is the property that actually matters:
+	// "nothing to do" is indistinguishable from "nothing to do HERE" until the
+	// output says where here is.
+	fmt.Fprintf(out, "repository: %s\n", s.root)
+
 	// Listing changes nothing, so it needs no claim on the repository; only the
 	// half that removes worktrees serialises against a concurrent reconcile.
 	if !apply {

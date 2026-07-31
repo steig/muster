@@ -6,6 +6,29 @@ Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 install` tracks branch HEAD rather than a tag — the version in
 `herdr-plugin.toml` is what the no-Go install path pins its download to.
 
+## [Unreleased]
+
+### Fixed
+
+- **`prune` and `prune-apply` now both name the repository they resolved.** (#41)
+  They do not resolve it the same way, and must not disagree in silence: listing
+  may fall back to the working directory, applying may not — because herdr runs
+  plugin commands with cwd set to the plugin root, itself a git repository, so a
+  removal that fell back there would point at this plugin's own checkout.
+
+  That asymmetry is deliberate and stays. What it cost was legibility: observed
+  live as a dry run listing six worktrees followed by an apply reporting
+  "nothing to do" about a different root, with nothing in either output showing
+  they had disagreed. Printing the root does not prevent the divergence; it
+  makes it impossible to have without seeing it.
+
+### Added
+
+- Documented how to bind a key to an action (#9). herdr has no `plugin_action`
+  key type — its key commands are `command`, `pane`, `popup` and `split` — so a
+  binding runs `herdr plugin action invoke` like any other command. This plugin
+  ships no `[[keys.command]]` entries of its own on purpose.
+
 ## [0.4.0] — 2026-07-31
 
 ### Added

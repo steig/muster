@@ -336,3 +336,44 @@ func TestPruneApplyRemoves(t *testing.T) {
 		t.Error("prune-apply should have removed the worktree")
 	}
 }
+
+// The dry run exists to be read before the apply, so both must say which
+// repository they resolved. They do not resolve it the same way — listing may
+// fall back to the working directory and applying may not — and that asymmetry
+// once let a `prune` listing six worktrees be followed by a `prune-apply`
+// reporting "nothing to do" about a different root, with nothing in either
+// output to show they had disagreed.
+func TestBothPruneHalvesNameTheRepositoryTheyResolved(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		apply bool
+	}{
+		{"prune", false},
+		{"prune-apply", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := herdrtest.NewRepo(t)
+			checkout := repo.AddWorktree("done", "done")
+			repo.CommitIn(checkout, "done.txt", "work")
+			repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+			herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+
+			server := fakeSession(t, repo)
+			server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "done", ""))
+			server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
+			server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+
+			var out strings.Builder
+			if err := pruneCommand(&out, tc.apply); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+
+			if !strings.Contains(out.String(), "repository: ") {
+				t.Fatalf("%s must name the repository it acted on, got:\n%s", tc.name, out.String())
+			}
+			if !strings.Contains(out.String(), repo.RealRoot) {
+				t.Errorf("%s named a root other than %s:\n%s", tc.name, repo.RealRoot, out.String())
+			}
+		})
+	}
+}

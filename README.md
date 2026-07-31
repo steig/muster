@@ -115,6 +115,28 @@ Staffing starts `claude`, and **resumes rather than restarts**: a checkout that
 already has a Claude Code transcript in `~/.claude/projects` is picked up with
 `--continue`, so re-staffing does not throw away the conversation.
 
+### Binding a key to an action
+
+herdr has no `plugin_action` keybinding type — its key commands are `command`,
+`pane`, `popup` and `split`. So a binding runs the invoke CLI like any other
+command, in your own `config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+alt+s"
+type = "popup"
+command = "herdr plugin action invoke sync --plugin steig.worktender"
+width = "70%"
+height = "50%"
+```
+
+**Bind `sync` and `prune`, never `prune-apply`.** A key that can reach a removal
+is exactly what splitting those two actions was meant to prevent.
+
+This plugin deliberately ships **no** `[[keys.command]]` entries of its own. An
+install that silently claims `prefix+alt+s` is the same class of surprise as one
+that edits your agent's configuration — and you may already have that key.
+
 That is the whole of the herdr *action* surface, and not the whole of the plugin:
 `report` and `gate` are commands rather than actions, for reasons covered below.
 
