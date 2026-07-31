@@ -70,11 +70,14 @@ Three things worth knowing before step 5 surprises you:
   the output says how to force it. When `origin/<branch>` still exists that is
   reported rather than quietly left behind.
 - **`gh` must be authenticated, not merely installed.** A merged pull request is
-  the only authority this plugin accepts for "finished", and an unauthenticated
-  `gh` is indistinguishable from "this branch has no PR" — so nothing is ever
-  pruned, and the reasons look entirely ordinary while that happens. If prune
-  keeps everything on a repository where you expect otherwise, check `gh auth
-  status` first.
+  the strongest authority this plugin accepts for "finished", and an
+  unauthenticated `gh` is indistinguishable from "this branch has no PR" — so
+  almost nothing is pruned, and the reasons look entirely ordinary while that
+  happens. If prune keeps everything on a repository where you expect otherwise,
+  check `gh auth status` first.
+- **Prune reads remote-tracking refs, so run `git fetch --prune` first** if you
+  want a deleted upstream to count. A stale tracking ref reads as still present,
+  which keeps the worktree — being out of date fails in the safe direction.
 - **`sync` converges over two passes, not one.** A checkout adopted this pass has
   no workspace yet, so it cannot be staffed until the next. Running `sync` twice
   against a brand-new orphan is expected, not a bug.
@@ -88,8 +91,9 @@ Three things worth knowing before step 5 surprises you:
 - **git**
 - **jq** — for reading action output out of the plugin log, as above.
 - **gh**, *authenticated* *(optional)* — only used to read pull request state.
-  Without it nothing is ever pruned, because a merged PR is the sole authority
-  this plugin accepts for "finished".
+  Without it, the only removals left are the ones a deleted upstream authorises
+  (see [How it decides what to remove](#how-it-decides-what-to-remove)), and a
+  repository that uses pull requests will prune almost nothing.
 
 ## Actions
 
@@ -257,12 +261,33 @@ because they are the same code.
 fast-forward, squash, rebase and merge-commit workflows the graph shapes overlap:
 a branch merged by fast-forward looks exactly like a branch that never committed,
 and a branch forked off already-merged work looks exactly like one that landed. So
-topology never removes anything here. A merged pull request is the only authority
-accepted, ambiguity always resolves to keeping the worktree, and the reason is
-printed rather than dressed up as a verdict.
+topology never removes anything **on its own** here, ambiguity always resolves to
+keeping the worktree, and the reason is printed rather than dressed up as a
+verdict.
 
 An un-pruned worktree costs disk. A wrongly pruned one costs work that exists
 nowhere else. Those are not comparable, so the tie never goes to deletion.
+
+Two things can authorise a removal:
+
+1. **A merged pull request.** The only unambiguous "yes" available, and the only
+   one that covers squash and rebase workflows — those rewrite commits, so the
+   branch is not an ancestor of base at all and no amount of topology will say so.
+2. **A deleted upstream, together with the branch's commits already being in
+   base.** Both halves are required.
+
+The second exists because the first goes inert in a repository that does not use
+pull requests. It works because **a deleted remote branch is a human action rather
+than a graph shape**, and that is exactly the fact topology is missing. The
+ambiguous case is "did this branch land, or was it forked off work that had
+already landed?" — indistinguishable by shape, since they can be the same commit,
+but not by publication history: a branch forked off merged work and never pushed
+has no upstream to delete, while a branch that landed was pushed and had its
+remote ref removed, which is what a merge button does by default.
+
+Neither half is enough alone. A deleted upstream by itself is equally what
+abandoning work looks like, so it is reported and the worktree kept. Being an
+ancestor of base by itself is the original ambiguity.
 
 That principle shows up as a set of guards, each re-checked immediately before
 anything is removed rather than trusted from the plan:
@@ -283,9 +308,9 @@ delete git worktrees and branches. That is what it is *for* rather than a side
 effect — most of this README is about the guards on the deleting half — but
 installing it is a decision to let code from someone else's repository do those
 things on your machine, and it is worth making on purpose. The two capabilities
-most worth knowing: removal accepts a merged pull request as its only authority
-and keeps anything ambiguous, and the hooks that would start agents without being
-asked are off until you turn them on.
+most worth knowing: removal needs either a merged pull request or a deleted
+upstream over commits base already has, and keeps anything ambiguous; and the
+hooks that would start agents without being asked are off until you turn them on.
 
 Installing runs `scripts/build.sh`, which prefers a local Go toolchain and falls
 back to a prebuilt release binary, so it works with or without Go. On Windows the

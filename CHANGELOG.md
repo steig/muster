@@ -6,6 +6,31 @@ Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 install` tracks branch HEAD rather than a tag — the version in
 `herdr-plugin.toml` is what the no-Go install path pins its download to.
 
+## [Unreleased]
+
+### Added
+
+- **A deleted upstream can now authorise a removal, paired with ancestry.** Prune
+  previously required a merged pull request, so it went inert in any repository
+  that does not use them — the differentiated half of this plugin doing nothing
+  for a whole class of users. (#8)
+
+  A branch whose remote counterpart has been deleted **and** whose commits base
+  already has is now pruned. Both halves are required and neither is sufficient: a
+  gone upstream alone is abandonment as often as completion, and being an ancestor
+  of base alone is the ambiguity that has always resolved to keeping.
+
+  It is admissible because a deleted upstream is a *human action* rather than a
+  graph shape, which is precisely the fact topology lacks. A branch forked off
+  merged work and never pushed has no upstream to delete; a branch that landed was
+  pushed and had its remote ref removed. Squash and rebase workflows remain
+  uncovered — they rewrite commits, so the branch is not an ancestor at all — and
+  continue to need a pull request.
+
+  Prune reads remote-tracking refs, so `git fetch --prune` must have run for this
+  to fire. A stale ref reads as still present and keeps the worktree, which fails
+  in the safe direction.
+
 ## [0.3.0] — 2026-07-31
 
 Renamed. Everything user-facing moved; nothing about how removal decides changed.

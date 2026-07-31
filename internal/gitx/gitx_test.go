@@ -196,3 +196,55 @@ func TestIsDirtyTreatsAnUnreadableCheckoutAsDirty(t *testing.T) {
 		t.Error("an unreadable checkout must read as dirty; clean is what lets it be deleted")
 	}
 }
+
+// publish gives a branch the config a `git push -u` would leave behind, plus
+// the remote-tracking ref that push would have created.
+func publish(t *testing.T, repo *herdrtest.Repo, branch string) {
+	t.Helper()
+	repo.Git("config", "branch."+branch+".remote", "origin")
+	repo.Git("config", "branch."+branch+".merge", "refs/heads/"+branch)
+	repo.Git("update-ref", "refs/remotes/origin/"+branch, branch)
+}
+
+// A branch that was never pushed has nothing to have been deleted. This is the
+// distinction the whole signal rests on: never-published must not read as
+// published-then-deleted, or every local scratch branch looks finished.
+func TestUpstreamGoneIgnoresANeverPublishedBranch(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.Git("branch", "local-only")
+
+	if gitx.UpstreamGone(repo.Root, "local-only") {
+		t.Error("a branch with no upstream has had nothing deleted")
+	}
+}
+
+func TestUpstreamGoneIsFalseWhileTheRemoteBranchExists(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.Git("branch", "published")
+	publish(t, repo, "published")
+
+	if gitx.UpstreamGone(repo.Root, "published") {
+		t.Error("the remote-tracking ref is still there; nothing is gone")
+	}
+}
+
+func TestUpstreamGoneDetectsADeletedRemoteBranch(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.Git("branch", "landed")
+	publish(t, repo, "landed")
+	// What `git fetch --prune` does once the remote branch is deleted.
+	repo.Git("update-ref", "-d", "refs/remotes/origin/landed")
+
+	if !gitx.UpstreamGone(repo.Root, "landed") {
+		t.Error("a configured upstream whose tracking ref has gone is the signal")
+	}
+}
+
+// An empty branch is a detached HEAD, not a branch anyone published.
+func TestUpstreamGoneIgnoresAnEmptyBranch(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	if gitx.UpstreamGone(repo.Root, "") {
+		t.Error("no branch name means no upstream to be gone")
+	}
+}

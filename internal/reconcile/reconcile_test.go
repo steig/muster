@@ -524,3 +524,57 @@ func TestStaffFindsItsWorktreeUnderADifferentSpelling(t *testing.T) {
 		t.Errorf("branch = %q, want the joined worktree's branch %q", staff.Branch, "a")
 	}
 }
+
+// The pair that widens pruning past a merged PR. Neither half is sufficient and
+// the two tests below pin that; this one pins that together they suffice.
+func TestPrunesWhenMergedAndUpstreamDeleted(t *testing.T) {
+	w := linked("/repo/wt/a", "a")
+	w.MergedIntoBase, w.UpstreamGone, w.PR = true, true, reconcile.PRNone
+	state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{w}}
+
+	action := find(reconcile.Reconcile(state), reconcile.KindPrune, "/repo/wt/a")
+	if action == nil {
+		t.Fatalf("a deleted upstream resolves the merged-looking ambiguity, got %+v", reconcile.Reconcile(state))
+	}
+	if !strings.Contains(action.Reason, "upstream") {
+		t.Errorf("the reason must name the signal that authorised this, got %q", action.Reason)
+	}
+}
+
+// A deleted remote branch is equally what abandoning work looks like. Without
+// base holding the commits, acting on it would delete work that exists nowhere
+// else — the exact failure this project refuses to risk.
+func TestNeverPrunesOnAGoneUpstreamAlone(t *testing.T) {
+	w := linked("/repo/wt/a", "a")
+	w.UpstreamGone, w.OwnCommits, w.MergedIntoBase, w.PR = true, 3, false, reconcile.PRNone
+	state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{w}}
+
+	actions := reconcile.Reconcile(state)
+	if find(actions, reconcile.KindPrune, "/repo/wt/a") != nil {
+		t.Fatal("a deleted upstream alone is abandonment as often as completion")
+	}
+
+	keep := find(actions, reconcile.KindKeep, "/repo/wt/a")
+	if keep == nil {
+		t.Fatal("expected a keep")
+	}
+	if !strings.Contains(keep.Reason, "upstream") {
+		t.Errorf("the reason must say the upstream was deleted so a human can act, got %q", keep.Reason)
+	}
+}
+
+// Pull request state stays authoritative wherever it exists. A gone upstream
+// must not talk the reconciler past an OPEN pull request.
+func TestGoneUpstreamNeverOverridesPRState(t *testing.T) {
+	for _, pr := range []reconcile.PRState{reconcile.PROpen, reconcile.PRClosed} {
+		t.Run(string(pr), func(t *testing.T) {
+			w := linked("/repo/wt/a", "a")
+			w.MergedIntoBase, w.UpstreamGone, w.PR = true, true, pr
+			state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{w}}
+
+			if find(reconcile.Reconcile(state), reconcile.KindPrune, "/repo/wt/a") != nil {
+				t.Fatalf("PR %s must outrank the upstream signal", pr)
+			}
+		})
+	}
+}

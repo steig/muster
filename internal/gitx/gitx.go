@@ -122,6 +122,52 @@ func OwnCommits(checkout, base string) int {
 	return n
 }
 
+// UpstreamGone reports that a branch was published and its remote counterpart
+// has since been deleted.
+//
+// This is the one fact in this file that is not a graph shape. Every other
+// signal here describes where commits sit; this one records that a person
+// deleted a remote branch, which is what almost every branch-cleanup script
+// actually keys on and what a merge button does by default.
+//
+// The distinction that makes it worth having is NEVER-PUBLISHED versus
+// PUBLISHED-THEN-DELETED, and git keeps them apart. A branch with no configured
+// upstream was never pushed anywhere; a branch whose `branch.<name>.merge` is
+// still configured but whose remote-tracking ref has gone was pushed and then
+// had that ref removed. Only the second returns true here. `git branch -vv`
+// renders the same state as "[origin/foo: gone]".
+//
+// It establishes nothing on its own — a remote branch can be deleted without
+// merging, which is abandonment rather than completion — so verdict pairs it
+// with ancestry rather than acting on it alone.
+//
+// Requires the remote-tracking refs to be current. A stale ref that fetch has
+// not pruned reads as still present, which keeps the worktree, so being out of
+// date fails in the safe direction.
+func UpstreamGone(root, branch string) bool {
+	if branch == "" {
+		return false
+	}
+
+	remote, err := run(root, "config", "--get", "branch."+branch+".remote")
+	if err != nil || remote == "" {
+		// Never published. Nothing was deleted, so nothing is gone.
+		return false
+	}
+	merge, err := run(root, "config", "--get", "branch."+branch+".merge")
+	if err != nil || merge == "" {
+		return false
+	}
+
+	// branch.<name>.merge is a full ref on the remote (refs/heads/foo); the
+	// tracking ref is that name under refs/remotes/<remote>/.
+	tracking := remote + "/" + strings.TrimPrefix(merge, "refs/heads/")
+	if _, err := run(root, "rev-parse", "--verify", "--quiet", "refs/remotes/"+tracking); err != nil {
+		return true
+	}
+	return false
+}
+
 // IsMergedInto reports that base absorbed the branch through a merge.
 //
 // "Ancestor of base" alone is not enough, and this is the subtle one. A branch
