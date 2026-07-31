@@ -541,6 +541,30 @@ func TestKeepIsReportedNotExecuted(t *testing.T) {
 	}
 }
 
+// The dry-run report IS the confirmation surface for `prune --apply` — there is
+// no prompt to replace it. A branch name carrying a bidi override draws as a
+// different branch, so it spoofs the confirmation rather than merely looking
+// odd. The branch reaches the report twice, as the target column and inside the
+// detail; both have to be escaped or the spoof just moves one column right.
+func TestRenderEscapesABranchNameThatDrawsAsAnother(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.Git("branch", "--", "evil‮hctap")
+	branch := repo.Git("branch", "--list", "--format=%(refname:short)", "evil‮hctap")
+
+	report := execute.Render([]execute.Result{{
+		Status: execute.StatusPlanned,
+		Action: reconcile.Action{Kind: reconcile.KindPrune, Path: "/repo/wt/evil", Branch: branch},
+		Detail: "merged into main; would delete branch " + branch,
+	}})
+
+	if strings.ContainsRune(report, '‮') {
+		t.Errorf("the override reached the terminal: %q", report)
+	}
+	if strings.Count(report, `evil\u{202E}hctap`) != 2 {
+		t.Errorf("both the target and the detail must name the real branch, got %q", report)
+	}
+}
+
 // Every result carries a detail — a silent no-op is the failure mode here.
 func TestEveryResultExplainsItself(t *testing.T) {
 	repo := herdrtest.NewRepo(t)

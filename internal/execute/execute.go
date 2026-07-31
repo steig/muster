@@ -25,6 +25,7 @@ import (
 	"github.com/steig/muster/internal/gitx"
 	"github.com/steig/muster/internal/herdrapi"
 	"github.com/steig/muster/internal/reconcile"
+	"github.com/steig/muster/internal/safetext"
 )
 
 // Status is what became of one action.
@@ -298,6 +299,12 @@ func isInside(dir, root string) bool {
 // The worktree is its own column: several worktrees commonly share a reason
 // ("still open"), and a report that does not say which is which explains
 // nothing.
+//
+// The target and the detail are escaped: both carry branch names, which git
+// will happily let contain a bidi override, and this report is the confirmation
+// a human reads before `prune --apply`. A name that draws as another name
+// spoofs that confirmation. The detail also carries git's own stderr, so
+// escaping keeps the promise of one line per action too.
 func Render(results []Result) string {
 	if len(results) == 0 {
 		return "nothing to do\n"
@@ -306,7 +313,8 @@ func Render(results []Result) string {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	for _, r := range results {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Status, r.Action.Kind, target(r.Action), r.Detail)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Status, r.Action.Kind,
+			safetext.Escape(target(r.Action)), safetext.Escape(r.Detail))
 	}
 	_ = tw.Flush()
 	return b.String()

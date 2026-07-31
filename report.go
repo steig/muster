@@ -8,8 +8,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/steig/muster/internal/safetext"
 )
 
 // The report envelope is how a dispatched worker talks back to the coordinator
@@ -176,7 +177,9 @@ func parseReport(args []string) (report, error) {
 // layer. They are how a note escapes its frame: a newline lets the note open a
 // line of its own past the quote prefix, and a bidi override (U+202E) lets it
 // render as something other than what it is. Both defeat the framing, so
-// neither is a character a one-line status note gets to contain.
+// neither is a character a one-line status note gets to contain. The class is
+// safetext's, shared with the listings, which escape rather than reject: a name
+// that already exists in the repository cannot be re-sent the way a note can.
 func reportNote(note string) error {
 	if strings.TrimSpace(note) == "" {
 		return fmt.Errorf("--note is required; %s", reportUsage)
@@ -185,7 +188,7 @@ func reportNote(note string) error {
 		return fmt.Errorf("--note is not valid UTF-8")
 	}
 	for i, r := range note {
-		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
+		if safetext.IsUnsafe(r) {
 			return fmt.Errorf("--note contains %U at byte %d; it must be a single line of plain text", r, i)
 		}
 	}
