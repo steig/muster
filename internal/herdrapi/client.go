@@ -201,6 +201,32 @@ func (c *Client) WorktreeRemove(workspaceID string, force bool) error {
 	}, nil)
 }
 
+// AgentGet resolves one agent target — a name or a pane id, whichever the
+// caller has — to the agent herdr is tracking. It fails with agent_not_found
+// when the target names nothing, which is also what a pane whose agent has
+// exited looks like.
+func (c *Client) AgentGet(target string) (*AgentInfoResponse, error) {
+	var out AgentInfoResponse
+	if err := c.call("agent.get", map[string]any{"target": target}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PaneRead returns a snapshot of a pane's terminal output.
+//
+// ReadSourceRecentUnwrapped is the source worth reaching for when the text is
+// going to be PARSED: the other sources return the buffer as the terminal wrapped
+// it, so a line longer than the pane is wide arrives split, and a parser looking
+// for whole lines sees two halves of one.
+func (c *Client) PaneRead(paneID string, source ReadSource) (*PaneReadResponse, error) {
+	var out PaneReadResponse
+	if err := c.call("pane.read", map[string]any{"pane_id": paneID, "source": source}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // AgentStart starts an agent in a pane. timeoutMS bounds herdr's own wait for
 // the pane to become usable; zero leaves herdr's default in place.
 func (c *Client) AgentStart(name, kind, paneID string, args []string, timeoutMS int) error {

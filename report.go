@@ -36,6 +36,11 @@ import (
 // a status it does not recognise is a report it cannot act on.
 var reportStatuses = []string{"planned", "blocked", "done"}
 
+// isReportStatus reports whether s is one of the statuses a worker may claim.
+// The gate's predicate is defined over the same closed set, so there is one
+// place that decides what a status is.
+func isReportStatus(s string) bool { return slices.Contains(reportStatuses, s) }
+
 // noteLimit is the note's ceiling, in runes rather than bytes so the budget is
 // the same sentence in any script.
 const noteLimit = 200
@@ -114,7 +119,7 @@ func parseReport(args []string) (report, error) {
 
 	r := report{status: *status, note: *note}
 
-	if !slices.Contains(reportStatuses, r.status) {
+	if !isReportStatus(r.status) {
 		return report{}, fmt.Errorf("--status %q is not one of %s",
 			r.status, strings.Join(reportStatuses, "|"))
 	}

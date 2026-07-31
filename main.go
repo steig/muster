@@ -20,7 +20,7 @@ import (
 	"github.com/steig/muster/internal/wt"
 )
 
-const usage = "usage: muster <ls|sync|prune|prune-apply|report|on-event|startup>"
+const usage = "usage: muster <ls|sync|prune|prune-apply|report|gate|on-event|startup>"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -54,6 +54,10 @@ func run(args []string, out io.Writer) error {
 		// A worker filling slots for its coordinator. Touches neither herdr nor
 		// the repository, so it takes no session and needs no lock.
 		return reportCommand(args[1:], out)
+	case "gate":
+		// A coordinator waiting on a worker it dispatched. Reads herdr but not
+		// the repository, so it takes no lock either.
+		return gateCommand(args[1:], out)
 	case "on-event":
 		// Invoked by herdr, never by hand. Off unless opted in.
 		return onEventCommand(out)

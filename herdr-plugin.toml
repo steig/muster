@@ -137,8 +137,22 @@ command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\
 #
 # pane.agent_status_changed is deliberately absent. A hook has no filter, so
 # every match spawns a process, and that event fires on each idle/working
-# transition on every pane in the session. It is what the completion gate will
-# need, and it belongs with that work rather than here.
+# transition on every pane in the session.
+#
+# The completion gate was expected to want it and turned out not to. A hook is
+# fire-and-forget — herdr starts a process, the process exits, and nobody is
+# waiting on its exit code — while a gate is a caller BLOCKING until a condition
+# holds. The gate therefore subscribes over the socket, for the pane it was
+# given, for as long as it waits, and this file needs no entry for it.
+#
+# `gate` is not registered as an action either, for the same two reasons `report`
+# is not. A herdr action is a fixed command array with no argument surface, and a
+# gate is nothing without its arguments: an action could only ever wait on one
+# hard-coded target. The second reason is worse. An action's output lands in
+# `herdr plugin log list` after it finishes, so a registered gate would block for
+# up to fifteen minutes and then deliver its answer somewhere its caller is not
+# looking, having never returned an exit code to anyone. `gate` is a command a
+# coordinating agent runs and waits on.
 
 # A worktree herdr just created: adopt it and staff it.
 [[events]]

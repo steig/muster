@@ -26,6 +26,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	handlers map[string]Handler
+	streams  map[string]streamHandler
 	calls    []Call
 	listener net.Listener
 }
@@ -54,7 +55,12 @@ func NewServer(t *testing.T) *Server {
 		t.Fatalf("listen %s: %v", path, err)
 	}
 
-	s := &Server{SocketPath: path, handlers: map[string]Handler{}, listener: ln}
+	s := &Server{
+		SocketPath: path,
+		handlers:   map[string]Handler{},
+		streams:    map[string]streamHandler{},
+		listener:   ln,
+	}
 	t.Cleanup(func() { _ = ln.Close() })
 
 	go s.serve()
@@ -80,6 +86,24 @@ func (s *Server) HandleSlow(method string, delay time.Duration, result any) {
 		time.Sleep(delay)
 		return result, nil
 	})
+}
+
+// Pump pushes frames down a subscription after the initial response. It returns
+// when the test has no more to send, which ends the connection.
+type Pump func(params map[string]any, push func(any) error)
+
+// HandleStream registers a subscription method: the server answers with result,
+// then hands the connection to pump, which drives the stream. This is the one
+// method shape where herdr keeps talking after it has replied.
+func (s *Server) HandleStream(method string, result any, pump Pump) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streams[method] = streamHandler{result: result, pump: pump}
+}
+
+type streamHandler struct {
+	result any
+	pump   Pump
 }
 
 // Calls returns the requests received so far.
@@ -130,7 +154,18 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.mu.Lock()
 		s.calls = append(s.calls, Call{Method: req.Method, Params: req.Params})
 		handler, ok := s.handlers[req.Method]
+		stream, streaming := s.streams[req.Method]
 		s.mu.Unlock()
+
+		encoder := json.NewEncoder(conn)
+
+		if streaming {
+			if err := encoder.Encode(wireResponse{ID: req.ID, Result: stream.result}); err != nil {
+				return
+			}
+			stream.pump(req.Params, func(frame any) error { return encoder.Encode(frame) })
+			return
+		}
 
 		resp := wireResponse{ID: req.ID}
 		switch {
@@ -144,7 +179,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				resp.Result = result
 			}
 		}
-		if err := json.NewEncoder(conn).Encode(resp); err != nil {
+		if err := encoder.Encode(resp); err != nil {
 			return
 		}
 	}
