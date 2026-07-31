@@ -5,7 +5,7 @@
 
 id = "steig.worktender"
 name = "worktender"
-version = "0.3.0"
+version = "0.4.0"
 min_herdr_version = "0.7.0"
 # This is the marketplace listing copy, and for most people the only sentence
 # they will read. It says "adopt" rather than "create" because this plugin does
