@@ -6,6 +6,29 @@ Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 install` tracks branch HEAD rather than a tag — the version in
 `herdr-plugin.toml` is what the no-Go install path pins its download to.
 
+## [Unreleased]
+
+### Fixed
+
+- **The README explains how a report reaches a gate again** (#45). The #28
+  restructure dropped the paragraph saying a report travels as pane metadata and
+  never replaced it, so the largest section in the document described `report`
+  and `gate` without once saying how one reaches the other.
+
+  What replaces it is also more accurate than what was lost: the gate reads
+  **both** the metadata and the pane's terminal buffer, every look, and neither
+  wins. So a worker that merely prints a well-formed envelope has reported, and
+  identity is a per-channel counter rather than content — two identical reports
+  are two reports.
+
+### Added
+
+- Exit codes and the errors a user is most likely to meet.
+- That `base` is `origin/HEAD` rather than an assumed `main`, that `list` is an
+  alias for `ls`, how agent names are derived, that adoption never focuses the
+  workspace, and that the repository lock is fail-open and is not a safety
+  control.
+
 ## [0.4.1] — 2026-07-31
 
 ### Fixed
