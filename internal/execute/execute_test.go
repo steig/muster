@@ -29,6 +29,23 @@ func fixture(t *testing.T, repo *herdrtest.Repo) (*execute.Executor, *herdrtest.
 	}, server
 }
 
+// callTo finds the request a test is actually about.
+//
+// Indexing into Calls() couples a test to how many guard reads happen to
+// precede the call, so adding a re-check breaks assertions about behaviour that
+// did not change.
+func callTo(t *testing.T, server *herdrtest.Server, method string) herdrtest.Call {
+	t.Helper()
+
+	for _, call := range server.Calls() {
+		if call.Method == method {
+			return call
+		}
+	}
+	t.Fatalf("no %s call was made", method)
+	return herdrtest.Call{}
+}
+
 func only(t *testing.T, results []execute.Result) execute.Result {
 	t.Helper()
 	if len(results) != 1 {
@@ -324,7 +341,7 @@ func TestStaffResumeUsesContinue(t *testing.T) {
 		t.Errorf("detail should say it resumed, got %q", result.Detail)
 	}
 
-	call := server.Calls()[0]
+	call := callTo(t, server, "agent.start")
 	args, _ := call.Params["args"].([]any)
 	if len(args) != 1 || args[0] != "--continue" {
 		t.Errorf("args = %v, want [--continue]", call.Params["args"])
@@ -344,13 +361,96 @@ func TestStaffColdStartSendsNoArgs(t *testing.T) {
 	if result := only(t, exec.Run([]reconcile.Action{action})); result.Status != execute.StatusDone {
 		t.Fatalf("status = %q: %s", result.Status, result.Detail)
 	}
-	if _, ok := server.Calls()[0].Params["args"]; ok {
+	if _, ok := callTo(t, server, "agent.start").Params["args"]; ok {
 		t.Error("a cold start should not pass --continue")
 	}
 }
 
 // A pane still running direnv rejects the agent. That has to surface as a
 // reported failure, not a silent no-op.
+// The staffing twin of the prune staleness cases, and the reason staffing
+// re-reads its guard at all.
+//
+// The reconciler decides to staff a workspace that has no agent, and that
+// snapshot ages. An agent starting in the gap is the common case, not a corner:
+// an event hook and a human `sync` can plan from the same state moments apart.
+// Starting a second agent on a pane that already has one does not fail
+// harmlessly — it lands on a live conversation.
+func TestStaffRefusesAPaneThatGainedAnAgentAfterThePlan(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+
+	// An agent appeared in the workspace between the plan and this moment.
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list",
+		"agents": []map[string]any{{"name": "already-here", "pane_id": "w2:p1"}}})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+		"panes": []map[string]any{{"pane_id": "w2:p1"}}})
+
+	action := reconcile.Action{Kind: reconcile.KindStaff, Path: "/repo/wt/a", Branch: "a",
+		WorkspaceID: "w2", PaneID: "w2:p1", AgentName: "a"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Errorf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	for _, call := range server.Calls() {
+		if call.Method == "agent.start" {
+			t.Fatal("started a second agent on a pane that already had one")
+		}
+	}
+	if !strings.Contains(result.Detail, "agent") {
+		t.Errorf("the refusal should explain itself, got %q", result.Detail)
+	}
+}
+
+// Staffing must still happen when the workspace really is empty; a guard that
+// refuses everything is not a guard.
+func TestStaffProceedsWhenTheWorkspaceIsStillIdle(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+		"panes": []map[string]any{{"pane_id": "w2:p1"}}})
+
+	action := reconcile.Action{Kind: reconcile.KindStaff, Path: "/repo/wt/a", Branch: "a",
+		WorkspaceID: "w2", PaneID: "w2:p1", AgentName: "a"}
+
+	if result := only(t, exec.Run([]reconcile.Action{action})); result.Status != execute.StatusDone {
+		t.Fatalf("status = %q: %s", result.Status, result.Detail)
+	}
+	for _, call := range server.Calls() {
+		if call.Method == "agent.start" {
+			return
+		}
+	}
+	t.Error("an idle workspace was never staffed")
+}
+
+// A workspace herdr cannot be asked about must not be staffed on the assumption
+// that it is idle. The same call already blocks a prune for the same reason:
+// an unverifiable guard is not a satisfied one.
+func TestStaffRefusesWhenTheWorkspaceCannotBeChecked(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+
+	server.Handle("agent.list", func(map[string]any) (any, error) {
+		return nil, errStartFailed{}
+	})
+
+	action := reconcile.Action{Kind: reconcile.KindStaff, Path: "/repo/wt/a",
+		WorkspaceID: "w2", PaneID: "w2:p1", AgentName: "a"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Errorf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	for _, call := range server.Calls() {
+		if call.Method == "agent.start" {
+			t.Fatal("staffed a workspace whose state could not be confirmed")
+		}
+	}
+}
+
 func TestStaffReportsAFailureToStart(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 	exec, server := fixture(t, repo)

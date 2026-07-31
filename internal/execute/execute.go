@@ -5,6 +5,10 @@
 // immediately before acting, so a worktree that picked up uncommitted changes
 // or an agent between the two phases survives.
 //
+// Staffing counts as destructive for this purpose. It creates rather than
+// removes, but starting an agent on a pane that already has one lands on a live
+// conversation, and a lost conversation is as unrecoverable as a lost checkout.
+//
 // Pruning is a dry run unless ApplyPrune is set. A plugin action has no good
 // prompt surface, so there is no interactive confirmation to replace the shell
 // version's read -r; applying is a separate, explicit action instead.
@@ -113,8 +117,32 @@ func (e *Executor) adopt(action reconcile.Action) Result {
 	return Result{action, StatusDone, "opened workspace"}
 }
 
-// staff starts an agent in a workspace that has none. Non-destructive.
+// staff starts an agent in a workspace that has none, re-checking first.
+//
+// Staffing looks non-destructive and is not. The reconciler decided this
+// workspace was empty from a snapshot that has since aged, and an agent
+// appearing in the gap is routine rather than exotic — an event hook and a
+// human `sync` can plan from the same state moments apart. agent.start against
+// a pane that already hosts an agent does not bounce off; it lands on a live
+// conversation, which destroys context that exists nowhere else.
+//
+// The repository lock makes this collision rare. This is what makes it safe,
+// and the two are not interchangeable: the lock is an optimisation that may fail
+// to exclude, so it cannot be the thing standing here.
 func (e *Executor) staff(action reconcile.Action) Result {
+	if action.WorkspaceID != "" {
+		staffed, err := e.workspaceStaffed(action.WorkspaceID)
+		switch {
+		case err != nil:
+			// An unverifiable guard is not a satisfied one — the same call the
+			// prune path already makes for the same reason.
+			return Result{action, StatusSkipped,
+				fmt.Sprintf("could not confirm the workspace has no agent: %v", err)}
+		case staffed:
+			return Result{action, StatusSkipped, "an agent started here since the plan was made"}
+		}
+	}
+
 	var args []string
 	mode := "started"
 	if action.Resume {
