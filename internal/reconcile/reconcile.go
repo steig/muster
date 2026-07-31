@@ -116,7 +116,16 @@ type Action struct {
 	// Resume asks the executor to continue the existing transcript rather
 	// than start a fresh conversation. Set on KindStaff.
 	Resume bool
-	Reason string
+	// AgentArgs are extra arguments passed through to the agent binary, after
+	// any the executor adds itself.
+	//
+	// ALWAYS EMPTY ON AN ACTION THE RECONCILER PRODUCED. `sync` runs from a
+	// keybinding and from event hooks, where no role exists to route on, so an
+	// unattended reconciler is deliberately given no opinion about which model
+	// to spend or how much autonomy to grant. Only a deliberate `dispatch`
+	// sets these.
+	AgentArgs []string
+	Reason    string
 }
 
 // Reconcile returns everything the repository needs, in execution order:

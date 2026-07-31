@@ -151,6 +151,10 @@ func (e *Executor) staff(action reconcile.Action) Result {
 		args = []string{"--continue"}
 		mode = "resumed"
 	}
+	// Caller arguments go last, so they cannot displace --continue: whether to
+	// resume is this executor's decision, not the caller's. Empty for
+	// everything the reconciler plans — see Action.AgentArgs.
+	args = append(args, action.AgentArgs...)
 
 	if err := e.Client.AgentStart(action.AgentName, agentKind, action.PaneID, args, agentStartTimeoutMS); err != nil {
 		return Result{action, StatusFailed, fmt.Sprintf("start agent in %s: %v", action.PaneID, err)}
