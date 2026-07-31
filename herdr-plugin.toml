@@ -92,3 +92,61 @@ id = "prune-apply-windows"
 title = "wt: prune (apply)"
 platforms = ["windows"]
 command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe prune-apply"]
+
+# Events — the live half. herdr invokes these when worktrees appear, so a new
+# checkout is adopted and staffed as it happens rather than the next time
+# someone remembers to run `sync`.
+#
+# THESE DO NOTHING UNLESS HERDR_WT_EVENTS IS SET. The handler checks that before
+# it even parses the event, so an un-opted-in install runs a process that exits
+# immediately and says why. That default is deliberate: these hooks start coding
+# agents, and a plugin that begins spawning agents the moment it is installed has
+# handed its user an autonomous trigger they never asked for.
+#
+# Every hook runs the same `on-event` entry point, because the handler does not
+# act on what the event says — it reads it for one thing, which repository, and
+# then runs the same whole-repository pass `sync` runs. An event is a trigger,
+# never a fact.
+#
+# The `on` names are DOTTED. The underscored spellings that appear inside the
+# payload (worktree_opened) are a different namespace, and a hook declared with
+# one of those parses fine and never fires.
+#
+# pane.agent_status_changed is deliberately absent. A hook has no filter, so
+# every match spawns a process, and that event fires on each idle/working
+# transition on every pane in the session. It is what the completion gate will
+# need, and it belongs with that work rather than here.
+
+# A worktree herdr just created: adopt it and staff it.
+[[events]]
+on = "worktree.created"
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-wt", "on-event"]
+
+[[events]]
+on = "worktree.created"
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe on-event"]
+
+# An existing checkout that just gained a workspace, and so now wants staffing.
+[[events]]
+on = "worktree.opened"
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-wt", "on-event"]
+
+[[events]]
+on = "worktree.opened"
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe on-event"]
+
+# An agent attached to or was RELEASED from a pane. The release case is the
+# valuable one: a worktree whose agent has gone is unstaffed again.
+[[events]]
+on = "pane.agent_detected"
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-wt", "on-event"]
+
+[[events]]
+on = "pane.agent_detected"
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe on-event"]
