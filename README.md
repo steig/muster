@@ -113,6 +113,24 @@ removed rather than trusted from the plan:
 - the directory you are standing in
 - a pull request that is closed but not merged — abandoned work still holds commits
 
+## For coding agents
+
+An agent driving this plugin gets a few things wrong without being told: that
+`plugin action invoke` returns an invocation record rather than the action's output,
+that `prune` and `prune-apply` are different in kind, and that enabling events is not
+its call to make. A skill covering that ships in this repository:
+
+```sh
+npx skills add steig/herdr-wt --skill worktrees -g
+```
+
+Or vendor `skills/worktrees/SKILL.md` into your own agent configuration, which pins it
+rather than tracking this repository.
+
+Nothing here writes to your agent's configuration during install, and nothing should.
+A herdr plugin runs unsandboxed as you; one that quietly edits how your coding agent
+behaves is the same kind of surprise as one that starts spawning agents on install.
+
 ## Development
 
 ```sh
