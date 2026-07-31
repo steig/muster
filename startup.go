@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/steig/muster/internal/gitx"
-	"github.com/steig/muster/internal/herdrapi"
-	"github.com/steig/muster/internal/reconcile"
-	"github.com/steig/muster/internal/repolock"
+	"github.com/steig/worktender/internal/gitx"
+	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/reconcile"
+	"github.com/steig/worktender/internal/repolock"
 )
 
 // startupCommand is what herdr's [[startup]] entry runs once, after the server
@@ -38,7 +38,7 @@ func startupCommand(out io.Writer) error {
 	// own. Both do the same autonomous thing — open workspaces and start coding
 	// agents without being asked — and this one fires on every launch across
 	// every repository, so it is the louder of the two. Someone who unset
-	// MUSTER_EVENTS after a surprise would reasonably expect that to have
+	// WORKTENDER_EVENTS after a surprise would reasonably expect that to have
 	// covered all of it; a second variable would let them opt out of one trigger
 	// while the other kept firing.
 	if !eventsEnabled() {

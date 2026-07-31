@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/steig/muster/internal/gitx"
+	"github.com/steig/worktender/internal/gitx"
 )
 
 // The macOS case that hides itself: /var is a symlink to /private/var, so a

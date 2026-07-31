@@ -190,7 +190,7 @@ func (c *Client) Subscribe(subs []Subscription, deadline time.Time) (*Stream, er
 	}
 
 	if err := json.NewEncoder(conn).Encode(request{
-		ID:     "muster",
+		ID:     "worktender",
 		Method: "events.subscribe",
 		Params: map[string]any{"subscriptions": subs},
 	}); err != nil {

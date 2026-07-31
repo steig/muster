@@ -16,7 +16,7 @@ import (
 // worker cannot hide a second `status:` line inside the one slot a hostile
 // author can reach. Here the same rule is enforced in reverse — a candidate
 // whose note fails reportNote is not an envelope at all, so a frame assembled
-// out of text that never went through `muster report` is rejected rather than
+// out of text that never went through `worktender report` is rejected rather than
 // half-read.
 //
 // What it does NOT do is authenticate the author. The pane is the worker's own
@@ -105,13 +105,13 @@ func parseEnvelope(lines []string) (report, bool) {
 // first line of a message.
 //
 // This is not generosity, it is the difference between working and not. Claude
-// Code renders the first line of an assistant message as "⏺ muster-report v1",
+// Code renders the first line of an assistant message as "⏺ worktender-report v1",
 // so a parser demanding the bare header reads nothing at all from the pane of
 // the agent this exists to gate — which is how it was found.
 //
 // The allowance is bounded to decoration: whatever precedes the header may hold
 // no letter and no digit. "⏺ " and a shell prompt's "❯ " qualify; "our own
-// muster-report v1" does not, so a sentence mentioning the header does not open
+// worktender-report v1" does not, so a sentence mentioning the header does not open
 // a frame.
 func isHeaderLine(line string) bool {
 	prefix, ok := strings.CutSuffix(line, reportHeader)

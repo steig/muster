@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrapi"
 )
 
 // The manifest and dispatch are two lists of event kinds maintained by hand in

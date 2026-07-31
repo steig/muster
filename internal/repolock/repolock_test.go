@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steig/muster/internal/execute"
+	"github.com/steig/worktender/internal/execute"
 )
 
 const repo = "/tmp/example-repo"

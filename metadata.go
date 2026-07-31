@@ -7,14 +7,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrapi"
 )
 
 // The metadata channel is how a report actually reaches a gate.
 //
 // The pane was the original channel and it does not carry a report off a Claude
 // Code worker at all: that TUI collapses a finished tool call to "Ran 1 shell
-// command", so a worker which RUNS `muster report` leaves the envelope inside
+// command", so a worker which RUNS `worktender report` leaves the envelope inside
 // its own transcript and nothing on the screen the gate reads. The pair only
 // worked when the dispatch prompt talked the worker into reproducing the
 // envelope as its reply text — a sentence in a prompt, which is not a mechanism,
@@ -35,7 +35,7 @@ import (
 // `done` and gets no summary with it has to go and read the worker's pane to
 // find out what happened, which is the channel this exists to stop depending on.
 // A note capped at 80 for this channel would have been the same loss wearing a
-// smaller number, and `muster report` would then accept a 200-rune note and
+// smaller number, and `worktender report` would then accept a 200-rune note and
 // deliver 80 of it.
 //
 // Chunking is safe here for one reason and it is not the arithmetic: the joined
@@ -49,7 +49,7 @@ import (
 // template and a coordinator that dispatches the same kind of slice twice gets
 // two byte-identical reports; a reader that told them apart by comparing them
 // would hear the second one as a repeat of the first and wait out its timeout on
-// a worker that had answered. So every write carries muster_seq, one higher than
+// a worker that had answered. So every write carries worktender_seq, one higher than
 // the one it found on the pane, and a report is a DIFFERENT report exactly when
 // the counter moved. It is not a predicate surface and the gate cannot match on
 // it — it decides only whether there is something new to judge.
@@ -62,7 +62,7 @@ const (
 	// tokenSource is the provenance herdr files these writes under. It is NOT a
 	// namespace — herdr keeps one token map per pane and every writer merges
 	// into it — so the keys below carry the namespace themselves.
-	tokenSource = "steig.muster"
+	tokenSource = "steig.worktender"
 
 	// tokenValueLimit is how much of a token value herdr keeps, in runes, which
 	// is the same unit noteLimit counts in.
@@ -76,23 +76,23 @@ const (
 
 // The keys, all under one prefix because the map is shared with every other
 // writer on the pane, and versioned because the presence of tokenKeyVersion is
-// what distinguishes "muster wrote a report here" from "some keys exist".
+// what distinguishes "worktender wrote a report here" from "some keys exist".
 const (
-	tokenKeyVersion = "muster_v"
-	tokenKeyStatus  = "muster_status"
-	tokenKeyPR      = "muster_pr"
-	// The note's chunks are this plus their index: muster_note0, muster_note1…
-	tokenKeyNotePrefix = "muster_note"
-	// muster_seq counts reports on this pane. See WHAT IDENTIFIES ONE REPORT
+	tokenKeyVersion = "worktender_v"
+	tokenKeyStatus  = "worktender_status"
+	tokenKeyPR      = "worktender_pr"
+	// The note's chunks are this plus their index: worktender_note0, worktender_note1…
+	tokenKeyNotePrefix = "worktender_note"
+	// worktender_seq counts reports on this pane. See WHAT IDENTIFIES ONE REPORT
 	// above; it says which report this is, never what it says.
-	tokenKeySeq = "muster_seq"
+	tokenKeySeq = "worktender_seq"
 )
 
 // tokenVersion is the layout above. It moves when a reader of the old layout
 // would misread the new one, and a reader that does not recognise it treats the
 // pane as carrying no report rather than guessing.
 //
-// muster_seq arriving did not move it, on that rule: a reader without it reads
+// worktender_seq arriving did not move it, on that rule: a reader without it reads
 // every slot of a report carrying one exactly as its author wrote them. What it
 // cannot do is tell two of them apart, which is the bug the counter exists to
 // fix and not a misreading of anything.
@@ -161,7 +161,7 @@ func encodeReport(r report, seq uint64) (map[string]any, error) {
 //
 // It is the metadata twin of parseEnvelope and inherits the same guarantee the
 // same way: every slot goes back through the validator the writer used, so a
-// token map assembled by something that is not `muster report` is rejected
+// token map assembled by something that is not `worktender report` is rejected
 // rather than half-read.
 func decodeReport(tokens map[string]string) (report, uint64, bool) {
 	if tokens[tokenKeyVersion] != tokenVersion {
@@ -266,7 +266,7 @@ func chunkRunes(s string, size int) []string {
 // deliverReport writes a report to the pane's metadata and proves it landed.
 //
 // The second return names what was missing when there was nowhere to deliver
-// to. Running `muster report` outside herdr — from a plain shell, to see the
+// to. Running `worktender report` outside herdr — from a plain shell, to see the
 // envelope — is a legitimate thing to do and not a failure, so delivery is
 // skipped rather than refused. It is not silent either: the caller says which
 // variable was absent, because a worker that cannot tell "delivered" from
@@ -287,7 +287,7 @@ func deliverReport(r report) (string, error) {
 
 const (
 	// paneEnv is the pane herdr injects into the shell it starts in one. A
-	// worker runs `muster report` in its own pane, so this is the pane the
+	// worker runs `worktender report` in its own pane, so this is the pane the
 	// report is about — a report is never written to a pane its author does not
 	// occupy, which would hand a worker the ability to file under another
 	// worker's name.
@@ -299,10 +299,10 @@ const (
 // writeReport numbers the report, delivers the tokens, and reads them back.
 //
 // The number comes from the pane rather than from this process, because the
-// process is new every time: a worker runs `muster report` once per report and
+// process is new every time: a worker runs `worktender report` once per report and
 // has no memory of the last one. The pane is where the previous report is, so
 // the pane is where the count is kept. Two reports racing for the same number
-// would need one worker running `muster report` twice at once in its own pane,
+// would need one worker running `worktender report` twice at once in its own pane,
 // which is not a thing a worker does — and herdr's own `seq` param cannot help
 // with it anyway, because it is write-only: nothing in pane.get returns it, so a
 // reader could not tell the guard had fired.

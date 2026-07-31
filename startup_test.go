@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/muster/internal/gitx"
-	"github.com/steig/muster/internal/herdrtest"
-	"github.com/steig/muster/internal/reconcile"
-	"github.com/steig/muster/internal/repolock"
+	"github.com/steig/worktender/internal/gitx"
+	"github.com/steig/worktender/internal/herdrtest"
+	"github.com/steig/worktender/internal/reconcile"
+	"github.com/steig/worktender/internal/repolock"
 )
 
 // restoredRepo is a repository as herdr leaves it after a restart: the main
@@ -127,7 +127,7 @@ func TestStartupIsOffByDefault(t *testing.T) {
 			t.Errorf("startup called %s while the opt-in was unset", method)
 		}
 	}
-	if !strings.Contains(out.String(), "MUSTER_EVENTS") {
+	if !strings.Contains(out.String(), "WORKTENDER_EVENTS") {
 		t.Errorf("a disabled startup command must say why it did nothing, got: %q", out.String())
 	}
 }
@@ -136,25 +136,29 @@ func TestStartupIsOffByDefault(t *testing.T) {
 // trigger that fires on every launch across every repository, and the one most
 // likely to be the first thing a stale opt-in fails to arm.
 func TestStartupRefusesTheOldEnvNameAndSaysSo(t *testing.T) {
-	r := newRestoredRepo(t, "wip", "wip", "w1")
-	server := startupSession(t, r)
-	t.Setenv(eventsEnv, "")
-	t.Setenv(legacyEventsEnv, "1")
+	for _, legacy := range legacyEventsEnvs {
+		t.Run(legacy, func(t *testing.T) {
+			r := newRestoredRepo(t, "wip", "wip", "w1")
+			server := startupSession(t, r)
+			t.Setenv(eventsEnv, "")
+			t.Setenv(legacy, "1")
 
-	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
-		t.Fatalf("the old name must decline, not fail: %v", err)
-	}
+			var out strings.Builder
+			if err := startupCommand(&out); err != nil {
+				t.Fatalf("the old name must decline, not fail: %v", err)
+			}
 
-	for _, method := range []string{"worktree.open", "agent.start", "worktree.remove"} {
-		if called(t, server, method) {
-			t.Errorf("the old env name enabled %s; it must not be an alias", method)
-		}
-	}
-	for _, want := range []string{legacyEventsEnv, eventsEnv} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("declining on the old name must mention %s, got: %q", want, out.String())
-		}
+			for _, method := range []string{"worktree.open", "agent.start", "worktree.remove"} {
+				if called(t, server, method) {
+					t.Errorf("the old env name enabled %s; it must not be an alias", method)
+				}
+			}
+			for _, want := range []string{legacy, eventsEnv} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("declining on the old name must mention %s, got: %q", want, out.String())
+				}
+			}
+		})
 	}
 }
 

@@ -1,13 +1,13 @@
 #!/bin/sh
-# Build bin/muster for `herdr plugin install`.
+# Build bin/worktender for `herdr plugin install`.
 #
 # Prefer a local Go toolchain, which produces an exact build of the cloned
 # source. Without Go, fall back to the matching prebuilt release binary so
 # installing works on a machine that has no Go at all.
 set -eu
 
-REPO="steig/muster"
-OUT="bin/muster"
+REPO="steig/worktender"
+OUT="bin/worktender"
 
 mkdir -p bin
 
@@ -16,21 +16,21 @@ if command -v go >/dev/null 2>&1; then
 	exit 0
 fi
 
-echo "muster: no Go toolchain found, downloading a prebuilt binary" >&2
+echo "worktender: no Go toolchain found, downloading a prebuilt binary" >&2
 
 case "$(uname -s)" in
 Darwin) os="darwin" ;;
 Linux) os="linux" ;;
-*) echo "muster: unsupported OS $(uname -s); install Go and retry" >&2; exit 1 ;;
+*) echo "worktender: unsupported OS $(uname -s); install Go and retry" >&2; exit 1 ;;
 esac
 
 case "$(uname -m)" in
 arm64 | aarch64) arch="arm64" ;;
 x86_64 | amd64) arch="amd64" ;;
-*) echo "muster: unsupported architecture $(uname -m); install Go and retry" >&2; exit 1 ;;
+*) echo "worktender: unsupported architecture $(uname -m); install Go and retry" >&2; exit 1 ;;
 esac
 
-asset="muster_${os}_${arch}"
+asset="worktender_${os}_${arch}"
 
 # Download the release matching the source that was cloned, not `latest`.
 #
@@ -45,7 +45,7 @@ asset="muster_${os}_${arch}"
 # It only makes it the release this source says it is.
 version=$(awk -F'"' '/^version[[:space:]]*=/ {print $2; exit}' herdr-plugin.toml)
 if [ -z "$version" ]; then
-	echo "muster: no version in herdr-plugin.toml; refusing to fall back to whatever \`latest\` points at" >&2
+	echo "worktender: no version in herdr-plugin.toml; refusing to fall back to whatever \`latest\` points at" >&2
 	exit 1
 fi
 base="https://github.com/$REPO/releases/download/v$version"
@@ -56,14 +56,14 @@ fetch() {
 	elif command -v wget >/dev/null 2>&1; then
 		wget -qO "$2" "$1"
 	else
-		echo "muster: neither curl nor wget available; install Go and retry" >&2
+		echo "worktender: neither curl nor wget available; install Go and retry" >&2
 		exit 1
 	fi
 }
 
 # An unverified download must never survive this script, and a cleanup line at
 # the bottom cannot promise that: `set -e` inside fetch exits the shell before
-# any line below it runs, so a failed checksums.txt fetch would leave bin/muster
+# any line below it runs, so a failed checksums.txt fetch would leave bin/worktender
 # on disk at exactly the path the manifest execs. A trap is the only form of the
 # rule that holds on every exit path, and it is disarmed at the bottom once the
 # binary has been verified.
@@ -86,7 +86,7 @@ fetch "$base/checksums.txt" bin/checksums.txt
 # it entirely by compiling the source that was cloned.
 expected=$(awk -v want="$asset" '$2 == want || $2 == "*"want {print $1}' bin/checksums.txt)
 if [ -z "$expected" ]; then
-	echo "muster: no checksum published for $asset; refusing to install it" >&2
+	echo "worktender: no checksum published for $asset; refusing to install it" >&2
 	exit 1
 fi
 
@@ -95,12 +95,12 @@ if command -v sha256sum >/dev/null 2>&1; then
 elif command -v shasum >/dev/null 2>&1; then
 	actual=$(shasum -a 256 "$OUT" | awk '{print $1}')
 else
-	echo "muster: no sha256 tool to verify the download; install Go and retry" >&2
+	echo "worktender: no sha256 tool to verify the download; install Go and retry" >&2
 	exit 1
 fi
 
 if [ "$expected" != "$actual" ]; then
-	echo "muster: checksum mismatch for $asset" >&2
+	echo "worktender: checksum mismatch for $asset" >&2
 	echo "  expected $expected" >&2
 	echo "  actual   $actual" >&2
 	exit 1
