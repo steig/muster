@@ -31,14 +31,34 @@ a checkout with no workspace and no agent, which is exactly what `sync` picks up
 herdr plugin install steig/muster
 ```
 
+**A herdr plugin is not sandboxed.** This one runs as you, with your files, your shell and
+your credentials, and what it does with them is start coding agents and delete git
+worktrees. That is what it is *for* rather than a side effect — most of this README is
+about the guards on the deleting half — but installing it is a decision to let code from
+someone else's repository do those things on your machine, and it is worth making on
+purpose. The two capabilities most worth knowing before you do: removal accepts a merged
+pull request as its only authority and keeps anything ambiguous, and the hooks that would
+start agents without being asked are off until you turn them on.
+
 Installing runs `scripts/build.sh`, which prefers a local Go toolchain and falls back to a
 prebuilt release binary, so it works with or without Go. On Windows the build needs Go on
 `PATH`.
 
-Downloaded binaries are checked against the `checksums.txt` published with the release, and
-a missing or mismatched checksum aborts the install rather than warning about it — the
-fallback path fetches an executable over the network and hands it to herdr to run, so it is
-the one step worth being strict about.
+With Go present you get the stronger of the two paths by a distance: the binary is compiled
+from the source that was just cloned, so what you can read is what you run.
+
+Without Go, the script downloads the release matching the version in the manifest it
+cloned — pinned to that tag rather than to `latest`, so reading `v0.1.0` and installing
+cannot hand you something newer — and checks it against the `checksums.txt` published
+alongside. A missing or mismatched checksum aborts the install rather than warning about
+it, and no unverified download is left behind on any failure path.
+
+That check proves the download arrived intact, and nothing beyond it. The binary and its
+checksum come from the same release, so both are published by whoever can publish releases
+here, and there is no signature and no attestation to say who that was. On the no-Go path
+you are trusting this GitHub account rather than a proof of authorship. That is the same
+trust nearly all software installed from GitHub asks for — which is a reason to say so
+plainly, not a reason to imply the checksum is doing more work than it is.
 
 For local development, from a checkout:
 
@@ -60,9 +80,69 @@ immediately.
 
 Output lands in `herdr plugin log list --plugin steig.muster`.
 
+That is the whole of the herdr *action* surface, and not the whole of the plugin: `report`
+and `gate` are commands rather than actions, for reasons covered below.
+
 `prune` and `prune-apply` are two actions rather than one with a confirmation, because a
 plugin action has no prompt surface — there is nowhere to ask "are you sure?". Splitting
 them is the confirmation. It also means no stray keybinding can reach a removal.
+
+## Reporting back, and waiting for it
+
+Two more commands ship, and they are deliberately not in the table above, because they are
+not herdr actions:
+
+```sh
+muster report --status planned|blocked|done [--pr N] --note <text>
+muster gate --target <agent|pane> [--until done] [--require-pr] [--timeout 15m]
+```
+
+`report` is how a dispatched worker tells the coordinator that dispatched it where it got
+to. `gate` is how that coordinator waits for one: it blocks until the worker's report
+satisfies the predicate, prints the report, and releases.
+
+Neither is registered as an action, for two reasons. An action is a fixed command array
+with no argument surface, so a registered `gate` could only ever wait on one hard-coded
+target. And an action's output lands in `herdr plugin log list` after it finishes, which is
+exactly where a caller blocked on the answer is not looking. They are run directly instead,
+from wherever herdr put the plugin:
+
+```sh
+muster=$(herdr plugin list --json \
+  | jq -r '.result.plugins[] | select(.plugin_id == "steig.muster") | .plugin_root')/bin/muster
+```
+
+**A report is three fixed slots and no free text**: a status from a closed set, an optional
+pull request number, and a note capped at 200 characters. The shape is the feature, not a
+limitation of it. A worker's task usually arrived as a GitHub issue, whose body is written
+by anyone who can file one, so a worker may be relaying a stranger's words — and a report
+is therefore not a message the worker composes but slots the *coordinator* renders into its
+own prompt. The note reaches the coordinator quoted and announced as untrusted data, and
+the cap bounds how much of it can ever reach the context most worth protecting.
+
+The same reasoning bounds the gate. `--until` matches the status, `--require-pr` matches
+the presence of the pull request number, and there is no way to write a predicate over the
+note. A `--note-contains` would hand whoever wrote that issue the decision of when the
+coordinator's next agent starts.
+
+The report travels as herdr pane metadata attached to the reporting worker's own pane, and
+never into the coordinator's; a worker that could write into the coordinator's context at
+will would have the injection surface back with this plugin doing the delivery. Outside
+herdr there is no pane to attach to, and `report` says so on stderr rather than claiming a
+delivery it did not make.
+
+`gate` ignores whatever the pane already held when it opened — that was a previous task's
+answer, and releasing on it is the stale hand-off the gate exists to prevent. It fails
+rather than waits out its clock on a worker that reports `blocked`, since the only party
+who can unblock it is the one sitting in the wait, and on a worker that dies before
+reporting. And it always expires: there is no wait-forever option, because a gate that
+cannot expire wedges a coordinator with no diagnosis, which is worse than no gate.
+
+What a gate does not establish is authorship. A pane is a buffer the worker controls, so
+the gate proves that a well-formed report appeared there after the gate started and nothing
+about who composed it. A shared secret would not close that either — the dispatch prompt
+sits in the worker's context beside the untrusted text, so anything that can talk the
+worker into faking a report can read the secret out of the same context and include it.
 
 ## Events
 
@@ -143,8 +223,8 @@ Or vendor `skills/worktrees/SKILL.md` into your own agent configuration, which p
 rather than tracking this repository.
 
 Nothing here writes to your agent's configuration during install, and nothing should.
-A herdr plugin runs unsandboxed as you; one that quietly edits how your coding agent
-behaves is the same kind of surprise as one that starts spawning agents on install.
+Running unsandboxed as it does, a plugin that quietly edits how your coding agent behaves
+is the same kind of surprise as one that starts spawning agents on install.
 
 ## Development
 
