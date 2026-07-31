@@ -388,7 +388,7 @@ compiled from the source that was just cloned, so what you can read is what you
 run.
 
 Without Go, the script downloads the release matching the version in the manifest
-it cloned — pinned to that tag rather than to `latest`, so reading `v0.4.0` and
+it cloned — pinned to that tag rather than to `latest`, so reading `v0.4.1` and
 installing cannot hand you something newer — and checks it against the
 `checksums.txt` published alongside. A missing or mismatched checksum aborts the
 install rather than warning about it, and no unverified download is left behind on
