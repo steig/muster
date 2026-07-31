@@ -55,17 +55,16 @@ import (
 // which loses one gets its terminal back inside a coffee break.
 const gateDefaultTimeout = 15 * time.Minute
 
-// gateReadSource is the snapshot the report is parsed out of. Unwrapped,
-// because a wrapped envelope line is two lines to a parser.
+// gateReadSource is the snapshot the LEGACY half of the report is parsed out
+// of. Unwrapped, because a wrapped envelope line is two lines to a parser.
 //
-// The pane is the channel because it is the one `report` already writes to. It
-// carries a REQUIREMENT the dispatch prompt has to satisfy, learnt by watching
-// a real agent fail it: the envelope must reach the worker's TERMINAL. A Claude
-// Code worker that runs `muster report` as a tool call does not satisfy this —
-// its TUI collapses a finished tool call to "Ran 1 shell command" and the
-// envelope stays inside its transcript, never reaching the screen the gate
-// reads. Telling the worker to reproduce the output as its reply does satisfy
-// it, and is what a coordinator has to ask for.
+// The pane used to be the only channel, and it carried a requirement the
+// dispatch prompt had to satisfy: the envelope had to reach the worker's
+// TERMINAL, which a Claude Code worker running `muster report` as a tool call
+// never does. metadata.go is the channel that removed the requirement. The pane
+// is still read, second, because a worker that reproduces its envelope as reply
+// text has reported and must go on being heard — including one whose `muster
+// report` never ran at all.
 const gateReadSource = herdrapi.ReadSourceRecentUnwrapped
 
 const gateUsage = "usage: muster gate --target <agent|pane> [--until planned|blocked|done] [--require-pr] [--timeout 15m]"
@@ -176,10 +175,18 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 	// NOT emit pane.exited or pane.closed for the panes inside it, so a gate
 	// subscribed only to the pane events sits through its whole timeout after
 	// its worker's workspace is torn down. That was observed, not predicted.
+	//
+	// pane.updated is what makes the metadata channel edge-triggered. Attaching
+	// tokens to a pane emits one, measured on a live socket, so a report lands
+	// in the gate's lap the instant `muster report` writes it — rather than
+	// whenever the worker's agent status next happens to move, which for a
+	// worker that reports mid-turn and keeps working could be minutes later or
+	// never.
 	stream, err := client.Subscribe([]herdrapi.Subscription{
 		{Type: herdrapi.SubscriptionPaneAgentStatusChanged, PaneID: pane},
 		{Type: herdrapi.SubscriptionPaneExited, PaneID: pane},
 		{Type: herdrapi.SubscriptionPaneClosed, PaneID: pane},
+		{Type: herdrapi.SubscriptionPaneUpdated},
 		{Type: herdrapi.SubscriptionWorkspaceClosed, WorkspaceID: workspace},
 	}, deadline)
 	if err != nil {
@@ -212,7 +219,7 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 			return fmt.Errorf("gate %s: %w", opts.target, err)
 		}
 
-		verdict, gone := gateVerdict(event, workspace)
+		verdict, gone := gateVerdict(event, pane, workspace)
 		if verdict == gateIgnore {
 			continue
 		}
@@ -264,10 +271,26 @@ const (
 )
 
 // gateVerdict classifies one frame, doing the filtering herdr does not.
-func gateVerdict(event herdrapi.StreamEvent, workspace string) (gateEventVerdict, string) {
+func gateVerdict(event herdrapi.StreamEvent, pane, workspace string) (gateEventVerdict, string) {
 	switch event.Event {
 	case herdrapi.StreamEventPaneExited, herdrapi.StreamEventPaneClosed:
 		return gateGone, "the worker's pane ended"
+
+	case herdrapi.StreamEventPaneUpdated:
+		// Unfiltered and backlog-replayed, like workspace.closed: the
+		// subscription takes no pane id, so this is every pane in the session,
+		// and a fresh subscriber is handed the history first.
+		//
+		// Both are harmless here for the same reason, which is that a frame is
+		// only ever a reason to go and look. The payload carries the pane's
+		// tokens AS THEY WERE, and a replayed frame therefore carries metadata
+		// that has since been replaced; reading it would be how a gate releases
+		// on a report from a quarter of an hour ago. So the id is checked here
+		// and the report is read from herdr, never from the frame.
+		if event.PaneID() != pane {
+			return gateIgnore, ""
+		}
+		return gateCheck, ""
 
 	case herdrapi.StreamEventWorkspaceClosed:
 		// Unfiltered and replayed from the session's backlog, so the id has to
@@ -319,13 +342,25 @@ func prSlot(r report) string {
 	return missing
 }
 
-// readEnvelope takes a snapshot of the pane and returns the last envelope in it.
+// readEnvelope returns the report currently attached to a pane, over whichever
+// channel carries one.
 //
-// A read that fails is treated as "no envelope" rather than as a fatal error:
-// the pane can disappear underneath a gate, and the event that says so is
-// already on its way. Failing here instead would report a vanished pane as a
-// transport fault rather than as a worker that died.
+// Metadata first, and it wins outright. It is the channel `muster report`
+// writes and confirms, so when it holds a report that report is the worker's
+// own statement, delivered intact — while the pane holds whatever text happens
+// to be on a screen. Reading the terminal only when herdr has nothing keeps the
+// weaker source as the fallback it now is, instead of letting a scrollback line
+// contradict a delivered report.
+//
+// Neither read is fatal when it fails. A pane can disappear underneath a gate,
+// and the event that says so is already on its way; failing here would report a
+// vanished pane as a transport fault rather than as a worker that died.
 func readEnvelope(client *herdrapi.Client, pane string) (report, bool) {
+	if info, err := client.PaneGet(pane); err == nil {
+		if r, ok := decodeReport(info.Pane.Tokens); ok {
+			return r, true
+		}
+	}
 	read, err := client.PaneRead(pane, gateReadSource)
 	if err != nil {
 		return report{}, false

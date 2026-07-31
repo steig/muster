@@ -49,16 +49,35 @@ const (
 	SubscriptionPaneAgentStatusChanged = "pane.agent_status_changed"
 	SubscriptionPaneExited             = "pane.exited"
 	SubscriptionPaneClosed             = "pane.closed"
+	SubscriptionPaneUpdated            = "pane.updated"
 	SubscriptionWorkspaceClosed        = "workspace.closed"
 )
 
-// Stream event kinds, in the same dotted namespace as the subscriptions.
+// Stream event kinds, in the same dotted namespace as the subscriptions —
+// except where they are not. workspace.closed and pane.updated both arrive
+// UNDERSCORED, which was found by reading frames off a live socket rather than
+// off the schema, and a reader matching the dotted spelling for either compiles
+// and never fires.
 const (
 	StreamEventPaneAgentStatusChanged = "pane.agent_status_changed"
 	StreamEventPaneExited             = "pane.exited"
 	StreamEventPaneClosed             = "pane.closed"
+	StreamEventPaneUpdated            = "pane_updated"
 	StreamEventWorkspaceClosed        = "workspace_closed"
 )
+
+// pane.updated is neither server-filtered nor edge-triggered, measured the same
+// way workspace.closed was.
+//
+// The subscription takes no pane_id at all — herdr's schema has no field for one
+// — so every pane in the session is delivered, and a fresh subscriber is handed
+// the session's BACKLOG before it sees anything live. The backlog frames carry
+// the pane state as it was AT THE TIME, tokens included, so a reader that took a
+// frame's payload as current would act on metadata that was replaced a quarter
+// of an hour ago.
+//
+// A subscriber therefore filters on the pane id itself and treats a frame as
+// nothing more than "go and look".
 
 // workspace.closed is NOT server-filtered, and it is not edge-triggered either.
 //
@@ -96,6 +115,28 @@ func (e StreamEvent) AgentStatus() (PaneAgentStatusData, error) {
 		return PaneAgentStatusData{}, fmt.Errorf("decode %s payload: %w", e.Event, err)
 	}
 	return data, nil
+}
+
+// PaneID reads the pane out of a frame that names one, so a caller can do the
+// filtering herdr does not.
+//
+// The two shapes are both live: pane.agent_status_changed carries the id at the
+// top level, while pane_updated carries a whole PaneInfo under `pane` and the id
+// with it.
+func (e StreamEvent) PaneID() string {
+	var data struct {
+		PaneID string `json:"pane_id"`
+		Pane   struct {
+			PaneID string `json:"pane_id"`
+		} `json:"pane"`
+	}
+	if json.Unmarshal(e.Data, &data) != nil {
+		return ""
+	}
+	if data.PaneID != "" {
+		return data.PaneID
+	}
+	return data.Pane.PaneID
 }
 
 // WorkspaceID reads the workspace out of a frame that names one, so a caller

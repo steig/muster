@@ -227,6 +227,45 @@ func (c *Client) PaneRead(paneID string, source ReadSource) (*PaneReadResponse, 
 	return &out, nil
 }
 
+// PaneGet returns one pane, including the metadata tokens attached to it.
+//
+// Unlike AgentGet it does not require the pane to have an agent, which is why
+// it is the read side of the metadata channel: a report has to be confirmable
+// in a pane herdr is not tracking an agent for.
+func (c *Client) PaneGet(paneID string) (*PaneInfoResponse, error) {
+	var out PaneInfoResponse
+	if err := c.call("pane.get", map[string]any{"pane_id": paneID}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PaneReportMetadata attaches metadata tokens to a pane. A nil value clears its
+// key; any other value must be a string.
+//
+// Everything below was measured against a running herdr 0.7.5, because the
+// schema states none of it and getting it wrong loses data quietly:
+//
+//   - There is ONE token map per pane, shared by every writer. `source` is
+//     provenance, not a namespace — a token written under one source is read,
+//     and overwritten, by a write under another. Callers namespace their own
+//     keys or they collide.
+//   - A write MERGES. Keys the request does not name keep whatever they held,
+//     so the only way to retire a key is to send it explicitly as null.
+//   - A value longer than 80 RUNES is cut to 80, and control characters are
+//     stripped out of one. Both happen silently: the call still returns ok.
+//   - `seq` rejects a write carrying a lower sequence than the stored one, and
+//     also returns ok when it does. It is not sent for that reason.
+//
+// The first three mean a caller who needs delivery guaranteed has to read the
+// tokens back and compare them; the last means an ordering guard here would be
+// one more way to be told a report landed when it did not.
+func (c *Client) PaneReportMetadata(paneID, source string, tokens map[string]any) error {
+	return c.call("pane.report_metadata", map[string]any{
+		"pane_id": paneID, "source": source, "tokens": tokens,
+	}, nil)
+}
+
 // AgentStart starts an agent in a pane. timeoutMS bounds herdr's own wait for
 // the pane to become usable; zero leaves herdr's default in place.
 func (c *Client) AgentStart(name, kind, paneID string, args []string, timeoutMS int) error {

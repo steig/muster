@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +10,15 @@ import (
 	"github.com/steig/muster/internal/herdrapi"
 	"github.com/steig/muster/internal/herdrtest"
 )
+
+// signal announces one read without ever blocking the fake server on a test
+// that is not listening.
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
 
 func TestGateRejectsMalformedInvocations(t *testing.T) {
 	for _, tc := range []struct {
@@ -110,8 +120,9 @@ func TestTheNoteCannotChangeTheVerdict(t *testing.T) {
 type gateWorker struct {
 	client *herdrapi.Client
 
-	mu   sync.Mutex
-	text string
+	mu     sync.Mutex
+	text   string
+	tokens map[string]string
 
 	frames chan any
 	done   chan struct{}
@@ -124,6 +135,12 @@ type gateWorker struct {
 	// reads carries one signal per pane snapshot the gate takes, so a test can
 	// print a second report only once the gate has seen the first.
 	reads chan struct{}
+	// metaReads is the same signal for the metadata channel. It is separate
+	// because the gate reads metadata FIRST and stops there when it finds a
+	// report: a worker waiting for "the gate looked" has to wait for the read
+	// that actually carries its report, or it races ahead and appends a second
+	// one before the first has been judged.
+	metaReads chan struct{}
 }
 
 const gateTestPane = "w1:p1"
@@ -133,12 +150,13 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 
 	server := herdrtest.NewServer(t)
 	w := &gateWorker{
-		client: herdrapi.NewWithSocket(server.SocketPath),
-		text:   paneText,
-		frames: make(chan any, 8),
-		done:   make(chan struct{}),
-		opened: make(chan struct{}),
-		reads:  make(chan struct{}, 32),
+		client:    herdrapi.NewWithSocket(server.SocketPath),
+		text:      paneText,
+		frames:    make(chan any, 8),
+		done:      make(chan struct{}),
+		opened:    make(chan struct{}),
+		reads:     make(chan struct{}, 32),
+		metaReads: make(chan struct{}, 32),
 	}
 	t.Cleanup(func() { close(w.done) })
 
@@ -156,6 +174,35 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 		},
 	})
 
+	// The metadata channel, which the gate reads before it reads the terminal.
+	server.Handle("pane.get", func(map[string]any) (any, error) {
+		w.mu.Lock()
+		tokens := maps.Clone(w.tokens)
+		// The baseline is only complete here when these tokens ARE a report,
+		// because that is when the gate stops and does not go on to the pane.
+		_, carriesReport := decodeReport(tokens)
+		defer func() {
+			w.mu.Unlock()
+			if carriesReport {
+				w.openOnce.Do(func() { close(w.opened) })
+			}
+			signal(w.metaReads)
+		}()
+		return map[string]any{
+			"type": "pane_info",
+			"pane": map[string]any{
+				"pane_id":      gateTestPane,
+				"workspace_id": "w1",
+				"tab_id":       "w1:t1",
+				"terminal_id":  "term_1",
+				"agent_status": agentStatus,
+				"focused":      false,
+				"revision":     1,
+				"tokens":       tokens,
+			},
+		}, nil
+	})
+
 	server.Handle("pane.read", func(map[string]any) (any, error) {
 		w.mu.Lock()
 		// Released only once the snapshot has been taken. Releasing on entry
@@ -165,10 +212,7 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 		defer func() {
 			w.mu.Unlock()
 			w.openOnce.Do(func() { close(w.opened) })
-			select {
-			case w.reads <- struct{}{}:
-			default:
-			}
+			signal(w.reads)
 		}()
 		return map[string]any{
 			"type": "pane_read",
@@ -221,6 +265,49 @@ func (w *gateWorker) prints(r report) {
 
 	select {
 	case <-w.reads:
+	case <-w.done:
+	}
+}
+
+// attaches is the worker this whole channel exists for: it RUNS `muster
+// report` as a tool call and never echoes it, so the envelope reaches herdr's
+// metadata and the terminal stays exactly as it was.
+//
+// It emits pane_updated rather than an agent status change, because attaching
+// metadata is what herdr announces — the worker is still mid-turn and its agent
+// status has not moved.
+func (w *gateWorker) attaches(r report) {
+	<-w.opened
+	for len(w.metaReads) > 0 {
+		<-w.metaReads
+	}
+
+	tokens, err := encodeReport(r)
+	if err != nil {
+		panic(err)
+	}
+	w.mu.Lock()
+	if w.tokens == nil {
+		w.tokens = map[string]string{}
+	}
+	// herdr merges a write into the pane's existing tokens and drops the keys
+	// sent as null, which is the behaviour the layout depends on.
+	for key, value := range tokens {
+		if text, ok := value.(string); ok {
+			w.tokens[key] = text
+			continue
+		}
+		delete(w.tokens, key)
+	}
+	w.mu.Unlock()
+
+	w.emit(herdrapi.StreamEventPaneUpdated, map[string]any{
+		"type": "pane_updated",
+		"pane": map[string]any{"pane_id": gateTestPane, "workspace_id": "w1"},
+	})
+
+	select {
+	case <-w.metaReads:
 	case <-w.done:
 	}
 }
@@ -288,6 +375,123 @@ func TestGateReleasesOnANewReport(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("released report is missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// The bug this channel exists for: a worker that RUNS `muster report` and does
+// not echo it. Its terminal never carries the envelope — the pane is empty for
+// the whole test — and the gate has to release anyway.
+func TestGateReleasesOnAReportThatNeverReachedTheTerminal(t *testing.T) {
+	w := newGateWorker(t, "working", "")
+	go w.attaches(report{status: "done", pr: 12, note: "green"})
+
+	out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("gate did not release on a report it was never shown: %v\n%s", err, out)
+	}
+	for _, want := range []string{"released", "status: done", "pr: 12", noteQuote + "green", noteClose} {
+		if !strings.Contains(out, want) {
+			t.Errorf("released report is missing %q:\n%s", want, out)
+		}
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.text != "" {
+		t.Errorf("the test wrote to the terminal after all, so it proved nothing:\n%s", w.text)
+	}
+}
+
+// A full-length note crosses the channel in chunks and arrives whole. The gate
+// prints what it released on, so the coordinator sees the same 200 characters
+// the worker wrote — not the 80 one token holds.
+func TestGateDeliversAFullLengthNoteThroughTheMetadataChannel(t *testing.T) {
+	note := strings.Repeat("é", noteLimit-3) + "END"
+
+	w := newGateWorker(t, "working", "")
+	go w.attaches(report{status: "done", pr: 12, note: note})
+
+	out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("gate did not release: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, noteQuote+note) {
+		t.Errorf("the note did not survive chunking; got:\n%s", out)
+	}
+}
+
+// The metadata channel is read but the terminal is still heard. A worker that
+// echoes its envelope the old way has reported, and always did.
+func TestGateStillReadsAnEchoedEnvelope(t *testing.T) {
+	w := newGateWorker(t, "working", "")
+	go w.prints(report{status: "done", pr: 12, note: "echoed the old way"})
+
+	out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("gate stopped hearing an echoed envelope: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, noteQuote+"echoed the old way") {
+		t.Errorf("expected the echoed report:\n%s", out)
+	}
+}
+
+// herdr replays the session's pane_updated backlog to a new subscriber and does
+// not filter it by pane, so a gate sees every pane's history the moment it
+// subscribes. None of that is news about its worker.
+func TestGateIgnoresOtherPanesUpdating(t *testing.T) {
+	w := newGateWorker(t, "working", "")
+	go func() {
+		<-w.opened
+		for _, other := range []string{"w7:p1", "w9:p2", "wZ:p1"} {
+			w.emit(herdrapi.StreamEventPaneUpdated, map[string]any{
+				"type": "pane_updated",
+				"pane": map[string]any{"pane_id": other, "workspace_id": "w7"},
+			})
+		}
+		w.attaches(report{status: "done", pr: 12, note: "green"})
+	}()
+
+	out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("the gate failed on another pane's update: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "released") {
+		t.Errorf("expected a release:\n%s", out)
+	}
+}
+
+// The stale-report trap over the new channel. A pane carries its previous
+// task's tokens when the gate opens, and metadata outlives a scrollback, so
+// this is the case that matters most.
+func TestGateIgnoresTheReportAlreadyInTheMetadata(t *testing.T) {
+	w := newGateWorker(t, "working", "")
+	stale, err := encodeReport(report{status: "done", pr: 4, note: "the previous slice"})
+	if err != nil {
+		t.Fatalf("encodeReport: %v", err)
+	}
+	w.tokens = map[string]string{}
+	for key, value := range stale {
+		if text, ok := value.(string); ok {
+			w.tokens[key] = text
+		}
+	}
+
+	go func() {
+		w.becomes("working")
+		w.becomes("idle")
+	}()
+
+	out, err, _ := w.gate(t, "--target", "worker", "--timeout", "400ms")
+	if err == nil {
+		t.Fatalf("the gate released on a report that predates it:\n%s", out)
+	}
+	for _, want := range []string{"no new report", "already held status=done pr=4", "previous task"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the timeout should explain %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "the previous slice") {
+		t.Errorf("the timeout quoted the untrusted note back: %v", err)
 	}
 }
 

@@ -103,12 +103,19 @@ func isHeaderLine(line string) bool {
 	})
 }
 
-// parsePRSlot reads the pr line, where the dash means the worker gave none.
+// parsePRSlot reads the pr line.
 func parsePRSlot(line string) (int, bool) {
 	raw, ok := strings.CutPrefix(line, "pr: ")
 	if !ok {
 		return 0, false
 	}
+	return parsePRValue(raw)
+}
+
+// parsePRValue reads the slot's value, wherever it arrived from, where the dash
+// means the worker gave none. Both channels read it through here so a pr that a
+// terminal would refuse cannot be smuggled in as a metadata token instead.
+func parsePRValue(raw string) (int, bool) {
 	if raw == missing {
 		return 0, true
 	}

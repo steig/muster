@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,22 +77,38 @@ type report struct {
 	note string
 }
 
-// reportCommand parses a report and writes it to out.
+// reportCommand parses a report, writes it to out, and delivers it.
 //
-// out is stdout, and stdout is the whole delivery mechanism. A report reaches
-// the coordinator the way every other thing this plugin prints does: through
-// the pane the worker is running in, or through `herdr plugin log list --plugin
-// steig.muster` when herdr invoked it. Pushing the report at the coordinator
-// instead — a herdr API call that writes into its pane — was the alternative,
-// and it is the wrong one for exactly the reason this envelope exists. A worker
-// that can write into the coordinator's context whenever it likes has the
-// injection surface back, with the plugin now supplying the delivery.
+// out is stdout and it is still where the envelope is rendered, because that is
+// what a human reads and what a worker echoing the old way reproduces. It is no
+// longer the whole delivery mechanism: stdout does not survive a Claude Code
+// tool call, so the report is ALSO attached to the worker's own pane as herdr
+// metadata, which is the channel a gate reads. See metadata.go.
+//
+// What has not changed is the direction. A report is attached to the pane the
+// reporting worker occupies and to nothing else; it is never pushed into the
+// coordinator's pane. A worker that could write into the coordinator's context
+// whenever it liked would have the injection surface back, with this plugin now
+// supplying the delivery.
 func reportCommand(args []string, out io.Writer) error {
 	r, err := parseReport(args)
 	if err != nil {
 		return err
 	}
 	fmt.Fprint(out, renderReport(r))
+
+	missingEnv, err := deliverReport(r)
+	if err != nil {
+		return err
+	}
+	// Said on stderr rather than swallowed. The envelope above is complete and
+	// correct, so this is not a failed report — but the gate reads the pane's
+	// metadata, and outside herdr there is no pane to attach it to. A worker
+	// that cannot tell "delivered" from "printed" cannot tell whether it still
+	// has to reproduce the envelope itself.
+	if missingEnv != "" {
+		fmt.Fprintf(os.Stderr, "muster: %s is unset, so this report was printed but not attached to a pane; a gate will only see it if this output reaches the terminal\n", missingEnv)
+	}
 	return nil
 }
 
