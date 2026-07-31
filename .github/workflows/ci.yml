@@ -20,11 +20,14 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          # There are no external dependencies and so no go.sum, which the
+          # module cache treats as a missing lockfile and warns about.
+          cache: false
 
       - name: git identity
         # Tests commit in throwaway repositories; git refuses without one.
