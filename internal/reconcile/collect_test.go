@@ -2,6 +2,7 @@ package reconcile_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/steig/herdr-wt/internal/herdrapi"
@@ -277,6 +278,44 @@ func TestCollectStartsColdWithoutTranscript(t *testing.T) {
 	}
 	if action.Resume {
 		t.Error("no transcript means a cold start")
+	}
+}
+
+// herdr reports resolved paths; the collector may have been handed the repo
+// root with its symlinks intact. Comparing them unresolved drops every
+// workspace, which turns sync into a silent no-op — nothing to staff, because
+// nothing matched.
+func TestCollectMatchesWorkspacesAcrossSymlinkedRoots(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("wip", "wip")
+
+	if repo.RealRoot == repo.Root {
+		t.Skip("temp dir is not behind a symlink on this machine")
+	}
+	resolvedCheckout := strings.Replace(checkout, repo.Root, repo.RealRoot, 1)
+
+	collector := collectFixture(t, repo,
+		[]map[string]any{worktreeJSON(checkout, "wip", true, "w2")},
+		[]map[string]any{{
+			"workspace_id": "w2", "number": 2, "label": "wip", "focused": false,
+			"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "idle",
+			// As herdr reports it: fully resolved.
+			"worktree": map[string]any{"repo_key": "k", "repo_name": "repo",
+				"repo_root": repo.RealRoot, "checkout_path": resolvedCheckout,
+				"is_linked_worktree": true},
+		}}, nil, map[string][]string{"w2": {"w2:p1"}})
+	// As the invocation context supplies it: symlinks intact.
+	collector.Root = repo.Root
+
+	state, err := collector.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(state.Workspaces) != 1 {
+		t.Fatalf("the workspace was dropped over a symlink difference: %+v", state.Workspaces)
+	}
+	if find(reconcile.Reconcile(state), reconcile.KindStaff, resolvedCheckout) == nil {
+		t.Error("an agentless workspace should still be staffed")
 	}
 }
 

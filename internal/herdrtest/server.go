@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Handler answers one method call. Returning an error makes the server reply
@@ -70,6 +71,15 @@ func (s *Server) Handle(method string, h Handler) {
 // HandleResult registers a static reply for a method.
 func (s *Server) HandleResult(method string, result any) {
 	s.Handle(method, func(map[string]any) (any, error) { return result, nil })
+}
+
+// HandleSlow registers a reply that arrives only after delay, so a test can
+// prove the client's deadline outlasts a wait it asked herdr to perform.
+func (s *Server) HandleSlow(method string, delay time.Duration, result any) {
+	s.Handle(method, func(map[string]any) (any, error) {
+		time.Sleep(delay)
+		return result, nil
+	})
 }
 
 // Calls returns the requests received so far.

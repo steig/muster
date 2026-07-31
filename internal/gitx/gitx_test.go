@@ -16,8 +16,10 @@ func TestRepoRootFromLinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != repo.Root {
-		t.Errorf("RepoRoot(%s) = %s, want %s", checkout, got, repo.Root)
+	// git reports resolved paths, and so must we: repo.Root is handed out
+	// with its symlinks intact.
+	if got != repo.RealRoot {
+		t.Errorf("RepoRoot(%s) = %s, want %s", checkout, got, repo.RealRoot)
 	}
 }
 

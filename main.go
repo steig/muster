@@ -6,6 +6,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -60,16 +61,41 @@ type session struct {
 	dir    string
 }
 
-func newSession() (*session, error) {
+// newSession resolves which repository to work on.
+//
+// allowFallback decides what happens when herdr supplied no invocation context.
+// Read-only commands may fall back to the process working directory, which
+// keeps them usable straight from a shell. Commands that change things must
+// not: herdr runs plugin commands with cwd set to the plugin root, which is
+// itself a git repository, so falling back there would point a removal at this
+// plugin's own checkout.
+//
+// A malformed context is fatal either way. It means herdr sent something we
+// cannot parse, which is a bug to surface, not a state to default around.
+func newSession(allowFallback bool) (*session, error) {
 	client, err := herdrapi.New()
 	if err != nil {
 		return nil, err
 	}
 
-	ctx := herdrapi.LoadContext()
-	dir, err := launchDir(ctx)
+	ctx, err := herdrapi.LoadContext()
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, herdrapi.ErrNoContext) {
+			return nil, err
+		}
+		if !allowFallback {
+			return nil, fmt.Errorf("%w; refusing to guess which repository to change", err)
+		}
+	}
+
+	dir := ctx.LaunchDir()
+	if dir == "" {
+		if !allowFallback {
+			return nil, errors.New("herdr supplied no launch directory; refusing to guess which repository to change")
+		}
+		if dir, err = os.Getwd(); err != nil {
+			return nil, err
+		}
 	}
 
 	// herdr hands us the repository root when it already knows the workspace
@@ -80,19 +106,7 @@ func newSession() (*session, error) {
 			return nil, err
 		}
 	}
-	return &session{client: client, root: root, dir: dir}, nil
-}
-
-// launchDir is the directory the user invoked from.
-//
-// herdr runs plugin commands with cwd set to the plugin root, so the user's
-// directory has to come from the invocation context. Falling back to the
-// process cwd keeps the commands usable straight from a shell.
-func launchDir(ctx herdrapi.PluginInvocationContext) (string, error) {
-	if dir := ctx.LaunchDir(); dir != "" {
-		return dir, nil
-	}
-	return os.Getwd()
+	return &session{client: client, root: gitx.Resolve(root), dir: gitx.Resolve(dir)}, nil
 }
 
 // plan collects the current state and decides what the repository needs.
@@ -127,7 +141,8 @@ func (s *session) perform(out io.Writer, actions []reconcile.Action, applyPrune 
 }
 
 func lsCommand(out io.Writer) error {
-	s, err := newSession()
+	// Read-only: usable from a plain shell.
+	s, err := newSession(true)
 	if err != nil {
 		return err
 	}
@@ -137,7 +152,8 @@ func lsCommand(out io.Writer) error {
 // syncCommand adopts unopened worktrees and staffs agentless workspaces. It
 // never prunes: removals are the prune commands' job.
 func syncCommand(out io.Writer) error {
-	s, err := newSession()
+	// Opens workspaces and starts agents, so it must be told where.
+	s, err := newSession(false)
 	if err != nil {
 		return err
 	}
@@ -153,7 +169,8 @@ func syncCommand(out io.Writer) error {
 // set. It deliberately excludes adoptions and staffing: asking to prune must
 // not open workspaces or start agents as a side effect.
 func pruneCommand(out io.Writer, apply bool) error {
-	s, err := newSession()
+	// Listing is read-only; applying removes worktrees.
+	s, err := newSession(!apply)
 	if err != nil {
 		return err
 	}

@@ -249,9 +249,11 @@ func (e *Executor) remoteHasBranch(branch string) bool {
 	return cmd.Run() == nil
 }
 
-// isInside reports whether dir is root or sits beneath it.
+// isInside reports whether dir is root or sits beneath it. Both sides are
+// resolved first: an unresolved symlink on either compares unequal and would
+// silently disarm the guard.
 func isInside(dir, root string) bool {
-	rel, err := filepath.Rel(root, dir)
+	rel, err := filepath.Rel(gitx.Resolve(root), gitx.Resolve(dir))
 	if err != nil {
 		return false
 	}

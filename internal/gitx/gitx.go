@@ -39,7 +39,45 @@ func RepoRoot(dir string) (string, error) {
 	if common == "" {
 		return "", fmt.Errorf("git reported no common dir for %s", dir)
 	}
-	return filepath.Dir(common), nil
+	return Resolve(filepath.Dir(common)), nil
+}
+
+// Resolve normalises a path for comparison: absolute, cleaned, and with every
+// symlink expanded.
+//
+// This is not cosmetic. git reports resolved paths, so a caller directory that
+// still contains a symlink compares unequal to the same directory as git names
+// it — and on macOS that is the normal case, since TMPDIR lives under /var,
+// which is a symlink to /private/var. Comparing unresolved paths silently
+// disarms the guard that refuses to delete the directory you are standing in.
+//
+// Paths that do not exist still resolve. EvalSymlinks fails outright on a
+// missing path, and missing paths are routine here — a caller's directory may
+// have been deleted, and a prune target is about to be — so the longest
+// existing ancestor is resolved and the remainder re-appended. Without that,
+// a path whose leaf is absent stays unresolved and compares unequal to the very
+// directory it names.
+func Resolve(path string) string {
+	if path == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	path = filepath.Clean(path)
+
+	remainder := ""
+	for current := path; ; {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, remainder)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path // reached the root without resolving anything
+		}
+		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
 }
 
 // DefaultBase is used when a repository has no origin to ask.

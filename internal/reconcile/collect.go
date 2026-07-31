@@ -94,7 +94,9 @@ func (c *Collector) Collect() (State, error) {
 	}
 
 	for _, ws := range workspaces.Workspaces {
-		if ws.Worktree == nil || ws.Worktree.RepoRoot != c.Root {
+		// herdr reports resolved paths; c.Root may not be. Compare normalised
+		// or every workspace is filtered out and sync becomes a silent no-op.
+		if ws.Worktree == nil || gitx.Resolve(ws.Worktree.RepoRoot) != gitx.Resolve(c.Root) {
 			continue
 		}
 		panes, err := c.Client.PaneList(ws.WorkspaceID)

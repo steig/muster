@@ -21,9 +21,27 @@ import (
 
 //go:generate go run ../gen schema.json types_gen.go
 
-// callTimeout bounds a single request/response exchange. A plugin action runs
-// unattended, so a wedged server must fail rather than hang forever.
-const callTimeout = 5 * time.Second
+// defaultCallTimeout bounds an ordinary request/response exchange. A plugin
+// action runs unattended, so a wedged server must fail rather than hang.
+const defaultCallTimeout = 5 * time.Second
+
+// callMargin is how much longer than herdr's own wait the client will hold on.
+//
+// Some requests ask herdr to wait — agent.start blocks until the pane is usable
+// — and a client deadline shorter than the wait it just requested would abort
+// the call before herdr could possibly answer, turning "still starting" into a
+// hard failure on exactly the slow case the wait exists for.
+const callMargin = 10 * time.Second
+
+// deadlineFor is how long to wait for a reply to a request that asked herdr to
+// wait serverTimeoutMS milliseconds. Zero means the request has no server-side
+// wait and gets the ordinary timeout.
+func deadlineFor(serverTimeoutMS int) time.Duration {
+	if serverTimeoutMS <= 0 {
+		return defaultCallTimeout
+	}
+	return time.Duration(serverTimeoutMS)*time.Millisecond + callMargin
+}
 
 // Client is a connection factory for one herdr IPC endpoint. It holds no
 // connection of its own; every call dials afresh.
@@ -86,6 +104,12 @@ type deadliner interface{ SetDeadline(time.Time) error }
 // call sends one request over a fresh connection and decodes the result into
 // out, which may be nil when the payload does not matter.
 func (c *Client) call(method string, params map[string]any, out any) error {
+	return c.callWithin(method, params, out, defaultCallTimeout)
+}
+
+// callWithin is call with an explicit deadline, for requests that ask herdr to
+// wait longer than an ordinary exchange.
+func (c *Client) callWithin(method string, params map[string]any, out any, timeout time.Duration) error {
 	conn, err := dialHerdr(c.socketPath)
 	if err != nil {
 		return fmt.Errorf("connect herdr IPC endpoint: %w", err)
@@ -93,7 +117,7 @@ func (c *Client) call(method string, params map[string]any, out any) error {
 	defer conn.Close()
 
 	if d, ok := conn.(deadliner); ok {
-		_ = d.SetDeadline(time.Now().Add(callTimeout))
+		_ = d.SetDeadline(time.Now().Add(timeout))
 	}
 
 	if params == nil {
@@ -197,7 +221,9 @@ func (c *Client) AgentStart(name, kind, paneID string, args []string, timeoutMS 
 	if timeoutMS > 0 {
 		params["timeout_ms"] = timeoutMS
 	}
-	return c.call("agent.start", params, nil)
+	// herdr may hold this request open for timeoutMS while it waits for the
+	// pane, so the client has to outlast the wait it just asked for.
+	return c.callWithin("agent.start", params, nil, deadlineFor(timeoutMS))
 }
 
 // ensure the dial split keeps returning something we can use.

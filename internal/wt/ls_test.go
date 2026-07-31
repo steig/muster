@@ -2,11 +2,9 @@ package wt_test
 
 import (
 	"bytes"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/steig/herdr-wt/internal/gitx"
 	"github.com/steig/herdr-wt/internal/herdrapi"
 	"github.com/steig/herdr-wt/internal/herdrtest"
 	"github.com/steig/herdr-wt/internal/wt"
@@ -147,8 +145,8 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 		t.Errorf("unexpected methods: %+v", calls)
 	}
 	// The cwd must be the MAIN checkout, not the linked worktree we ran from.
-	if got := calls[0].Params["cwd"]; got != repo.Root {
-		t.Errorf("worktree.list cwd = %v, want repo root %s", got, repo.Root)
+	if got := calls[0].Params["cwd"]; got != repo.RealRoot {
+		t.Errorf("worktree.list cwd = %v, want repo root %s", got, repo.RealRoot)
 	}
 }
 
@@ -175,26 +173,5 @@ func TestLsSurvivesWorkspaceListFailure(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "main") {
 		t.Errorf("worktrees should still be listed:\n%s", buf.String())
-	}
-}
-
-func TestRepoRootFromLinkedWorktree(t *testing.T) {
-	repo := herdrtest.NewRepo(t)
-	checkout := repo.AddWorktree("feature", "feature")
-
-	got, err := gitx.RepoRoot(checkout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != repo.Root {
-		t.Errorf("RepoRoot(%s) = %s, want %s", checkout, got, repo.Root)
-	}
-}
-
-func TestRepoRootOutsideGitFails(t *testing.T) {
-	dir := t.TempDir()
-	// A temp dir can sit inside a repo on some machines; make sure it does not.
-	if _, err := gitx.RepoRoot(filepath.Clean(dir)); err == nil {
-		t.Skip("temp dir is inside a git repository on this machine")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steig/herdr-wt/internal/execute"
 	"github.com/steig/herdr-wt/internal/herdrapi"
@@ -169,6 +170,37 @@ func TestPruneRefusesTheDirectoryTheCallerIsStandingIn(t *testing.T) {
 	}
 	if !strings.Contains(result.Detail, "cd out of it") {
 		t.Errorf("detail should tell the user what to do, got %q", result.Detail)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("the worktree the caller is standing in was removed")
+	}
+}
+
+// The asymmetric case, which is the one that happens in production: herdr
+// reports resolved paths while the invocation context carries the path the user
+// saw, symlinks intact. Comparing them unresolved silently disarms the guard.
+func TestPruneRefusesTheCallerDirEvenWhenOnlyOneSideIsResolved(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	// repo.Root keeps its symlinks; RealRoot is what git and herdr report.
+	resolved := strings.Replace(checkout, repo.Root, repo.RealRoot, 1)
+	if resolved == checkout {
+		t.Skip("temp dir is not behind a symlink on this machine")
+	}
+
+	exec, _ := fixture(t, repo)
+	exec.ApplyPrune = true
+	// The action names the checkout as herdr does; the caller sits in the same
+	// directory by its unresolved name.
+	exec.CallerDir = checkout
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: resolved,
+		Branch: "done", Reason: "merged into main"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("the guard must see through the symlink; got %q: %s", result.Status, result.Detail)
 	}
 	if !repo.Exists(checkout) {
 		t.Fatal("the worktree the caller is standing in was removed")
@@ -342,6 +374,52 @@ func TestStaffReportsAFailureToStart(t *testing.T) {
 type errStartFailed struct{}
 
 func (errStartFailed) Error() string { return "pane is busy" }
+
+// The slow-direnv case, end to end. A freshly created worktree can still be
+// running direnv or nix when staffing is attempted, which is why agent.start
+// asks herdr to wait. A client deadline shorter than that wait would abort the
+// call first and report a hard failure on exactly the case the wait exists for.
+func TestStaffSurvivesAServerSlowerThanTheOrdinaryDeadline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("takes ~6s of real time by design")
+	}
+
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+
+	// Longer than the 5s an ordinary call allows, well under the 60s that
+	// staffing asks herdr to wait.
+	server.HandleSlow("agent.start", 6*time.Second, map[string]any{"type": "agent_started"})
+
+	action := reconcile.Action{Kind: reconcile.KindStaff, Path: "/repo/wt/a",
+		PaneID: "w2:p1", AgentName: "a"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusDone {
+		t.Fatalf("staffing must outlast the wait it asked herdr for; got %q: %s",
+			result.Status, result.Detail)
+	}
+}
+
+// The other half: an ordinary call keeps its short deadline, so a wedged herdr
+// still fails rather than hanging a plugin action forever.
+func TestOrdinaryCallStillTimesOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("takes ~5s of real time by design")
+	}
+
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+
+	server.HandleSlow("worktree.open", 8*time.Second, map[string]any{"type": "workspace_created"})
+
+	action := reconcile.Action{Kind: reconcile.KindAdopt, Path: "/repo/wt/a", Branch: "a"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusFailed {
+		t.Fatalf("a wedged server should fail the call, got %q: %s", result.Status, result.Detail)
+	}
+}
 
 // Keep actions are explanatory and must reach the report.
 func TestKeepIsReportedNotExecuted(t *testing.T) {

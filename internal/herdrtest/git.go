@@ -10,23 +10,32 @@ import (
 
 // Repo is a real git repository in a temp directory.
 type Repo struct {
+	// Root is the path as a caller would hand it in, symlinks and all. On
+	// macOS t.TempDir() lives under /var, which is a symlink to /private/var,
+	// so this is deliberately NOT the resolved path: production code is given
+	// unresolved paths all the time and has to cope.
 	Root string
-	t    *testing.T
+	// RealRoot is Root with symlinks expanded — what git itself reports.
+	RealRoot string
+	t        *testing.T
 }
 
 // NewRepo creates a git repository with one commit on `main`. It is real git,
 // not a fake: worktree layout is exactly what `wt` has to read in production.
+//
+// Root is handed out unresolved on purpose. Resolving it here would paper over
+// exactly the class of bug where code compares an unresolved caller path
+// against a resolved git path and silently concludes they are different.
 func NewRepo(t *testing.T) *Repo {
 	t.Helper()
 
 	root := t.TempDir()
-	// macOS /var is a symlink to /private/var; git reports resolved paths, so
-	// resolve up front or every path comparison in a test is off by a prefix.
+	realRoot := root
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
+		realRoot = resolved
 	}
 
-	r := &Repo{Root: root, t: t}
+	r := &Repo{Root: root, RealRoot: realRoot, t: t}
 	r.Git("init", "-b", "main")
 	r.Git("config", "user.email", "test@example.com")
 	r.Git("config", "user.name", "Test")

@@ -33,6 +33,59 @@ func TestUsageNamesEveryCommand(t *testing.T) {
 	}
 }
 
+// herdr runs plugin commands with cwd set to the plugin root, which is itself a
+// git repository. A destructive command that falls back to the process cwd
+// would therefore target this plugin's own checkout, so it must refuse instead.
+func TestDestructiveCommandsRefuseWithoutContext(t *testing.T) {
+	server := herdrtest.NewServer(t)
+
+	for _, tc := range []struct {
+		name string
+		run  func(io.Writer) error
+	}{
+		{"sync starts agents", syncCommand},
+		{"prune-apply removes worktrees", func(w io.Writer) error { return pruneCommand(w, true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HERDR_SOCKET_PATH", server.SocketPath)
+			t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
+
+			err := tc.run(io.Discard)
+			if err == nil {
+				t.Fatal("expected a refusal when herdr supplied no context")
+			}
+			if !strings.Contains(err.Error(), "refusing to guess") {
+				t.Errorf("error should explain the refusal, got %v", err)
+			}
+		})
+	}
+}
+
+// A malformed context is a bug signal, and fatal even for a read-only command:
+// treating it as absent would silently retarget the command.
+func TestEveryCommandRejectsAMalformedContext(t *testing.T) {
+	server := herdrtest.NewServer(t)
+
+	for _, tc := range []struct {
+		name string
+		run  func(io.Writer) error
+	}{
+		{"ls", lsCommand},
+		{"sync", syncCommand},
+		{"prune", func(w io.Writer) error { return pruneCommand(w, false) }},
+		{"prune-apply", func(w io.Writer) error { return pruneCommand(w, true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HERDR_SOCKET_PATH", server.SocketPath)
+			t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", `{"workspace_cwd":`)
+
+			if err := tc.run(io.Discard); err == nil {
+				t.Fatal("a malformed context must not be treated as absent")
+			}
+		})
+	}
+}
+
 // fakeSession points the commands at a fake herdr and a real repository, the
 // way herdr would when it invokes the plugin.
 func fakeSession(t *testing.T, repo *herdrtest.Repo) *herdrtest.Server {
