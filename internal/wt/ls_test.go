@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steig/herdr-wt/internal/gitx"
 	"github.com/steig/herdr-wt/internal/herdrapi"
 	"github.com/steig/herdr-wt/internal/herdrtest"
 	"github.com/steig/herdr-wt/internal/wt"
@@ -181,7 +182,7 @@ func TestRepoRootFromLinkedWorktree(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 	checkout := repo.AddWorktree("feature", "feature")
 
-	got, err := wt.RepoRoot(checkout)
+	got, err := gitx.RepoRoot(checkout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +194,7 @@ func TestRepoRootFromLinkedWorktree(t *testing.T) {
 func TestRepoRootOutsideGitFails(t *testing.T) {
 	dir := t.TempDir()
 	// A temp dir can sit inside a repo on some machines; make sure it does not.
-	if _, err := wt.RepoRoot(filepath.Clean(dir)); err == nil {
+	if _, err := gitx.RepoRoot(filepath.Clean(dir)); err == nil {
 		t.Skip("temp dir is inside a git repository on this machine")
 	}
 }

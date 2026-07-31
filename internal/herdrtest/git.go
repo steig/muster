@@ -85,6 +85,49 @@ func (r *Repo) AddWorktree(slug, branch string) string {
 	return path
 }
 
+// CommitIn writes a file inside a checkout and commits it there.
+func (r *Repo) CommitIn(dir, rel, content string) {
+	r.t.Helper()
+
+	WriteFile(r.t, filepath.Join(dir, rel), content)
+	r.GitIn(dir, "add", rel)
+	r.GitIn(dir, "commit", "-m", "add "+rel)
+}
+
+// SetOriginHead fakes an origin whose HEAD points at branch, so BaseRef has
+// something to read. No network is involved: the refs are created directly.
+func (r *Repo) SetOriginHead(branch string) {
+	r.t.Helper()
+
+	r.Git("update-ref", "refs/remotes/origin/"+branch, "HEAD")
+	r.Git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+branch)
+}
+
+// Exists reports whether a path is still on disk.
+func (r *Repo) Exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// BranchMissing reports whether a local branch is gone.
+func (r *Repo) BranchMissing(branch string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branch)
+	cmd.Dir = r.Root
+	return cmd.Run() != nil
+}
+
+// WriteFile writes a file, creating parent directories.
+func WriteFile(t *testing.T, path, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 // FakeGh puts a stub `gh` on PATH for the duration of the test. The script is a
 // shell body; write to stdout to fake a response.
 func FakeGh(t *testing.T, script string) {

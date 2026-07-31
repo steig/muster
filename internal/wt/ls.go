@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/steig/herdr-wt/internal/gitx"
 	"github.com/steig/herdr-wt/internal/herdrapi"
 )
 
@@ -80,7 +81,7 @@ func Render(w io.Writer, rows []Row) error {
 func Ls(client *herdrapi.Client, root, dir string, out io.Writer) error {
 	if root == "" {
 		var err error
-		if root, err = RepoRoot(dir); err != nil {
+		if root, err = gitx.RepoRoot(dir); err != nil {
 			return err
 		}
 	}

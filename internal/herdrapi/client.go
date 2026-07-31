@@ -143,5 +143,62 @@ func (c *Client) WorkspaceList() (*WorkspaceListResponse, error) {
 	return &out, nil
 }
 
+// AgentList returns every agent herdr is tracking, across all workspaces. The
+// pane ids are what identify a workspace as staffed.
+func (c *Client) AgentList() (*AgentListResponse, error) {
+	var out AgentListResponse
+	if err := c.call("agent.list", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PaneList returns the panes of one workspace, in herdr's order.
+func (c *Client) PaneList(workspaceID string) (*PaneListResponse, error) {
+	params := map[string]any{}
+	if workspaceID != "" {
+		params["workspace_id"] = workspaceID
+	}
+	var out PaneListResponse
+	if err := c.call("pane.list", params, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// WorktreeOpen opens an existing checkout into a herdr workspace. focus is
+// deliberately a parameter: adopting a batch of worktrees must not yank the
+// user between workspaces.
+func (c *Client) WorktreeOpen(cwd, path, label string, focus bool) error {
+	return c.call("worktree.open", map[string]any{
+		"cwd": cwd, "path": path, "label": label, "focus": focus,
+	}, nil)
+}
+
+// WorktreeRemove removes the worktree held open by a workspace, closing the
+// workspace with it.
+//
+// force is what lets herdr tear down a workspace that still has panes, but it
+// also bypasses git's own refusal to delete a dirty checkout — so callers must
+// re-check for uncommitted changes immediately before calling this.
+func (c *Client) WorktreeRemove(workspaceID string, force bool) error {
+	return c.call("worktree.remove", map[string]any{
+		"workspace_id": workspaceID, "force": force,
+	}, nil)
+}
+
+// AgentStart starts an agent in a pane. timeoutMS bounds herdr's own wait for
+// the pane to become usable; zero leaves herdr's default in place.
+func (c *Client) AgentStart(name, kind, paneID string, args []string, timeoutMS int) error {
+	params := map[string]any{"name": name, "kind": kind, "pane_id": paneID}
+	if len(args) > 0 {
+		params["args"] = args
+	}
+	if timeoutMS > 0 {
+		params["timeout_ms"] = timeoutMS
+	}
+	return c.call("agent.start", params, nil)
+}
+
 // ensure the dial split keeps returning something we can use.
 var _ func(string) (io.ReadWriteCloser, error) = dialHerdr
