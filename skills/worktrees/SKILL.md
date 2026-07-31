@@ -131,9 +131,15 @@ The plugin declares hooks (`worktree.created`, `worktree.opened`,
 rather than when someone remembers to run `sync`.
 
 **They are off by default and you must not turn them on.** Handlers no-op unless
-`MUSTER_EVENTS=1` is set, and they log that they declined. Enabling it means the
-plugin can autonomously start coding agents — that is the user's decision, not yours.
-If you think it should be on, ask.
+`MUSTER_EVENTS` holds one of `1`, `true`, `yes`, `y`, `on` or `enabled` (trimmed and
+case-insensitive), and they log that they declined. Enabling it means the plugin can
+autonomously start coding agents — that is the user's decision, not yours. If you think
+it should be on, ask.
+
+The gate fails closed, so anything it does not recognise leaves events off and prints a
+line naming the value. **That notice is not a bug report and correcting the typo is not
+your call**: `MUSTER_EVENTS="ture"` is off, and rewriting it to `1` is enabling events.
+Surface the notice to the user and let them decide.
 
 When enabled the event path adopts and staffs only. It never prunes, and it makes no
 `gh` calls.

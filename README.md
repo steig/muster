@@ -159,6 +159,12 @@ That is deliberate. These hooks start coding agents, and a plugin that begins sp
 agents the moment it is installed has handed you an autonomous trigger you never asked
 for. Opting in is one exported variable; opting out after a surprise is not.
 
+Turning it off works the way you would expect: `0`, `false`, `no`, `off` and `disabled`
+all disable events, in any capitalisation. So does unsetting it. Anything the variable
+does not recognise leaves events **off** and says so on the next hook — a value nobody
+wrote a rule for is not a request to start agents, and a typo in an opt-in is cheaper to
+notice than a typo in an opt-out is to survive.
+
 The variable is read from herdr's own environment, so export it before starting herdr (or
 in your shell profile) rather than in a single pane.
 
