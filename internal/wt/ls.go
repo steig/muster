@@ -91,11 +91,13 @@ func Ls(client *herdrapi.Client, root, dir string, out io.Writer) error {
 		return fmt.Errorf("list worktrees: %w", err)
 	}
 
-	// A workspace list failure degrades the status column rather than failing
-	// the whole listing: the worktrees are still worth showing.
+	// Not degraded to a "-" status column: that is the same row a worktree with
+	// no workspace prints, so a herdr that failed to answer would read as a
+	// session with nothing open — an invitation to sync worktrees that may
+	// already have agents.
 	workspaces, err := client.WorkspaceList()
 	if err != nil {
-		workspaces = nil
+		return fmt.Errorf("list workspaces: %w", err)
 	}
 
 	return Render(out, Rows(worktrees, workspaces))

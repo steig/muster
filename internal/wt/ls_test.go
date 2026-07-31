@@ -150,9 +150,10 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 	}
 }
 
-// The worktrees are still worth listing when the workspace list fails; only the
-// status column should degrade.
-func TestLsSurvivesWorkspaceListFailure(t *testing.T) {
+// A workspace list failure must fail the command. Degrading the status column
+// to "-" would render a herdr that did not answer as a session with no
+// workspaces at all, which reads as an instruction to run sync.
+func TestLsFailsWhenWorkspaceListFails(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 
 	server := herdrtest.NewServer(t)
@@ -168,10 +169,10 @@ func TestLsSurvivesWorkspaceListFailure(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := herdrapi.NewWithSocket(server.SocketPath)
-	if err := wt.Ls(client, "", repo.Root, &buf); err != nil {
-		t.Fatalf("Ls should degrade, not fail: %v", err)
+	if err := wt.Ls(client, "", repo.Root, &buf); err == nil {
+		t.Fatal("Ls should fail when the workspace list fails")
 	}
-	if !strings.Contains(buf.String(), "main") {
-		t.Errorf("worktrees should still be listed:\n%s", buf.String())
+	if buf.Len() != 0 {
+		t.Errorf("no listing should be printed when the status is unknown:\n%s", buf.String())
 	}
 }
