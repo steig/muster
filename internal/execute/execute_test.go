@@ -748,3 +748,32 @@ func TestPruneRemovesThroughTheWorkspaceItRediscovered(t *testing.T) {
 		t.Errorf("workspace_id = %v, want the rediscovered w2", got)
 	}
 }
+
+// The other half of the same rule, one call further in. workspace.list answers,
+// so a workspace IS found for this checkout — and then agent.list fails, leaving
+// "is anything running in it" unanswerable. An unverifiable guard is not a
+// satisfied one on the destructive path either.
+func TestPruneRefusesWhenTheAgentListCannotBeRead(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+	server.Handle("agent.list", func(map[string]any) (any, error) {
+		return nil, errStartFailed{}
+	})
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", WorkspaceID: "w2", Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "could not confirm") {
+		t.Errorf("detail should say the guard could not be checked, got %q", result.Detail)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("a checkout was removed without confirming it was idle")
+	}
+}

@@ -26,10 +26,28 @@ func TestUnknownCommandFails(t *testing.T) {
 }
 
 func TestUsageNamesEveryCommand(t *testing.T) {
-	for _, command := range []string{"ls", "sync", "prune", "prune-apply", "report", "on-event", "startup"} {
+	for _, command := range commands {
 		if !strings.Contains(usage, command) {
 			t.Errorf("usage does not mention %q: %s", command, usage)
 		}
+	}
+}
+
+// The half the list above cannot prove on its own: that every name usage
+// advertises actually dispatches. These run for real and are expected to fail —
+// there is no herdr and no flags — so the assertion is only that they failed for
+// some reason OTHER than not existing.
+//
+// `list` is checked separately because it is an alias, reachable from the switch
+// but deliberately absent from usage.
+func TestEveryAdvertisedCommandDispatches(t *testing.T) {
+	for _, command := range append(append([]string{}, commands...), "list") {
+		t.Run(command, func(t *testing.T) {
+			err := run([]string{command}, io.Discard)
+			if err != nil && strings.Contains(err.Error(), "unknown command") {
+				t.Errorf("usage advertises %q but run does not dispatch it: %v", command, err)
+			}
+		})
 	}
 }
 

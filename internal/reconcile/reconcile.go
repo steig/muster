@@ -17,6 +17,7 @@ package reconcile
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/steig/worktender/internal/gitx"
 )
@@ -188,7 +189,7 @@ func staff(state State) []Action {
 			Branch:      byPath[pathKey(ws.CheckoutPath)].Branch,
 			WorkspaceID: ws.ID,
 			PaneID:      ws.PaneIDs[0],
-			AgentName:   AgentName(Slug(baseName(ws.CheckoutPath))),
+			AgentName:   AgentName(Slug(filepath.Base(ws.CheckoutPath))),
 			Resume:      resume,
 			Reason:      reason,
 		})

@@ -368,3 +368,169 @@ func TestAStateDirThatCannotBeWrittenDegradesRatherThanBlocks(t *testing.T) {
 		t.Errorf("releasing a degraded lock should be a no-op, got %v", err)
 	}
 }
+
+// Repeat, AcquireOrMark and AcquireWithin had no direct tests in this package at
+// all. Each pins a contract another package depends on.
+
+// The mark-before-acquire half of Repeat's contract: work that arrived while a
+// pass ran must cause another pass, and TakeDirty must consume the mark so the
+// loop terminates.
+func TestRepeatRunsAgainForWorkThatArrivedMidPass(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := Acquire(dir, "/repo")
+	if err != nil || lock == nil {
+		t.Fatalf("Acquire: %v, %v", lock, err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+
+	passes := 0
+	err = lock.Repeat(3, func() error {
+		passes++
+		if passes == 1 {
+			// An event hook arriving while the first pass is still running.
+			if err := MarkDirty(dir, "/repo"); err != nil {
+				t.Fatalf("MarkDirty: %v", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Repeat: %v", err)
+	}
+	if passes != 2 {
+		t.Errorf("passes = %d, want 2: one pass, plus one for the work that arrived during it", passes)
+	}
+}
+
+// maxPasses bounds the loop even if every pass keeps marking.
+func TestRepeatStopsAtMaxPasses(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := Acquire(dir, "/repo")
+	if err != nil || lock == nil {
+		t.Fatalf("Acquire: %v, %v", lock, err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+
+	passes := 0
+	if err := lock.Repeat(3, func() error {
+		passes++
+		return MarkDirty(dir, "/repo")
+	}); err != nil {
+		t.Fatalf("Repeat: %v", err)
+	}
+	if passes != 3 {
+		t.Errorf("passes = %d, want the 3 it was bounded to", passes)
+	}
+}
+
+// Repeat(0, body) returns nil having never run body. Unreachable from current
+// callers — reconcilePasses is 3 — but an unguarded silent-success path is worth
+// pinning so a future caller computing the count cannot get "succeeded" for
+// having done nothing.
+func TestRepeatWithNoPassesRunsNothing(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := Acquire(dir, "/repo")
+	if err != nil || lock == nil {
+		t.Fatalf("Acquire: %v, %v", lock, err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+
+	ran := false
+	if err := lock.Repeat(0, func() error { ran = true; return nil }); err != nil {
+		t.Fatalf("Repeat(0): %v", err)
+	}
+	if ran {
+		t.Error("Repeat(0) must not run the body")
+	}
+}
+
+func TestRepeatStopsOnTheFirstError(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := Acquire(dir, "/repo")
+	if err != nil || lock == nil {
+		t.Fatalf("Acquire: %v, %v", lock, err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+
+	passes := 0
+	want := os.ErrInvalid
+	got := lock.Repeat(3, func() error {
+		passes++
+		return want
+	})
+	if got != want {
+		t.Errorf("Repeat returned %v, want the body's error %v", got, want)
+	}
+	if passes != 1 {
+		t.Errorf("passes = %d, want 1: a failed pass must not be followed by another", passes)
+	}
+}
+
+// An event hook must not queue behind a running pass. It marks and leaves,
+// because the holder is running the same whole-repository reconcile.
+func TestAcquireOrMarkMarksRatherThanQueueing(t *testing.T) {
+	dir := t.TempDir()
+	held, err := Acquire(dir, "/repo")
+	if err != nil || held == nil {
+		t.Fatalf("Acquire: %v, %v", held, err)
+	}
+	t.Cleanup(func() { _ = held.Release() })
+
+	second, err := AcquireOrMark(dir, "/repo")
+	if err != nil {
+		t.Fatalf("AcquireOrMark: %v", err)
+	}
+	if second != nil {
+		t.Fatal("a second caller must not get the lock while it is held")
+	}
+	if !held.TakeDirty() {
+		t.Error("declining must have left a dirty mark for the holder to see")
+	}
+}
+
+func TestAcquireOrMarkTakesAFreeLock(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := AcquireOrMark(dir, "/repo")
+	if err != nil {
+		t.Fatalf("AcquireOrMark: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("an unheld repository must be acquired, not marked")
+	}
+	_ = lock.Release()
+}
+
+// A human-invoked command queues rather than coalescing, and gives up rather
+// than waiting forever.
+func TestAcquireWithinGivesUpWhenTheLockIsHeld(t *testing.T) {
+	dir := t.TempDir()
+	held, err := Acquire(dir, "/repo")
+	if err != nil || held == nil {
+		t.Fatalf("Acquire: %v, %v", held, err)
+	}
+	t.Cleanup(func() { _ = held.Release() })
+
+	start := time.Now()
+	lock, err := AcquireWithin(dir, "/repo", 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("AcquireWithin: %v", err)
+	}
+	if lock != nil {
+		t.Fatal("the lock is held; AcquireWithin must return nil rather than steal it")
+	}
+	if waited := time.Since(start); waited < 50*time.Millisecond {
+		t.Errorf("gave up after %s, before its %s timeout", waited, 50*time.Millisecond)
+	}
+}
+
+func TestAcquireWithinReturnsAFreeLockImmediately(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := AcquireWithin(dir, "/repo", time.Minute)
+	if err != nil {
+		t.Fatalf("AcquireWithin: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("an unheld repository must be acquired")
+	}
+	_ = lock.Release()
+}

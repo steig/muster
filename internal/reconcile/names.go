@@ -1,7 +1,6 @@
 package reconcile
 
 import (
-	"path/filepath"
 	"strings"
 )
 
@@ -53,8 +52,4 @@ func truncate(s string, max int) string {
 // resuming instead of starting cold.
 func TranscriptSlug(checkoutPath string) string {
 	return strings.NewReplacer("/", "-", ".", "-").Replace(checkoutPath)
-}
-
-func baseName(path string) string {
-	return filepath.Base(path)
 }
