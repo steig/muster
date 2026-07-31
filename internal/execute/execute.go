@@ -52,6 +52,9 @@ type Result struct {
 // herdr will wait up to this long rather than failing instantly.
 const agentStartTimeoutMS = 60_000
 
+// agentKind is the herdr agent to start when staffing a worktree.
+const agentKind = "claude"
+
 // Executor performs actions against a live herdr and a real repository.
 type Executor struct {
 	Client *herdrapi.Client
@@ -62,8 +65,6 @@ type Executor struct {
 	CallerDir string
 	// ApplyPrune turns prunes from a dry run into actual removals.
 	ApplyPrune bool
-	// AgentKind is the agent to start when staffing.
-	AgentKind string
 }
 
 // Run performs every action in order and returns one Result each.
@@ -105,11 +106,6 @@ func (e *Executor) adopt(action reconcile.Action) Result {
 
 // staff starts an agent in a workspace that has none. Non-destructive.
 func (e *Executor) staff(action reconcile.Action) Result {
-	kind := e.AgentKind
-	if kind == "" {
-		kind = "claude"
-	}
-
 	var args []string
 	mode := "started"
 	if action.Resume {
@@ -118,11 +114,11 @@ func (e *Executor) staff(action reconcile.Action) Result {
 		mode = "resumed"
 	}
 
-	if err := e.Client.AgentStart(action.AgentName, kind, action.PaneID, args, agentStartTimeoutMS); err != nil {
+	if err := e.Client.AgentStart(action.AgentName, agentKind, action.PaneID, args, agentStartTimeoutMS); err != nil {
 		return Result{action, StatusFailed, fmt.Sprintf("start agent in %s: %v", action.PaneID, err)}
 	}
 	return Result{action, StatusDone,
-		fmt.Sprintf("%s %s as %s in %s", mode, kind, action.AgentName, action.PaneID)}
+		fmt.Sprintf("%s %s as %s in %s", mode, agentKind, action.AgentName, action.PaneID)}
 }
 
 // prune removes a finished worktree, re-checking every guard first.

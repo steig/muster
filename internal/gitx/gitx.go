@@ -142,7 +142,14 @@ func IsMergedInto(root, branch, base string) bool {
 	if err != nil {
 		return false
 	}
-	return !onFirstParentTrunk(root, base, tip)
+
+	onTrunk, ok := onFirstParentTrunk(root, base, tip)
+	if !ok {
+		// The walk failed, so nothing was established. Reporting "merged"
+		// here would be a confident answer built on a broken read.
+		return false
+	}
+	return !onTrunk
 }
 
 func isAncestor(root, branch, base string) bool {
@@ -154,16 +161,19 @@ func isAncestor(root, branch, base string) bool {
 // onFirstParentTrunk reports whether sha is on base's first-parent history.
 // The walk streams and stops at the first match, so a deep history costs no
 // more than reaching the commit.
-func onFirstParentTrunk(root, base, sha string) bool {
+//
+// ok is false when the walk could not be completed. A truncated read looks
+// exactly like "not found", and callers must not mistake one for the other.
+func onFirstParentTrunk(root, base, sha string) (found, ok bool) {
 	cmd := exec.Command("git", "rev-list", "--first-parent", base)
 	cmd.Dir = root
 
 	out, err := cmd.StdoutPipe()
 	if err != nil {
-		return false
+		return false, false
 	}
 	if err := cmd.Start(); err != nil {
-		return false
+		return false, false
 	}
 	defer func() {
 		_ = out.Close()
@@ -173,10 +183,13 @@ func onFirstParentTrunk(root, base, sha string) bool {
 	scanner := bufio.NewScanner(out)
 	for scanner.Scan() {
 		if scanner.Text() == sha {
-			return true
+			return true, true
 		}
 	}
-	return false
+	if err := scanner.Err(); err != nil {
+		return false, false
+	}
+	return false, true
 }
 
 // RemoteURL is origin's URL, or empty when there is no origin. `gh` needs it to

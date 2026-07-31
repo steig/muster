@@ -5,8 +5,7 @@
 // request, and reads a single response. herdr injects HERDR_SOCKET_PATH into
 // every plugin command, so this works whenever herdr is the one running us.
 //
-// Reads go over the socket. Where herdr's CLI already does real work we shell
-// out to it instead — see BinPath.
+// Everything goes over the socket; nothing shells out to the herdr CLI.
 package herdrapi
 
 import (
@@ -63,15 +62,6 @@ func New() (*Client, error) {
 // to a fake server.
 func NewWithSocket(path string) *Client {
 	return &Client{socketPath: path}
-}
-
-// BinPath is the herdr executable to shell out to. herdr sets HERDR_BIN_PATH
-// for plugin commands; outside herdr we fall back to PATH.
-func BinPath() string {
-	if p := os.Getenv("HERDR_BIN_PATH"); p != "" {
-		return p
-	}
-	return "herdr"
 }
 
 // request is one JSON-RPC-style message sent to herdr.
