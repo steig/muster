@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 )
 
 // EventEnv is the environment variable herdr sets to the event envelope when it
@@ -55,32 +56,59 @@ type Scope struct {
 	Checkout string
 }
 
+// eventScopers is dispatch: the events that can leave a repository needing
+// adoption or staffing, and how each names its repository.
+//
+// A map rather than a switch because the set of handled kinds is then a value.
+// The manifest's [[events]] subscriptions and this set have to agree in both
+// directions — a subscription with no entry here spawns a process per event to
+// print "ignoring", an entry here with no subscription is a handler nothing can
+// reach — and a switch can only be probed one guess at a time.
+var eventScopers = map[EventKind]func(EventData) (Scope, error){
+	EventKindWorktreeCreated: func(raw EventData) (Scope, error) {
+		var data WorktreeCreatedEvent
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return Scope{}, err
+		}
+		return scopeOf(data.Workspace, data.Worktree), nil
+	},
+
+	EventKindWorktreeOpened: func(raw EventData) (Scope, error) {
+		var data WorktreeOpenedEvent
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return Scope{}, err
+		}
+		return scopeOf(data.Workspace, data.Worktree), nil
+	},
+}
+
+// HandledEventKinds is the set of event kinds Scope resolves, sorted.
+func HandledEventKinds() []EventKind {
+	kinds := make([]EventKind, 0, len(eventScopers))
+	for kind := range eventScopers {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	return kinds
+}
+
 // Scope reports which repository an event asks us to reconcile.
 //
-// Only the events that can leave a repository needing adoption or staffing are
-// handled; everything else returns ErrUnhandledEvent. The repository comes from
-// the payload rather than from the invocation context: the context describes
-// what happened to be focused, which is a different question and, for a pane
-// event, frequently a different repository.
+// Unhandled kinds return ErrUnhandledEvent. The repository comes from the
+// payload rather than from the invocation context: the context describes what
+// happened to be focused, which is a different question and, for a pane event,
+// frequently a different repository.
 func (e EventEnvelope) Scope() (Scope, error) {
-	switch e.Event {
-	case EventKindWorktreeCreated:
-		var data WorktreeCreatedEvent
-		if err := json.Unmarshal(e.Data, &data); err != nil {
-			return Scope{}, fmt.Errorf("decode %s payload: %w", e.Event, err)
-		}
-		return scopeOf(data.Workspace, data.Worktree), nil
-
-	case EventKindWorktreeOpened:
-		var data WorktreeOpenedEvent
-		if err := json.Unmarshal(e.Data, &data); err != nil {
-			return Scope{}, fmt.Errorf("decode %s payload: %w", e.Event, err)
-		}
-		return scopeOf(data.Workspace, data.Worktree), nil
-
-	default:
+	scoper, ok := eventScopers[e.Event]
+	if !ok {
 		return Scope{}, fmt.Errorf("%s: %w", e.Event, ErrUnhandledEvent)
 	}
+
+	scope, err := scoper(e.Data)
+	if err != nil {
+		return Scope{}, fmt.Errorf("decode %s payload: %w", e.Event, err)
+	}
+	return scope, nil
 }
 
 // scopeOf prefers the repository root herdr already resolved, so the common

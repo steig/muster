@@ -176,14 +176,22 @@ on = "worktree.opened"
 platforms = ["windows"]
 command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe on-event"]
 
-# An agent attached to or was RELEASED from a pane. The release case is the
-# valuable one: a worktree whose agent has gone is unstaffed again.
-[[events]]
-on = "pane.agent_detected"
-platforms = ["linux", "macos"]
-command = ["./bin/muster", "on-event"]
-
-[[events]]
-on = "pane.agent_detected"
-platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe on-event"]
+# NOT subscribed: pane.agent_detected, whose release half would say "a worktree
+# whose agent has gone is unstaffed again". Three reasons it stays unsubscribed.
+#
+# It cannot name a repository. The payload carries a workspace_id and a pane_id
+# and no checkout, so every firing would have to ask herdr which repository it
+# meant before it could decide there was nothing to do — on a hook that fires
+# for every pane in the session, most of them nothing to do with a worktree.
+# There is no filter field on [[events]], so the attach half cannot be declined.
+#
+# It fires on its own output. Staffing starts an agent, herdr detects it, the
+# hook fires, and a whole-repository reconcile runs to conclude that the agent
+# it just started is there. Every staff would cost a second pass.
+#
+# And re-staffing on release is the wrong behaviour to want. An agent is
+# released when it finished or when someone stopped it; restarting one within
+# the second, unasked, is the autonomous trigger MUSTER_EVENTS exists to keep
+# behind an opt-in — inside the opt-in, where it cannot be argued with. A
+# worktree left unstaffed mid-session is picked up by the next `sync` or the
+# next startup pass, which is a human deciding to restaff, which is the point.
