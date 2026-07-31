@@ -31,7 +31,24 @@ x86_64 | amd64) arch="amd64" ;;
 esac
 
 asset="muster_${os}_${arch}"
-base="https://github.com/$REPO/releases/latest/download"
+
+# Download the release matching the source that was cloned, not `latest`.
+#
+# `latest` is a mutable pointer: someone who clones tag v0.1.0, reads it, and
+# installs would get whatever the newest release happened to be at that moment,
+# which is not the thing they audited. The manifest sitting next to this script
+# is part of that clone, so its version is the one pin available here — the
+# commit is knowable too (herdr clones the repository) but GitHub keys release
+# assets by tag, and the clone is shallow with no tags fetched.
+#
+# This does not make the download trustworthy; see the note on checksums below.
+# It only makes it the release this source says it is.
+version=$(awk -F'"' '/^version[[:space:]]*=/ {print $2; exit}' herdr-plugin.toml)
+if [ -z "$version" ]; then
+	echo "muster: no version in herdr-plugin.toml; refusing to fall back to whatever \`latest\` points at" >&2
+	exit 1
+fi
+base="https://github.com/$REPO/releases/download/v$version"
 
 fetch() {
 	if command -v curl >/dev/null 2>&1; then
@@ -44,6 +61,14 @@ fetch() {
 	fi
 }
 
+# An unverified download must never survive this script, and a cleanup line at
+# the bottom cannot promise that: `set -e` inside fetch exits the shell before
+# any line below it runs, so a failed checksums.txt fetch would leave bin/muster
+# on disk at exactly the path the manifest execs. A trap is the only form of the
+# rule that holds on every exit path, and it is disarmed at the bottom once the
+# binary has been verified.
+trap 'rm -f "$OUT" bin/checksums.txt' EXIT
+
 fetch "$base/$asset" "$OUT"
 fetch "$base/checksums.txt" bin/checksums.txt
 
@@ -52,10 +77,16 @@ fetch "$base/checksums.txt" bin/checksums.txt
 # weakest link in the whole install. A missing or mismatched checksum is fatal
 # rather than a warning: continuing would run the thing we just failed to
 # vouch for.
+#
+# Be clear about the ceiling on that. checksums.txt comes from the same release
+# as the binary, so this proves the download arrived intact and says nothing
+# about who published it — there is no signature and no attestation to check
+# against. Whoever can publish a release here publishes both halves. That is the
+# ordinary trust model for installing from GitHub, and the Go path above avoids
+# it entirely by compiling the source that was cloned.
 expected=$(awk -v want="$asset" '$2 == want || $2 == "*"want {print $1}' bin/checksums.txt)
 if [ -z "$expected" ]; then
 	echo "muster: no checksum published for $asset; refusing to install it" >&2
-	rm -f "$OUT" bin/checksums.txt
 	exit 1
 fi
 
@@ -65,7 +96,6 @@ elif command -v shasum >/dev/null 2>&1; then
 	actual=$(shasum -a 256 "$OUT" | awk '{print $1}')
 else
 	echo "muster: no sha256 tool to verify the download; install Go and retry" >&2
-	rm -f "$OUT" bin/checksums.txt
 	exit 1
 fi
 
@@ -73,9 +103,9 @@ if [ "$expected" != "$actual" ]; then
 	echo "muster: checksum mismatch for $asset" >&2
 	echo "  expected $expected" >&2
 	echo "  actual   $actual" >&2
-	rm -f "$OUT" bin/checksums.txt
 	exit 1
 fi
 
 rm -f bin/checksums.txt
 chmod +x "$OUT"
+trap - EXIT
