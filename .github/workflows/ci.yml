@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # The suite drives real git in a temp directory, so it needs a git that
+    # supports worktrees and a writable TMPDIR — both are standard on the
+    # hosted runners. macOS is here because TMPDIR lives under a symlink there
+    # and several path guards exist only because of it.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: git identity
+        # Tests commit in throwaway repositories; git refuses without one.
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        # -count=1 defeats the test cache, so a green run means the tests
+        # actually executed.
+        run: go test -count=1 ./...
