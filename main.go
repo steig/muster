@@ -25,7 +25,7 @@ import (
 // from. One list rather than two: a hand-written usage string and a
 // hand-written test list had already drifted apart — the test named "every
 // command" omitted `gate`, so usage could have dropped it and stayed green.
-var commands = []string{"ls", "sync", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
+var commands = []string{"ls", "sync", "dispatch", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
 
 var usage = "usage: worktender <" + strings.Join(commands, "|") + ">"
 
@@ -68,6 +68,10 @@ func run(args []string, out io.Writer) error {
 		// Adopt and staff. Both are non-destructive, so they act directly;
 		// finished worktrees are only listed.
 		return syncCommand(out)
+	case "dispatch":
+		// Staffs one named pane with configuration `sync` never supplies. Reads
+		// herdr and changes no worktree, so it takes no lock.
+		return dispatchCommand(args[1:], out)
 	case "prune":
 		// Lists finished worktrees and removes nothing.
 		return pruneCommand(out, false)

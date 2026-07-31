@@ -130,7 +130,7 @@ worktender=$(herdr plugin list --json \
   | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
 
 # COORDINATOR — dispatch first, then wait. Order matters.
-herdr agent start reconcile-split --kind claude --pane w22:p1
+"$worktender" dispatch --pane w22:p1 --name reconcile-split --model sonnet
 "$worktender" gate --target reconcile-split --until done --require-pr --timeout 20m
 
 # WORKER — from inside its own pane:
@@ -142,9 +142,54 @@ non-zero when the worker reports `blocked`, when the worker dies before
 reporting, and when it times out.
 
 ```sh
+worktender dispatch --pane <id> --name <agent> [--model <model>] [--permission-mode <mode>] [--resume]
 worktender report --status planned|blocked|done [--pr N] --note <text>
 worktender gate --target <agent|pane> [--until done] [--require-pr] [--timeout 15m]
 ```
+
+### Why dispatch is separate from `sync`
+
+`sync` staffs a bare agent with no arguments, and that is deliberate. It runs
+from a keybinding and from event hooks, where nothing knows what the work is —
+so there is no role to route on, and giving an unattended reconciler an opinion
+about which model to spend or how much autonomy to grant is how a hook that
+fires on every new worktree quietly starts doing both. **`sync` stays dumb;
+dispatch routes.**
+
+Dispatch goes through the same executor `sync` does, which is what guarantees it
+re-checks the pane before starting. `agent.start` against a pane that already
+hosts an agent does not bounce off — it lands on a live conversation and
+destroys context that exists nowhere else.
+
+### The permission-mode problem, stated plainly
+
+A dispatched worker has no human at its pane, so it stalls on the first
+permission prompt and stays stalled — and a coordinating agent structurally
+cannot clear it. `--permission-mode` is the way out, and it comes with a real
+caveat rather than a reassurance:
+
+**worktender cannot sandbox the agent it starts.** `claude` takes no sandbox
+flag; sandboxing lives in settings.json, and this plugin does not write your
+agent's configuration. So a mode that stops the agent asking before it acts
+grants autonomy *without* the boundary that should accompany it.
+
+An allowlist does not substitute. A guard on command spelling only holds where
+the action has exactly one spelling: `$(...)` and `find -exec` are never
+auto-allowed by a prefix rule because they can run anything, and during this
+plugin's own development a worker denied `Bash(herdr agent start:*)` reached a
+live agent anyway by calling herdr's socket from Go, logging zero denials.
+Blocking the CLI blocked the convenient path, not the capability.
+
+So `--permission-mode bypassPermissions` and `acceptEdits` are **refused** unless
+you confirm the worker already has a boundary that does not depend on spelling —
+a sandbox profile, or a separate uid:
+
+```sh
+export WORKTENDER_UNSANDBOXED_OK=1
+```
+
+Nothing is defaulted. Without `--permission-mode`, dispatch changes nothing about
+what an agent may do.
 
 Details that bite:
 

@@ -3,6 +3,7 @@ package reconcile_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -385,7 +386,9 @@ func TestReconcileIsPure(t *testing.T) {
 		t.Fatalf("same input gave different output: %d vs %d actions", len(first), len(second))
 	}
 	for i := range first {
-		if first[i] != second[i] {
+		// DeepEqual rather than !=: Action carries AgentArgs now, so it is no
+		// longer a comparable struct.
+		if !reflect.DeepEqual(first[i], second[i]) {
 			t.Errorf("action %d differs:\n%+v\n%+v", i, first[i], second[i])
 		}
 	}

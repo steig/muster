@@ -31,6 +31,31 @@ install` tracks branch HEAD rather than a tag — the version in
   to fire. A stale ref reads as still present and keeps the worktree, which fails
   in the safe direction.
 
+- **`dispatch` — staff one named pane with a model and a permission mode.** (#26)
+  `sync` staffs a bare `claude` with no arguments, so there was no way to
+  influence how a staffed agent runs. `sync` keeps doing exactly that, on
+  purpose: it fires from keybindings and event hooks where no role exists to
+  route on, and an unattended reconciler should hold no opinion about cost or
+  autonomy. A deliberate dispatch is where those belong.
+
+  Dispatch runs through the same executor `sync` uses, so the pane re-check
+  before `agent.start` covers it by construction rather than by a rule someone
+  has to remember. #26 asked for that rule to be written down; not having a
+  second staffing path is stronger than writing it down.
+
+  **`--permission-mode bypassPermissions` and `acceptEdits` are refused** unless
+  `WORKTENDER_UNSANDBOXED_OK` confirms the worker is sandboxed by something
+  else. worktender cannot sandbox it — `claude` takes no sandbox flag, and this
+  plugin does not write your agent's configuration — so granting autonomy
+  without a boundary is exactly the combination #26 warned against, and it is
+  stated rather than smoothed over. Nothing is defaulted: without the flag,
+  dispatch changes nothing about what an agent may do.
+
+### Changed
+
+- `reconcile.Action` gained `AgentArgs` and is therefore no longer a comparable
+  struct. It is always empty on anything the reconciler plans.
+
 ## [0.3.0] — 2026-07-31
 
 Renamed. Everything user-facing moved; nothing about how removal decides changed.
