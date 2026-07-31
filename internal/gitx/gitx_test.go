@@ -187,3 +187,12 @@ func TestIsMergedIntoMissesSquashMerge(t *testing.T) {
 		t.Error("a squash merge leaves the branch unmerged as far as git is concerned")
 	}
 }
+
+// IsDirty returns true when git cannot be run at all. The fail-safe direction:
+// a checkout that cannot be read must never be reported as clean, because clean
+// is what authorises removing it.
+func TestIsDirtyTreatsAnUnreadableCheckoutAsDirty(t *testing.T) {
+	if !gitx.IsDirty(filepath.Join(t.TempDir(), "does-not-exist")) {
+		t.Error("an unreadable checkout must read as dirty; clean is what lets it be deleted")
+	}
+}

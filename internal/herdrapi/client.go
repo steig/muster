@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"time"
 )
@@ -280,6 +279,3 @@ func (c *Client) AgentStart(name, kind, paneID string, args []string, timeoutMS 
 	// pane, so the client has to outlast the wait it just asked for.
 	return c.callWithin("agent.start", params, nil, deadlineFor(timeoutMS))
 }
-
-// ensure the dial split keeps returning something we can use.
-var _ func(string) (io.ReadWriteCloser, error) = dialHerdr

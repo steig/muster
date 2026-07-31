@@ -195,7 +195,7 @@ func onEventCommand(out io.Writer) error {
 		fmt.Fprintf(out, "%s: %s is already being reconciled; coalesced into that pass\n", envelope.Event, s.root)
 		return nil
 	}
-	defer lock.Release()
+	defer releaseLock(lock, out)
 
 	return lock.Repeat(reconcilePasses, func() error {
 		actions, err := s.planWith(collector)

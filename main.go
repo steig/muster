@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/steig/worktender/internal/execute"
@@ -20,7 +21,30 @@ import (
 	"github.com/steig/worktender/internal/wt"
 )
 
-const usage = "usage: worktender <ls|sync|prune|prune-apply|report|gate|on-event|startup>"
+// commands is every subcommand run dispatches, and the source usage is built
+// from. One list rather than two: a hand-written usage string and a
+// hand-written test list had already drifted apart — the test named "every
+// command" omitted `gate`, so usage could have dropped it and stayed green.
+var commands = []string{"ls", "sync", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
+
+var usage = "usage: worktender <" + strings.Join(commands, "|") + ">"
+
+// releaseLock releases and says so when it fails, instead of discarding the
+// error the way a bare deferred Release did at four call sites.
+//
+// A failed release is not cosmetic. The lock file stays on disk, so every other
+// reconcile of this repository — event hooks and the startup pass included —
+// coalesces into a pass that is not running, until repolock.MaxHold expires. A
+// silent defer leaves five minutes of inexplicable no-ops and nothing to read.
+//
+// It reports rather than returns because every caller is a defer whose return
+// value is already spoken for, and because the failure does not invalidate the
+// work that just succeeded.
+func releaseLock(lock *repolock.Lock, out io.Writer) {
+	if err := lock.Release(); err != nil {
+		fmt.Fprintf(out, "warning: %v; this repository stays locked for up to %s\n", err, repolock.MaxHold)
+	}
+}
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -206,7 +230,7 @@ func syncCommand(out io.Writer) error {
 	if lock == nil {
 		return fmt.Errorf("another worktender reconcile has held %s for more than %s; try again", s.root, commandLockWait)
 	}
-	defer lock.Release()
+	defer releaseLock(lock, out)
 
 	return lock.Repeat(reconcilePasses, func() error {
 		actions, err := s.plan()
@@ -244,7 +268,7 @@ func pruneCommand(out io.Writer, apply bool) error {
 	if lock == nil {
 		return fmt.Errorf("another worktender reconcile has held %s for more than %s; try again", s.root, commandLockWait)
 	}
-	defer lock.Release()
+	defer releaseLock(lock, out)
 
 	// Deliberately a single pass, not Repeat: re-running a REMOVAL because more
 	// work was marked would be acting on a trigger someone else observed. The

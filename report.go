@@ -202,15 +202,25 @@ func reportNote(note string) error {
 // then the framed note last — last so that nothing the worker wrote is ever
 // followed by something that looks like plugin output.
 func renderReport(r report) string {
-	pr := missing
-	if r.pr > 0 {
-		pr = strconv.Itoa(r.pr)
-	}
-
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\nstatus: %s\npr: %s\n", reportHeader, r.status, pr)
+	fmt.Fprintf(&b, "%s\nstatus: %s\npr: %s\n", reportHeader, r.status, prSlot(r))
 	fmt.Fprintf(&b, "%s\n%s%s\n%s\n", noteOpen, noteQuote, r.note, noteClose)
 	return b.String()
+}
+
+// prSlot renders the pr slot, and is the only thing that does.
+//
+// It lives beside the envelope because it defines what the envelope's `pr:` line
+// says, and the other renderer of that slot — the gate's timeout message, which
+// quotes the report it declined to release on — has to agree with it. There were
+// two implementations of this, coupled by a comment saying they matched. The
+// reading side never had the problem: parsePRValue was always the single parser
+// for both channels.
+func prSlot(r report) string {
+	if r.pr > 0 {
+		return strconv.Itoa(r.pr)
+	}
+	return missing
 }
 
 // missing marks an empty slot, the same dash `worktender ls` prints for one.

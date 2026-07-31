@@ -347,14 +347,6 @@ func gateExpired(opts gateOptions, pane string, waited time.Duration, baseline r
 		opts.target, strings.Join(opts.until, "|"), waited.Round(time.Second), pane, detail)
 }
 
-// prSlot renders the pr slot the same way the envelope does.
-func prSlot(r report) string {
-	if r.pr > 0 {
-		return fmt.Sprint(r.pr)
-	}
-	return missing
-}
-
 // isBlocked is the one status that ends a wait without releasing it.
 func isBlocked(r report) bool { return r.status == "blocked" }
 
