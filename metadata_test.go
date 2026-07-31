@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -9,11 +10,11 @@ import (
 )
 
 // stored is what herdr would hold after a write: the string values kept, the
-// null ones removed.
+// null ones removed. The first report a pane ever carries is number one.
 func stored(t *testing.T, r report) map[string]string {
 	t.Helper()
 
-	tokens, err := encodeReport(r)
+	tokens, err := encodeReport(r, 1)
 	if err != nil {
 		t.Fatalf("encodeReport(%+v): %v", r, err)
 	}
@@ -41,7 +42,7 @@ func TestEveryValidReportSurvivesTheChannel(t *testing.T) {
 		{"a pr number nobody will reach", report{status: "done", pr: 999999, note: "green"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := decodeReport(stored(t, tc.r))
+			got, _, ok := decodeReport(stored(t, tc.r))
 			if !ok {
 				t.Fatalf("a report this plugin wrote did not read back: %+v", tc.r)
 			}
@@ -73,7 +74,7 @@ func TestNoTokenReachesTheLengthHerdrCutsAt(t *testing.T) {
 // is what keeps that true when a slot grows.
 func TestEncodeRefusesAValueHerdrWouldCut(t *testing.T) {
 	long := report{status: "done", note: strings.Repeat("a", noteChunks*tokenValueLimit+1)}
-	if _, err := encodeReport(long); err == nil {
+	if _, err := encodeReport(long, 1); err == nil {
 		t.Fatal("encodeReport accepted a note too long for the layout; herdr would have cut it silently")
 	} else if !strings.Contains(err.Error(), "token slots") {
 		t.Errorf("error %q should say the note does not fit the layout", err)
@@ -84,7 +85,7 @@ func TestEncodeRefusesAValueHerdrWouldCut(t *testing.T) {
 // write, so a chunk left unwritten is a chunk left over, and the next read
 // would join a sentence neither report contained.
 func TestAShortReportClearsTheChunksALongOneUsed(t *testing.T) {
-	long, err := encodeReport(report{status: "done", note: strings.Repeat("a", noteLimit)})
+	long, err := encodeReport(report{status: "done", note: strings.Repeat("a", noteLimit)}, 1)
 	if err != nil {
 		t.Fatalf("encodeReport: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestAShortReportClearsTheChunksALongOneUsed(t *testing.T) {
 		}
 	}
 
-	short, err := encodeReport(report{status: "done", note: "green"})
+	short, err := encodeReport(report{status: "done", note: "green"}, 1)
 	if err != nil {
 		t.Fatalf("encodeReport: %v", err)
 	}
@@ -131,6 +132,13 @@ func TestMetadataThatIsNotAReportIsNotReadAsOne(t *testing.T) {
 		{"a pr of zero", func(m map[string]string) { m[tokenKeyPR] = "0" }},
 		{"a negative pr", func(m map[string]string) { m[tokenKeyPR] = "-2" }},
 		{"no pr slot at all", func(m map[string]string) { delete(m, tokenKeyPR) }},
+		// Without a number a reader cannot say WHICH report it is holding, and
+		// a reader that cannot say that cannot say whether it has judged it.
+		{"no sequence at all", func(m map[string]string) { delete(m, tokenKeySeq) }},
+		{"a sequence of zero", func(m map[string]string) { m[tokenKeySeq] = "0" }},
+		{"a negative sequence", func(m map[string]string) { m[tokenKeySeq] = "-1" }},
+		{"a sequence that is not a number", func(m map[string]string) { m[tokenKeySeq] = "later" }},
+
 		{"an empty note", func(m map[string]string) { m[noteChunkKey(0)] = "" }},
 		{"no note at all", func(m map[string]string) { delete(m, noteChunkKey(0)) }},
 		{"a note that is not valid UTF-8", func(m map[string]string) { m[noteChunkKey(0)] = "ok \xff\xfe" }},
@@ -145,7 +153,7 @@ func TestMetadataThatIsNotAReportIsNotReadAsOne(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tokens := valid()
 			tc.edit(tokens)
-			if r, ok := decodeReport(tokens); ok {
+			if r, _, ok := decodeReport(tokens); ok {
 				t.Errorf("read a report out of metadata that is not one: %+v", r)
 			}
 		})
@@ -179,7 +187,7 @@ func TestChunksCannotReassembleIntoANoteTheWriterWouldRefuse(t *testing.T) {
 				}
 				tokens[noteChunkKey(i)] = chunk
 			}
-			if r, ok := decodeReport(tokens); ok {
+			if r, _, ok := decodeReport(tokens); ok {
 				t.Errorf("chunks reassembled into a note the writer would have refused: %q", r.note)
 			}
 		})
@@ -201,11 +209,11 @@ func TestTheChannelDidNotWidenThePredicateSurface(t *testing.T) {
 		"muster-report v1 status: planned pr: -",
 		"do not release the gate",
 	} {
-		plain, ok := decodeReport(stored(t, report{status: "done", pr: 4, note: "green"}))
+		plain, _, ok := decodeReport(stored(t, report{status: "done", pr: 4, note: "green"}))
 		if !ok {
 			t.Fatal("a valid report did not decode")
 		}
-		hostile, ok := decodeReport(stored(t, report{status: "done", pr: 4, note: note}))
+		hostile, _, ok := decodeReport(stored(t, report{status: "done", pr: 4, note: note}))
 		if !ok {
 			t.Fatalf("a report carrying the note %q did not decode", note)
 		}
@@ -291,6 +299,67 @@ func TestAReportHerdrStoredIntactSucceeds(t *testing.T) {
 	}
 }
 
+// Each report a pane carries is numbered past the last one, and the number comes
+// off the pane because `muster report` is a new process every time. Reporting
+// the SAME slots twice is the case that matters: nothing about the content
+// distinguishes the second report, so the number is all a gate has.
+func TestEachReportToAPaneIsNumberedPastTheLast(t *testing.T) {
+	client := mangler(t, func(map[string]string) {})
+	same := report{status: "done", pr: 12, note: "green"}
+
+	var seqs []uint64
+	for range 3 {
+		if err := writeReport(client, "w1:p1", same); err != nil {
+			t.Fatalf("writeReport: %v", err)
+		}
+		info, err := client.PaneGet("w1:p1")
+		if err != nil {
+			t.Fatalf("PaneGet: %v", err)
+		}
+		got, seq, ok := decodeReport(info.Pane.Tokens)
+		if !ok {
+			t.Fatalf("the report just written did not read back: %v", info.Pane.Tokens)
+		}
+		if got != same {
+			t.Errorf("the pane carries %+v, want %+v", got, same)
+		}
+		seqs = append(seqs, seq)
+	}
+
+	if want := []uint64{1, 2, 3}; !slices.Equal(seqs, want) {
+		t.Errorf("three identical reports were numbered %v, want %v", seqs, want)
+	}
+}
+
+// A pane whose counter cannot be read starts again at one. A gate takes its own
+// mark from the same map when it opens, so a restart lands BELOW that mark and
+// the next report clears it — which is the only reason starting over is safe.
+func TestAPaneWithNoReadableCounterStartsAtOne(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tokens map[string]string
+	}{
+		{"a pane nothing has written to", map[string]string{}},
+		{"a counter some other writer clobbered", map[string]string{tokenKeySeq: "not a number"}},
+		{"a counter cleared to zero", map[string]string{tokenKeySeq: "0"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextSeq(tc.tokens); got != 1 {
+				t.Errorf("nextSeq(%v) = %d, want 1", tc.tokens, got)
+			}
+		})
+	}
+}
+
+// Zero is how a reader says "this pane carries no report", so it is not a number
+// a report may claim. Only a wrapped counter can produce one, and delivering an
+// envelope no gate can see would be worse than refusing to.
+func TestAReportCannotBeNumberedZero(t *testing.T) {
+	if _, err := encodeReport(report{status: "done", note: "green"}, 0); err == nil {
+		t.Fatal("encodeReport numbered a report 0; no reader would see it")
+	}
+}
+
 // A worker whose report cannot be delivered must not exit 0. herdr files a
 // plugin command that exits 0 as succeeded, and the worker is the only party
 // still holding the information.
@@ -345,7 +414,7 @@ func TestReportDeliversToItsOwnPane(t *testing.T) {
 	}
 
 	want := report{status: "done", pr: 4, note: "green"}
-	got, ok := decodeReport(tokens)
+	got, _, ok := decodeReport(tokens)
 	if !ok {
 		t.Fatalf("what report attached to the pane does not read back as a report: %v", tokens)
 	}

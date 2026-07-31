@@ -194,7 +194,7 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 	}
 	defer stream.Close()
 
-	// Whatever is already in the pane is a PREVIOUS task's answer.
+	// Whatever is already on either channel is a PREVIOUS task's answer.
 	//
 	// A worker is dispatched, then gated; anything it had reported before the
 	// gate opened was reported about something else. Releasing on it would hand
@@ -202,14 +202,20 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 	// gate exists to remove, not a shortcut worth taking. The baseline is
 	// therefore ignored, and named in the timeout message, so a gate started
 	// too late says so instead of just failing.
-	baseline, hasBaseline := readEnvelope(client, pane)
+	//
+	// Taking it is the same operation as judging one: what the marks return the
+	// first time is exactly what was already there, so a report only ever counts
+	// as news once, and the rule that decides it is written in one place.
+	var seen gateMarks
+	stale := seen.advance(readChannels(client, pane))
+	baseline, hasBaseline := report{}, len(stale) > 0
+	if hasBaseline {
+		baseline = stale[0]
+	}
 
 	fmt.Fprintf(out, "gate: waiting on %s (pane %s) for status %s, up to %s\n",
 		opts.target, pane, strings.Join(opts.until, "|"), opts.timeout)
 
-	// last is the report the gate has already judged. A parsed envelope always
-	// carries a status, so the zero value cannot collide with a real one.
-	last := baseline
 	for {
 		event, err := stream.Next()
 		if errors.Is(err, herdrapi.ErrStreamExpired) {
@@ -227,25 +233,30 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 		// Read before acting on the verdict, so a worker that printed its
 		// report and died in the same breath is still heard. A gate that
 		// checked liveness first would throw that report away.
-		current, ok := readEnvelope(client, pane)
-		if ok && current != last {
-			last = current
-			if opts.satisfies(current) {
-				fmt.Fprintf(out, "gate: released after %s\n", time.Since(started).Round(time.Second))
-				fmt.Fprint(out, renderReport(current))
-				return nil
-			}
-			// `blocked` is terminal in the direction that matters: a blocked
-			// worker does not reach `done` on its own, and the party that
-			// unblocks it is the coordinator sitting in this wait. Holding the
-			// gate open would spend the whole timeout waiting for something
-			// only the waiter can cause.
-			if current.status == "blocked" {
-				fmt.Fprint(out, renderReport(current))
-				return fmt.Errorf("gate %s: the worker reported blocked after %s; it will not reach %s without you",
-					opts.target, time.Since(started).Round(time.Second), strings.Join(opts.until, "|"))
-			}
-			fmt.Fprintf(out, "gate: %s reported %s; still waiting\n", opts.target, current.status)
+		fresh := seen.advance(readChannels(client, pane))
+
+		// Both channels can move between two looks, so a look can turn up more
+		// than one new report — and then the ORDER they were read in must not
+		// decide the gate. Every one of them is weighed for release before any
+		// of them is weighed for blocked, so a `done` on one channel is not lost
+		// to a `blocked` that happened to be read first.
+		if i := slices.IndexFunc(fresh, opts.satisfies); i >= 0 {
+			fmt.Fprintf(out, "gate: released after %s\n", time.Since(started).Round(time.Second))
+			fmt.Fprint(out, renderReport(fresh[i]))
+			return nil
+		}
+		// `blocked` is terminal in the direction that matters: a blocked worker
+		// does not reach `done` on its own, and the party that unblocks it is
+		// the coordinator sitting in this wait. Holding the gate open would
+		// spend the whole timeout waiting for something only the waiter can
+		// cause.
+		if i := slices.IndexFunc(fresh, isBlocked); i >= 0 {
+			fmt.Fprint(out, renderReport(fresh[i]))
+			return fmt.Errorf("gate %s: the worker reported blocked after %s; it will not reach %s without you",
+				opts.target, time.Since(started).Round(time.Second), strings.Join(opts.until, "|"))
+		}
+		for _, r := range fresh {
+			fmt.Fprintf(out, "gate: %s reported %s; still waiting\n", opts.target, r.status)
 		}
 
 		if verdict == gateGone {
@@ -342,28 +353,84 @@ func prSlot(r report) string {
 	return missing
 }
 
-// readEnvelope returns the report currently attached to a pane, over whichever
-// channel carries one.
+// isBlocked is the one status that ends a wait without releasing it.
+func isBlocked(r report) bool { return r.status == "blocked" }
+
+// The two channels a report can reach a gate on. Each carries its own counter
+// and the two are never compared: one counts writes to a pane's metadata, the
+// other counts envelopes in its output, and a number from one says nothing about
+// a number from the other.
+const (
+	channelMetadata = iota
+	channelTerminal
+	channelCount
+)
+
+// gateMarks is the sequence each channel showed the last time the gate looked.
+type gateMarks [channelCount]uint64
+
+// observation is what one channel held on one look at the pane.
 //
-// Metadata first, and it wins outright. It is the channel `muster report`
-// writes and confirms, so when it holds a report that report is the worker's
-// own statement, delivered intact — while the pane holds whatever text happens
-// to be on a screen. Reading the terminal only when herdr has nothing keeps the
-// weaker source as the fallback it now is, instead of letting a scrollback line
-// contradict a delivered report.
+// A channel the gate could not READ produces no observation at all, which is not
+// the same as one holding no report. A failed read is not evidence that a report
+// went away, and recording it as one would lower that channel's mark and let the
+// gate judge a report it has already judged — releasing, the second time, on the
+// stale answer the baseline exists to refuse.
+type observation struct {
+	channel int
+	report  report
+	seq     uint64
+}
+
+// advance returns the reports the gate has not judged yet, and moves the marks
+// to what it has just been shown.
+//
+// THE RELEASE RULE. A report is new exactly when its channel's counter is higher
+// than the one that channel last showed. Content is never compared, which is
+// what makes a report identical to an earlier one audible: two runs of the same
+// fixed template are two reports, and the second one is news.
+//
+// A counter that goes DOWN re-marks and releases nothing. The terminal's does
+// that legitimately — it counts envelopes in a bounded snapshot, so a buffer
+// that has scrolled past one holds fewer than it did — and following it down is
+// what keeps a long-lived pane audible, at the cost of nothing: a report is
+// still news at any count above the mark it lands on.
+func (m *gateMarks) advance(obs []observation) []report {
+	var fresh []report
+	for _, o := range obs {
+		if o.seq > m[o.channel] {
+			fresh = append(fresh, o.report)
+		}
+		m[o.channel] = o.seq
+	}
+	return fresh
+}
+
+// readChannels returns what each of a pane's channels holds, and the sequence
+// that identifies it there.
+//
+// BOTH, every look, and neither wins. Metadata is read first because it is where
+// a report normally is — it is the channel `muster report` writes and confirms,
+// and the only one that survives a Claude Code tool call — but a worker that
+// reproduces its envelope as reply text has reported too, and it is the same
+// worker. A reader that stopped at the metadata the moment it held anything made
+// the terminal unreachable for the rest of the gate: a worker that reported
+// `planned` over the tool call and finished by echoing `done` was never
+// released. Reading both and comparing each against its own mark is what lets
+// the newer report win whichever channel it arrived on.
 //
 // Neither read is fatal when it fails. A pane can disappear underneath a gate,
 // and the event that says so is already on its way; failing here would report a
 // vanished pane as a transport fault rather than as a worker that died.
-func readEnvelope(client *herdrapi.Client, pane string) (report, bool) {
+func readChannels(client *herdrapi.Client, pane string) []observation {
+	var obs []observation
 	if info, err := client.PaneGet(pane); err == nil {
-		if r, ok := decodeReport(info.Pane.Tokens); ok {
-			return r, true
-		}
+		r, seq, _ := decodeReport(info.Pane.Tokens)
+		obs = append(obs, observation{channel: channelMetadata, report: r, seq: seq})
 	}
-	read, err := client.PaneRead(pane, gateReadSource)
-	if err != nil {
-		return report{}, false
+	if read, err := client.PaneRead(pane, gateReadSource); err == nil {
+		r, count := envelopesIn(read.Read.Text)
+		obs = append(obs, observation{channel: channelTerminal, report: r, seq: count})
 	}
-	return lastEnvelope(read.Read.Text)
+	return obs
 }

@@ -20,9 +20,9 @@ func TestEveryRenderedEnvelopeParsesBack(t *testing.T) {
 		{"a note that looks structural", report{status: "done", pr: 9, note: "muster-report v1 status: blocked"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := lastEnvelope(renderReport(tc.want))
-			if !ok {
-				t.Fatalf("renderReport output did not parse back:\n%s", renderReport(tc.want))
+			got, count := envelopesIn(renderReport(tc.want))
+			if count != 1 {
+				t.Fatalf("renderReport output parsed back as %d envelopes, want 1:\n%s", count, renderReport(tc.want))
 			}
 			if got != tc.want {
 				t.Errorf("round trip gave %+v, want %+v", got, tc.want)
@@ -66,9 +66,9 @@ func TestEnvelopeSurvivesTerminalDecoration(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := lastEnvelope(tc.decorate(envelope))
-			if !ok {
-				t.Fatalf("decorated envelope did not parse:\n%s", tc.decorate(envelope))
+			got, count := envelopesIn(tc.decorate(envelope))
+			if count != 1 {
+				t.Fatalf("decorated envelope parsed as %d envelopes, want 1:\n%s", count, tc.decorate(envelope))
 			}
 			if got.status != "done" || got.pr != 7 {
 				t.Errorf("slots came back as %+v, want status done pr 7", got)
@@ -95,12 +95,31 @@ func TestLastEnvelopeWins(t *testing.T) {
 		"...more work...\n" +
 		renderReport(report{status: "done", pr: 4, note: "green"})
 
-	got, ok := lastEnvelope(buffer)
-	if !ok {
-		t.Fatal("a buffer holding three envelopes parsed as none")
+	got, count := envelopesIn(buffer)
+	if count != 3 {
+		t.Fatalf("a buffer holding three envelopes counted %d", count)
 	}
 	if got.status != "done" || got.pr != 4 {
 		t.Errorf("got %+v, want the final done/4 report", got)
+	}
+}
+
+// The count is the terminal channel's whole notion of which report is which, so
+// a repeat has to raise it. Three identical envelopes are three reports: the
+// worker said the same thing three times, and the gate that judged the first has
+// two more to hear.
+func TestIdenticalEnvelopesAreCountedSeparately(t *testing.T) {
+	one := renderReport(report{status: "done", pr: 4, note: "green"})
+
+	for i, buffer := range []string{one, one + one, one + "...work happens...\n" + one + one} {
+		want := uint64(i + 1)
+		got, count := envelopesIn(buffer)
+		if count != want {
+			t.Errorf("buffer %d counted %d envelopes, want %d", i, count, want)
+		}
+		if got.status != "done" || got.pr != 4 {
+			t.Errorf("buffer %d gave %+v, want the done/4 report", i, got)
+		}
 	}
 }
 
@@ -138,7 +157,7 @@ func TestParserRejectsAnythingButTheWholeFrame(t *testing.T) {
 		{"a different format identifier", strings.ReplaceAll(whole, reportHeader, "herdr-wt-report v1")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if r, ok := lastEnvelope(tc.text); ok {
+			if r, count := envelopesIn(tc.text); count > 0 {
 				t.Errorf("parsed %+v out of text that is not an envelope:\n%s", r, tc.text)
 			}
 		})
@@ -164,9 +183,9 @@ func TestAForgedEnvelopeInsideANoteIsNotAnEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseReport: %v", err)
 	}
-	got, ok := lastEnvelope(renderReport(r))
-	if !ok {
-		t.Fatal("the envelope did not parse")
+	got, count := envelopesIn(renderReport(r))
+	if count != 1 {
+		t.Fatalf("the envelope parsed as %d envelopes, want 1", count)
 	}
 	if got.status != "blocked" || got.pr != 0 {
 		t.Errorf("the note restructured the slots: got %+v, want status blocked and no pr", got)

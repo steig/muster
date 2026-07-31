@@ -32,20 +32,40 @@ var envelopeFrame = func() (announce []string, lines int) {
 	return announce, 3 + len(announce) + 2
 }
 
-// lastEnvelope returns the final complete envelope in a terminal snapshot.
+// envelopesIn returns the last complete envelope in a terminal snapshot, and
+// how many the snapshot holds.
 //
 // Last, not first: a pane accumulates, so an earlier envelope is an earlier
-// report. Scanning backwards also means a truncated envelope at the top of a
-// scrolled buffer costs nothing.
-func lastEnvelope(text string) (report, bool) {
+// report and the later one is the answer that stands.
+//
+// The COUNT is what makes this channel usable to a gate that has to tell a NEW
+// report from the one it already judged. An envelope's identity here is its
+// POSITION in the output — two byte-identical envelopes are two reports, and the
+// second one is news. Comparing the text instead would make a worker that
+// reports the same thing twice inaudible the second time. See gate.go for the
+// rule this feeds.
+//
+// A match consumes its whole frame rather than one line. Envelopes cannot
+// overlap — every line inside one is a fixed line, a validated slot, or quoted
+// behind "> ", and none of those can pass isHeaderLine — so counting frames and
+// counting starting positions give the same answer, and stepping by the frame
+// says plainly that one envelope is one report.
+func envelopesIn(text string) (report, uint64) {
 	lines := splitTerminalLines(text)
 	_, height := envelopeFrame()
-	for start := len(lines) - height; start >= 0; start-- {
-		if r, ok := parseEnvelope(lines[start : start+height]); ok {
-			return r, true
+
+	var last report
+	var count uint64
+	for start := 0; start+height <= len(lines); {
+		r, ok := parseEnvelope(lines[start : start+height])
+		if !ok {
+			start++
+			continue
 		}
+		last, count = r, count+1
+		start += height
 	}
-	return report{}, false
+	return last, count
 }
 
 // parseEnvelope reads one candidate window of lines, all-or-nothing.

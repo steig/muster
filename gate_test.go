@@ -132,15 +132,17 @@ type gateWorker struct {
 	// behaviour it named.
 	opened   chan struct{}
 	openOnce sync.Once
-	// reads carries one signal per pane snapshot the gate takes, so a test can
-	// print a second report only once the gate has seen the first.
+	// reads carries one signal per complete look the gate takes at the pane, so
+	// a test can report a second time only once the gate has judged the first.
+	//
+	// It is the TERMINAL read that signals, because the gate reads both channels
+	// on every look and reads that one second: a worker released by the metadata
+	// read would be running while the gate was still assembling the same look,
+	// and could change what it was in the middle of judging. Nothing a worker
+	// does itself signals here — `muster report` reads a pane to number its
+	// report, and a worker that took one of its own reads for the gate's would
+	// run ahead in exactly the way this exists to prevent.
 	reads chan struct{}
-	// metaReads is the same signal for the metadata channel. It is separate
-	// because the gate reads metadata FIRST and stops there when it finds a
-	// report: a worker waiting for "the gate looked" has to wait for the read
-	// that actually carries its report, or it races ahead and appends a second
-	// one before the first has been judged.
-	metaReads chan struct{}
 }
 
 const gateTestPane = "w1:p1"
@@ -150,13 +152,12 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 
 	server := herdrtest.NewServer(t)
 	w := &gateWorker{
-		client:    herdrapi.NewWithSocket(server.SocketPath),
-		text:      paneText,
-		frames:    make(chan any, 8),
-		done:      make(chan struct{}),
-		opened:    make(chan struct{}),
-		reads:     make(chan struct{}, 32),
-		metaReads: make(chan struct{}, 32),
+		client: herdrapi.NewWithSocket(server.SocketPath),
+		text:   paneText,
+		frames: make(chan any, 8),
+		done:   make(chan struct{}),
+		opened: make(chan struct{}),
+		reads:  make(chan struct{}, 32),
 	}
 	t.Cleanup(func() { close(w.done) })
 
@@ -177,17 +178,8 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 	// The metadata channel, which the gate reads before it reads the terminal.
 	server.Handle("pane.get", func(map[string]any) (any, error) {
 		w.mu.Lock()
+		defer w.mu.Unlock()
 		tokens := maps.Clone(w.tokens)
-		// The baseline is only complete here when these tokens ARE a report,
-		// because that is when the gate stops and does not go on to the pane.
-		_, carriesReport := decodeReport(tokens)
-		defer func() {
-			w.mu.Unlock()
-			if carriesReport {
-				w.openOnce.Do(func() { close(w.opened) })
-			}
-			signal(w.metaReads)
-		}()
 		return map[string]any{
 			"type": "pane_info",
 			"pane": map[string]any{
@@ -203,6 +195,28 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 		}, nil
 	})
 
+	// The write side of the metadata channel, so a test worker reports the way a
+	// real one does — including taking its number off the pane. herdr MERGES a
+	// write into the pane's existing tokens and drops the keys sent as null,
+	// which is the behaviour the layout depends on.
+	server.Handle("pane.report_metadata", func(params map[string]any) (any, error) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.tokens == nil {
+			w.tokens = map[string]string{}
+		}
+		for key, value := range params["tokens"].(map[string]any) {
+			if text, ok := value.(string); ok {
+				w.tokens[key] = text
+				continue
+			}
+			delete(w.tokens, key)
+		}
+		return map[string]any{"type": "ok"}, nil
+	})
+
+	// The terminal channel, which the gate reads second and on every look, so
+	// this is where the baseline snapshot is complete.
 	server.Handle("pane.read", func(map[string]any) (any, error) {
 		w.mu.Lock()
 		// Released only once the snapshot has been taken. Releasing on entry
@@ -251,11 +265,7 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 // went idle, and a gate that read the pane first would find nothing.
 func (w *gateWorker) prints(r report) {
 	<-w.opened
-	// The gate only reads when woken, so nothing is in flight here. Clearing
-	// the backlog first makes the wait below mean "the gate read THIS report".
-	for len(w.reads) > 0 {
-		<-w.reads
-	}
+	w.forgetLooks()
 
 	w.mu.Lock()
 	w.text += renderReport(r)
@@ -263,6 +273,20 @@ func (w *gateWorker) prints(r report) {
 	w.emit(herdrapi.StreamEventPaneAgentStatusChanged,
 		map[string]any{"pane_id": gateTestPane, "agent_status": "idle", "agent": "claude"})
 
+	w.awaitLook()
+}
+
+// forgetLooks drops the signals from looks already taken. The gate only reads
+// when woken, so nothing is in flight here, and clearing first makes awaitLook
+// mean "the gate has looked SINCE this".
+func (w *gateWorker) forgetLooks() {
+	for len(w.reads) > 0 {
+		<-w.reads
+	}
+}
+
+// awaitLook waits for the gate to finish one look at both channels.
+func (w *gateWorker) awaitLook() {
 	select {
 	case <-w.reads:
 	case <-w.done:
@@ -273,32 +297,40 @@ func (w *gateWorker) prints(r report) {
 // report` as a tool call and never echoes it, so the envelope reaches herdr's
 // metadata and the terminal stays exactly as it was.
 //
+// It goes through writeReport rather than assembling the tokens itself, so each
+// report carries the number a real `muster report` would have given it.
+//
 // It emits pane_updated rather than an agent status change, because attaching
 // metadata is what herdr announces — the worker is still mid-turn and its agent
 // status has not moved.
 func (w *gateWorker) attaches(r report) {
 	<-w.opened
-	for len(w.metaReads) > 0 {
-		<-w.metaReads
-	}
+	w.forgetLooks()
 
-	tokens, err := encodeReport(r)
-	if err != nil {
+	if err := writeReport(w.client, gateTestPane, r); err != nil {
+		panic(err)
+	}
+	w.emit(herdrapi.StreamEventPaneUpdated, map[string]any{
+		"type": "pane_updated",
+		"pane": map[string]any{"pane_id": gateTestPane, "workspace_id": "w1"},
+	})
+
+	w.awaitLook()
+}
+
+// attachesAndPrints puts a DIFFERENT report on each channel between two of the
+// gate's looks, so both arrive in the same one. Which channel a report came in
+// on cannot be allowed to decide the gate, and the only way to prove that is to
+// hand it both at once.
+func (w *gateWorker) attachesAndPrints(attached, printed report) {
+	<-w.opened
+	w.forgetLooks()
+
+	if err := writeReport(w.client, gateTestPane, attached); err != nil {
 		panic(err)
 	}
 	w.mu.Lock()
-	if w.tokens == nil {
-		w.tokens = map[string]string{}
-	}
-	// herdr merges a write into the pane's existing tokens and drops the keys
-	// sent as null, which is the behaviour the layout depends on.
-	for key, value := range tokens {
-		if text, ok := value.(string); ok {
-			w.tokens[key] = text
-			continue
-		}
-		delete(w.tokens, key)
-	}
+	w.text += renderReport(printed)
 	w.mu.Unlock()
 
 	w.emit(herdrapi.StreamEventPaneUpdated, map[string]any{
@@ -306,10 +338,7 @@ func (w *gateWorker) attaches(r report) {
 		"pane": map[string]any{"pane_id": gateTestPane, "workspace_id": "w1"},
 	})
 
-	select {
-	case <-w.metaReads:
-	case <-w.done:
-	}
+	w.awaitLook()
 }
 
 func (w *gateWorker) becomes(status string) {
@@ -435,6 +464,113 @@ func TestGateStillReadsAnEchoedEnvelope(t *testing.T) {
 	}
 }
 
+// The terminal goes on being heard AFTER the metadata has spoken. A worker that
+// reports `planned` over the tool call and then finishes by echoing a `done`
+// envelope as reply text has reported done.
+//
+// Reading metadata first and stopping there made the terminal unreachable for
+// the rest of the gate the moment the pane carried any valid report, so this
+// worker waited out its whole timeout on an answer that was already on screen.
+func TestGateHearsTheTerminalAfterTheMetadataHasSpoken(t *testing.T) {
+	w := newGateWorker(t, "working", "")
+	go func() {
+		w.attaches(report{status: "planned", pr: 12, note: "slice read, starting"})
+		w.prints(report{status: "done", pr: 12, note: "green, echoed as reply text"})
+	}()
+
+	out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("the gate never heard the terminal after the metadata: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "reported planned; still waiting") {
+		t.Errorf("the gate should have seen the progress report first:\n%s", out)
+	}
+	if !strings.Contains(out, noteQuote+"green, echoed as reply text") {
+		t.Errorf("the gate released on the wrong report:\n%s", out)
+	}
+}
+
+// A report identical to the previous task's answer is still a report.
+//
+// The slots are a fixed template and a coordinator that dispatches the same kind
+// of slice twice gets the same three back, so a gate that told reports apart by
+// comparing them heard the second one as a repeat of the first — and waited out
+// its timeout on a worker that had answered. Both channels are counted, so both
+// are tested.
+func TestGateReleasesOnAReportIdenticalToThePreviousTasksAnswer(t *testing.T) {
+	same := report{status: "done", pr: 12, note: "green"}
+
+	t.Run("over the metadata channel", func(t *testing.T) {
+		w := newGateWorker(t, "working", "")
+		w.tokens = stored(t, same)
+		go w.attaches(same)
+
+		out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+		if err != nil {
+			t.Fatalf("the gate did not hear a report identical to the baseline: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "released") {
+			t.Errorf("expected a release:\n%s", out)
+		}
+	})
+
+	t.Run("over the terminal channel", func(t *testing.T) {
+		w := newGateWorker(t, "working", renderReport(same))
+		go w.prints(same)
+
+		out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+		if err != nil {
+			t.Fatalf("the gate did not hear an envelope identical to the baseline: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "released") {
+			t.Errorf("expected a release:\n%s", out)
+		}
+	})
+}
+
+// The case the precedence claim was about and never pinned: both channels
+// holding DIFFERENT reports, arriving in the same look.
+//
+// Neither channel outranks the other, so the release is decided by the reports
+// rather than by which one was read first. The two blocked cases are the sharp
+// end of that: a `blocked` on the channel read first must not end a gate that a
+// `done` on the other one satisfies.
+func TestGateJudgesBothChannelsInTheSameLook(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		attached, printed report
+	}{
+		{"the release is in the metadata",
+			report{status: "done", pr: 12, note: "released on the delivered report"},
+			report{status: "planned", pr: 12, note: "echoed"}},
+
+		{"the release is in the terminal",
+			report{status: "planned", pr: 12, note: "delivered"},
+			report{status: "done", pr: 12, note: "released on the echoed report"}},
+
+		{"a blocked read first does not beat a done read second",
+			report{status: "blocked", pr: 12, note: "delivered"},
+			report{status: "done", pr: 12, note: "released on the echoed report"}},
+
+		{"a done read first is not held back by a blocked read second",
+			report{status: "done", pr: 12, note: "released on the delivered report"},
+			report{status: "blocked", pr: 12, note: "echoed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newGateWorker(t, "working", "")
+			go w.attachesAndPrints(tc.attached, tc.printed)
+
+			out, err, _ := w.gate(t, "--target", "worker", "--timeout", "10s")
+			if err != nil {
+				t.Fatalf("the gate did not release on the done report: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, noteQuote+"released on the ") {
+				t.Errorf("the gate released on the report that was not done:\n%s", out)
+			}
+		})
+	}
+}
+
 // herdr replays the session's pane_updated backlog to a new subscriber and does
 // not filter it by pane, so a gate sees every pane's history the moment it
 // subscribes. None of that is news about its worker.
@@ -465,16 +601,7 @@ func TestGateIgnoresOtherPanesUpdating(t *testing.T) {
 // this is the case that matters most.
 func TestGateIgnoresTheReportAlreadyInTheMetadata(t *testing.T) {
 	w := newGateWorker(t, "working", "")
-	stale, err := encodeReport(report{status: "done", pr: 4, note: "the previous slice"})
-	if err != nil {
-		t.Fatalf("encodeReport: %v", err)
-	}
-	w.tokens = map[string]string{}
-	for key, value := range stale {
-		if text, ok := value.(string); ok {
-			w.tokens[key] = text
-		}
-	}
+	w.tokens = stored(t, report{status: "done", pr: 4, note: "the previous slice"})
 
 	go func() {
 		w.becomes("working")
