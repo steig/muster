@@ -33,7 +33,9 @@ import (
 // produces an envelope that parses, and one that echoes a file containing those
 // lines does the same. So the gate authenticates SHAPE and POSITION, never
 // authorship — it establishes that a well-formed report appeared in that pane
-// after the gate started, and nothing about who composed it.
+// after the gate started, and nothing about who composed it. That holds for both
+// channels a report can arrive on; see readChannels for why the metadata one is
+// no stronger despite being the one `muster report` writes.
 //
 // A shared secret would not close that. The obvious fix is a nonce the
 // coordinator puts in the dispatch prompt and requires back in the report — but
@@ -418,6 +420,30 @@ func (m *gateMarks) advance(obs []observation) []report {
 // `planned` over the tool call and finished by echoing `done` was never
 // released. Reading both and comparing each against its own mark is what lets
 // the newer report win whichever channel it arrived on.
+//
+// WHAT THE METADATA CHANNEL AUTHENTICATES, WHICH IS NOT AUTHORSHIP. It is no
+// stronger than the pane here, and this comment used to say it was.
+// pane.report_metadata takes an arbitrary pane_id, so nothing binds a write to
+// the caller's own pane; `source` is provenance rather than a namespace, as
+// metadata.go says where it depends on exactly that; and what arrives is a flat
+// map[string]string with no attribution on it, so decodeReport could not check
+// an author even in principle. Any process holding the herdr socket can write
+// muster_status and muster_pr onto another worker's pane and release a
+// coordinator's gate.
+//
+// That is a limit to state, not a hole to engineer around: it needs code already
+// running as the user, so it crosses no privilege boundary, and a nonce would
+// fail here for the reason the header of this file gives. The counter does not
+// narrow it either — a writer that can set the slots can set the number. Both
+// channels authenticate SHAPE and POSITION and nothing else. That `muster
+// report` writes only to HERDR_PANE_ID is this plugin's own discipline, which is
+// worth keeping and is not a restriction the channel enforces.
+//
+// applies_to_source would not change that, which is why it is still not sent.
+// Whatever it constrains on the way in, nothing on the way out carries a source
+// at all: PaneInfo.Tokens is one flat map per pane, so a reader has nothing to
+// check a claimed source against. It could only ever be a field set, not a
+// guarantee gained.
 //
 // Neither read is fatal when it fails. A pane can disappear underneath a gate,
 // and the event that says so is already on its way; failing here would report a
