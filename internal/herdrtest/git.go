@@ -94,6 +94,22 @@ func (r *Repo) AddWorktree(slug, branch string) string {
 	return path
 }
 
+// AddWorktreeAt creates a linked worktree at an arbitrary path, which may sit
+// outside the repository root.
+//
+// The other constructors both build under <root>/.claude/worktrees/, which is
+// only one of the layouts in use: herdr's own worktree creation puts checkouts
+// under ~/.herdr/worktrees/<repo>/, entirely outside the repository. Nothing in
+// the reconciler is supposed to care — workspaces are matched by repo_root
+// equality, never by path containment — but until this existed, no test had ever
+// executed that shape.
+func (r *Repo) AddWorktreeAt(path, branch string) string {
+	r.t.Helper()
+
+	r.Git("worktree", "add", "-b", branch, path)
+	return path
+}
+
 // CommitIn writes a file inside a checkout and commits it there.
 func (r *Repo) CommitIn(dir, rel, content string) {
 	r.t.Helper()

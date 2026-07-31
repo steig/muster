@@ -94,6 +94,11 @@ func fakeSession(t *testing.T, repo *herdrtest.Repo) *herdrtest.Server {
 	server := herdrtest.NewServer(t)
 	t.Setenv("HERDR_SOCKET_PATH", server.SocketPath)
 	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", `{"workspace_cwd":"`+repo.Root+`"}`)
+	// Point plugin state somewhere disposable. Inherited, it would be the real
+	// ~/.local/state/herdr/plugins/steig.wt, and the suite would leave repository
+	// locks in a developer's live plugin state. It happens to be unset in a
+	// normal shell, which is luck rather than isolation.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 	return server
 }
 
@@ -252,6 +257,43 @@ func TestSyncDoesNotPrune(t *testing.T) {
 	if !repo.Exists(checkout) {
 		t.Fatal("sync removed a worktree")
 	}
+}
+
+// herdr's own worktree creation puts checkouts under ~/.herdr/worktrees/<repo>/,
+// outside the repository entirely, so the .claude/worktrees convention the rest
+// of these tests use is only one of the shapes that reaches the reconciler. The
+// claim under test is that path layout is irrelevant: workspaces are matched by
+// repo_root equality, never by containment.
+func TestSyncAdoptsAWorktreeOutsideTheRepoRoot(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	outside := filepath.Join(t.TempDir(), "worktree-brave-valley-66f8")
+	checkout := repo.AddWorktreeAt(outside, "worktree/brave-valley-66f8")
+
+	if strings.HasPrefix(checkout, repo.Root) {
+		t.Fatalf("checkout %s is inside the repository root %s; this test proves nothing", checkout, repo.Root)
+	}
+
+	server := fakeSession(t, repo)
+	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "worktree/brave-valley-66f8", ""))
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
+
+	var out strings.Builder
+	if err := syncCommand(&out); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	for _, call := range server.Calls() {
+		if call.Method != "worktree.open" {
+			continue
+		}
+		if path, _ := call.Params["path"].(string); path != checkout {
+			t.Errorf("adopted %q, want the out-of-root checkout %q", path, checkout)
+		}
+		return
+	}
+	t.Errorf("an out-of-root worktree was never adopted; output:\n%s", out.String())
 }
 
 func TestPruneApplyRemoves(t *testing.T) {
