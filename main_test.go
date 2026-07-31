@@ -26,7 +26,7 @@ func TestUnknownCommandFails(t *testing.T) {
 }
 
 func TestUsageNamesEveryCommand(t *testing.T) {
-	for _, command := range []string{"ls", "sync", "prune", "prune-apply"} {
+	for _, command := range []string{"ls", "sync", "prune", "prune-apply", "report"} {
 		if !strings.Contains(usage, command) {
 			t.Errorf("usage does not mention %q: %s", command, usage)
 		}
