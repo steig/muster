@@ -1,0 +1,47 @@
+# herdr-wt — git worktrees as herdr workspaces.
+#
+# Install with `herdr plugin install steig/herdr-wt`, or for local development
+# `herdr plugin link .` from a checkout.
+
+id = "steig.wt"
+name = "herdr-wt"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Drive git worktrees as herdr workspaces: list, create, and tear down worktrees with their workspace and agent state in one view."
+platforms = ["linux", "macos", "windows"]
+
+# Build the binary at install time. herdr runs this once, after the install is
+# confirmed and before the plugin is registered.
+#
+# Unix: the script prefers a local Go toolchain and falls back to downloading a
+# prebuilt release binary, so installing works with or without Go.
+[[build]]
+platforms = ["linux", "macos"]
+command = ["sh", "scripts/build.sh"]
+
+# Windows has no POSIX `sh`, so build straight from source. Installing on
+# Windows therefore needs Go on PATH.
+[[build]]
+platforms = ["windows"]
+command = ["go", "build", "-o", "bin/herdr-wt.exe", "."]
+
+# Every entry point is declared twice — a unix entry and a windows twin — because
+# herdr requires a unique id per action and the two platforms need different
+# commands. The windows command goes through powershell rather than invoking
+# .\bin\herdr-wt.exe directly: herdr sets the child's cwd to the plugin root, but
+# CreateProcessW resolves a relative application path against herdr's own cwd, so
+# the bare relative path fails. powershell's `&` resolves it from the right place.
+
+# ls — list every worktree in the current repository with the herdr workspace and
+# agent status attached. Output lands in `herdr plugin log list --plugin steig.wt`.
+[[actions]]
+id = "ls"
+title = "wt: list worktrees"
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-wt", "ls"]
+
+[[actions]]
+id = "ls-windows"
+title = "wt: list worktrees"
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe ls"]

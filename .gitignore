@@ -1,0 +1,3 @@
+bin/
+*.broken
+.claude/settings.local.json
