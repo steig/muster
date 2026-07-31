@@ -85,6 +85,7 @@ func (c *Collector) Collect() (State, error) {
 			wt.HasTranscript = c.hasTranscript(w.Path)
 			if branch != "" {
 				wt.MergedIntoBase = gitx.IsMergedInto(c.Root, branch, base)
+				wt.UpstreamGone = gitx.UpstreamGone(c.Root, branch)
 				if c.LookupPR != nil {
 					wt.PR = c.LookupPR(branch)
 				}

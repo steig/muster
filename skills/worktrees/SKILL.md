@@ -71,7 +71,14 @@ failure — including "installed but not authenticated" — collapses to "no pul
 which resolves to keep. The printed reasons look entirely ordinary while this happens.
 Check `gh auth status` before concluding a repository has nothing to prune.
 
-**Pruning requires a merged pull request.** This is not a limitation to route around:
+**Exactly two things authorise a removal**, and neither is a topological test:
+
+1. **A merged pull request.** The only unambiguous answer, and the only one that
+   covers squash and rebase workflows.
+2. **A deleted upstream AND the branch's commits already in base.** Both halves
+   required.
+
+Git topology alone decides nothing here:
 
 - `merge-base --is-ancestor branch base` is true *exactly when* the branch has zero
   commits of its own, and that shape is identical for merged work, unstarted work,
@@ -79,10 +86,20 @@ Check `gh auth status` before concluding a repository has nothing to prune.
 - Squash and rebase merges rewrite commits, so a fully landed branch is not an
   ancestor of base at all.
 
-Git topology therefore cannot decide whether work has landed, and the plugin says so
-rather than guessing. Expect reasons like `cannot tell unstarted from fast-forward
-merged — keeping`. Do not "fix" this by adding another topological test; that path
-has already produced a series of cases each new test got wrong.
+A deleted upstream is admissible precisely because it is **not** topology — it records
+that a person deleted a remote branch. That distinguishes "forked off merged work and
+never pushed" (no upstream to delete) from "landed and the merge deleted the branch".
+
+**Do not "fix" the remaining ambiguity by adding another topological test.** That path
+has already produced a series of cases each new test got wrong. Expect reasons like
+`cannot tell unstarted from fast-forward merged — keeping` and leave them.
+
+A gone upstream **alone** never prunes — that shape is abandonment as often as
+completion. It is reported so a human can act on it.
+
+Prune reads remote-tracking refs. If a user expects a deleted upstream to count,
+`git fetch --prune` must have run; a stale ref reads as still present and keeps the
+worktree.
 
 A closed-but-unmerged PR is reported as abandoned and never auto-pruned — the branch
 still holds commits that exist nowhere else.

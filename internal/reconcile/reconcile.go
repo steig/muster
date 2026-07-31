@@ -52,6 +52,11 @@ type Worktree struct {
 	// removes anything — and is used to explain a keep, not to justify a
 	// prune.
 	MergedIntoBase bool
+	// UpstreamGone reports that the branch was published and its remote
+	// counterpart has since been deleted. Unlike every other field here it
+	// records a human action rather than a graph shape, which is what lets
+	// verdict use it to resolve an ambiguity topology alone cannot.
+	UpstreamGone bool
 	// HasTranscript reports a prior Claude conversation for this checkout,
 	// which makes the difference between resuming and starting cold.
 	HasTranscript bool
@@ -278,10 +283,44 @@ func verdict(w Worktree, base string) (landed bool, reason string) {
 		return false, "still open"
 	}
 
-	// No PR to appeal to. Everything below is a shape git cannot disambiguate.
+	// No PR to appeal to. Everything below is a shape git cannot disambiguate
+	// on its own — except where a deleted upstream supplies the fact that is
+	// missing.
+	//
+	// A DELETED UPSTREAM IS A HUMAN ACTION, NOT A GRAPH SHAPE, and that is the
+	// whole reason it is admissible here. The ambiguity in the merged-looking
+	// case is "did this branch land, or was it forked off work that had already
+	// landed?" Those are indistinguishable by topology — they can be the very
+	// same commit. They are not indistinguishable by publication history: a
+	// branch forked off merged work and never pushed has no upstream to delete,
+	// while a branch that landed was pushed and had its remote ref removed,
+	// which is what a merge button does by default.
+	//
+	// Both halves are required, and neither is sufficient:
+	//
+	//   - Gone upstream ALONE means only that someone deleted a remote branch,
+	//     which is equally what abandoning work looks like. Acting on it would
+	//     delete commits that exist nowhere else.
+	//   - Merged-into-base ALONE is the ambiguity described above.
+	//
+	// Together they are still not proof, and this is a deliberate widening of
+	// what gets removed without a merged pull request. It is bounded to the case
+	// where the branch has no commits base lacks: if the work were unmerged, its
+	// commits would not be in base, so the worst case is deleting a checkout
+	// whose commits are all reachable from base anyway. Squash and rebase
+	// workflows are NOT covered — they rewrite commits, so the branch is not an
+	// ancestor at all — and those keep needing a pull request.
+	if w.MergedIntoBase && w.UpstreamGone {
+		return true, fmt.Sprintf("merged into %s and its upstream was deleted", base)
+	}
 	if w.MergedIntoBase {
 		return false, fmt.Sprintf(
 			"looks merged into %s, but cannot tell that from a branch forked off merged work — keeping", base)
+	}
+	if w.UpstreamGone {
+		// Published, then deleted, but base does not have the commits. That is
+		// the abandonment shape, and it is the one this signal must not act on.
+		return false, "upstream deleted, but it still holds commits " + base + " does not — keeping"
 	}
 	if w.OwnCommits == 0 {
 		return false, "no commits of its own — cannot tell unstarted from fast-forward merged — keeping"
