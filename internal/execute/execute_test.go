@@ -12,12 +12,14 @@ import (
 	"github.com/steig/muster/internal/reconcile"
 )
 
-// fixture wires an executor to a fake herdr with no agents and no panes.
+// fixture wires an executor to a fake herdr with no agents, no panes and no
+// workspaces.
 func fixture(t *testing.T, repo *herdrtest.Repo) (*execute.Executor, *herdrtest.Server) {
 	t.Helper()
 
 	server := herdrtest.NewServer(t)
 	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
 	server.HandleResult("pane.list", map[string]any{"type": "pane_list", "panes": []map[string]any{}})
 	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
 	server.HandleResult("worktree.remove", map[string]any{"type": "worktree_removed"})
@@ -593,5 +595,156 @@ func TestEveryResultExplainsItself(t *testing.T) {
 	}
 	if execute.Counts(results)[execute.StatusPlanned] != 1 {
 		t.Errorf("expected one planned prune, got %v", execute.Counts(results))
+	}
+}
+
+// workspaceJSON is one entry of a workspace.list reply, holding a checkout open.
+func workspaceJSON(id, checkout string) map[string]any {
+	return map[string]any{
+		"workspace_id": id, "number": 2, "label": filepath.Base(checkout), "focused": false,
+		"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "working",
+		"worktree": map[string]any{"repo_key": "k", "repo_name": "repo",
+			"repo_root": "/repo", "checkout_path": checkout, "is_linked_worktree": true},
+	}
+}
+
+// THE #13 case. An empty workspace id on a prune action is not evidence that no
+// workspace holds the checkout — it is just as likely to be a join that missed,
+// which is exactly how a live agent's ground gets removed. herdr is asked
+// again, and it says the checkout is held by a workspace with an agent in it.
+func TestPruneRefusesWhenHerdrHoldsTheCheckoutTheActionNamesNoWorkspaceFor(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list",
+		"workspaces": []map[string]any{workspaceJSON("w2", checkout)}})
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{{
+		"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1", "terminal_id": "t",
+		"agent_status": "working", "focused": false, "revision": 1,
+	}}})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+		"panes": []map[string]any{{"pane_id": "w2:p1"}}})
+
+	// The plan's join missed, so it carries no workspace id at all.
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("a checkout hosting a live agent was removed because the plan named no workspace")
+	}
+}
+
+// The same missing workspace id, spelled differently by herdr. Re-asking is
+// worth nothing if the answer is compared by raw string equality.
+func TestPruneRefusesWhenHerdrSpellsTheHeldCheckoutDifferently(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	resolved := strings.Replace(checkout, repo.Root, repo.RealRoot, 1)
+	if resolved == checkout {
+		t.Skip("temp dir is not behind a symlink on this machine")
+	}
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list",
+		"workspaces": []map[string]any{workspaceJSON("w2", resolved)}})
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{{
+		"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1", "terminal_id": "t",
+		"agent_status": "working", "focused": false, "revision": 1,
+	}}})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+		"panes": []map[string]any{{"pane_id": "w2:p1"}}})
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("a checkout hosting a live agent was removed over a symlink difference")
+	}
+}
+
+// An unverifiable guard is not a satisfied one: herdr cannot say whether a
+// workspace holds this checkout, so the removal does not happen.
+func TestPruneRefusesWhenTheWorkspaceListCannotBeRead(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+	// workspace.list deliberately errors.
+	server.Handle("workspace.list", func(map[string]any) (any, error) {
+		return nil, errStartFailed{}
+	})
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "could not confirm") {
+		t.Errorf("detail should say the guard could not be checked, got %q", result.Detail)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("a checkout was removed on an unverifiable guard")
+	}
+}
+
+// A checkout herdr genuinely holds no workspace for is still prunable: the
+// re-check is a verification, not a new refusal.
+func TestPruneProceedsWhenHerdrHoldsNoWorkspaceForTheCheckout(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list",
+		"workspaces": []map[string]any{workspaceJSON("w9", "/somewhere/else")}})
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", Reason: "PR merged"}
+
+	if result := only(t, exec.Run([]reconcile.Action{action})); result.Status != execute.StatusDone {
+		t.Fatalf("status = %q, want done: %s", result.Status, result.Detail)
+	}
+	if repo.Exists(checkout) {
+		t.Error("the worktree should be gone")
+	}
+}
+
+// Having re-discovered the workspace, the removal goes through herdr: a git
+// removal would leave herdr holding a workspace over a checkout that is no
+// longer there.
+func TestPruneRemovesThroughTheWorkspaceItRediscovered(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list",
+		"workspaces": []map[string]any{workspaceJSON("w2", checkout)}})
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", Reason: "PR merged"}
+
+	if result := only(t, exec.Run([]reconcile.Action{action})); result.Status != execute.StatusDone {
+		t.Fatalf("status = %q, want done: %s", result.Status, result.Detail)
+	}
+	if got := callTo(t, server, "worktree.remove").Params["workspace_id"]; got != "w2" {
+		t.Errorf("workspace_id = %v, want the rediscovered w2", got)
 	}
 }

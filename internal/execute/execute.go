@@ -165,7 +165,8 @@ func (e *Executor) staff(action reconcile.Action) Result {
 // to minutes old. Uncommitted work and a newly started agent are exactly the
 // things that appear in that gap, and both make the removal wrong.
 func (e *Executor) prune(action reconcile.Action) Result {
-	if reason, blocked := e.pruneBlocked(action); blocked {
+	workspaceID, reason, blocked := e.pruneBlocked(action)
+	if blocked {
 		return Result{action, StatusSkipped, reason}
 	}
 
@@ -173,7 +174,7 @@ func (e *Executor) prune(action reconcile.Action) Result {
 		return Result{action, StatusPlanned, fmt.Sprintf("would remove: %s", action.Reason)}
 	}
 
-	if err := e.removeCheckout(action); err != nil {
+	if err := e.removeCheckout(action, workspaceID); err != nil {
 		return Result{action, StatusFailed, err.Error()}
 	}
 	return Result{action, StatusDone,
@@ -181,20 +182,38 @@ func (e *Executor) prune(action reconcile.Action) Result {
 }
 
 // pruneBlocked re-reads the guards at execution time and explains any refusal.
-func (e *Executor) pruneBlocked(action reconcile.Action) (string, bool) {
+// The workspace it returns is the one herdr currently holds the checkout in,
+// which the plan may have named wrongly or not at all.
+func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason string, blocked bool) {
 	// Guard a, re-checked: work that appeared since the reconcile exists
 	// nowhere else, and worktree.remove is called with force, which bypasses
 	// git's own refusal to delete a dirty checkout.
 	if gitx.IsDirty(action.Path) {
-		return "uncommitted changes appeared since the plan was made", true
+		return "", "uncommitted changes appeared since the plan was made", true
 	}
 
 	// Guard b, re-checked: an agent may have started in the gap.
-	if action.WorkspaceID != "" {
-		if staffed, err := e.workspaceStaffed(action.WorkspaceID); err != nil {
-			return fmt.Sprintf("could not confirm the workspace is idle: %v", err), true
+	//
+	// An empty workspace id is NOT the same fact as "no workspace holds this
+	// checkout". The plan joins worktrees to workspaces by path, and a join
+	// that misses produces exactly this — an action that looks like a
+	// standalone checkout and is really an agent's ground. Treating it as
+	// nothing to check skips the guard on precisely the actions that most need
+	// it, so herdr is asked again here and only its answer decides.
+	workspaceID = action.WorkspaceID
+	if workspaceID == "" {
+		holder, err := e.workspaceHolding(action.Path)
+		if err != nil {
+			// An unverifiable guard is not a satisfied one.
+			return "", fmt.Sprintf("could not confirm no workspace holds %s: %v", action.Path, err), true
+		}
+		workspaceID = holder
+	}
+	if workspaceID != "" {
+		if staffed, err := e.workspaceStaffed(workspaceID); err != nil {
+			return "", fmt.Sprintf("could not confirm the workspace is idle: %v", err), true
 		} else if staffed {
-			return "an agent started here since the plan was made", true
+			return "", "an agent started here since the plan was made", true
 		}
 	}
 
@@ -205,10 +224,29 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (string, bool) {
 	// shell or for any other pane still sitting in the checkout. Refusing is
 	// the only honest option — the user moves, then prunes.
 	if e.CallerDir != "" && isInside(e.CallerDir, action.Path) {
-		return fmt.Sprintf("you are in %s — cd out of it first", action.Path), true
+		return "", fmt.Sprintf("you are in %s — cd out of it first", action.Path), true
 	}
 
-	return "", false
+	return workspaceID, "", false
+}
+
+// workspaceHolding returns the id of the workspace herdr currently has the
+// checkout open in, empty when there is none. Paths are compared normalised:
+// re-asking herdr is worth nothing if its answer is then matched by raw string
+// equality against a path spelled another way.
+func (e *Executor) workspaceHolding(checkout string) (string, error) {
+	workspaces, err := e.Client.WorkspaceList()
+	if err != nil {
+		return "", err
+	}
+
+	wanted := gitx.Resolve(checkout)
+	for _, ws := range workspaces.Workspaces {
+		if ws.Worktree != nil && gitx.Resolve(ws.Worktree.CheckoutPath) == wanted {
+			return ws.WorkspaceID, nil
+		}
+	}
+	return "", nil
 }
 
 // workspaceStaffed reports whether any pane of the workspace hosts an agent,
@@ -237,9 +275,14 @@ func (e *Executor) workspaceStaffed(workspaceID string) (bool, error) {
 
 // removeCheckout deletes the worktree, preferring herdr so the workspace is
 // torn down with it. A worktree herdr has no workspace for is removed with git.
-func (e *Executor) removeCheckout(action reconcile.Action) error {
-	if action.WorkspaceID != "" {
-		if err := e.Client.WorktreeRemove(action.WorkspaceID, true); err != nil {
+//
+// workspaceID comes from the guards rather than from the action, because that
+// is the one the guards actually verified: a workspace rediscovered there must
+// be torn down through herdr, or herdr is left holding a workspace over a
+// checkout that no longer exists.
+func (e *Executor) removeCheckout(action reconcile.Action, workspaceID string) error {
+	if workspaceID != "" {
+		if err := e.Client.WorktreeRemove(workspaceID, true); err != nil {
 			return fmt.Errorf("remove worktree: %w", err)
 		}
 		return nil

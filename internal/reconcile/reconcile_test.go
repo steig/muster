@@ -1,6 +1,8 @@
 package reconcile_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -451,5 +453,74 @@ func TestTranscriptSlug(t *testing.T) {
 	want := "-Users-t-code-repo--claude-worktrees-fix-auth"
 	if got != want {
 		t.Errorf("TranscriptSlug = %q, want %q", got, want)
+	}
+}
+
+// symlinkedPair returns two spellings of one directory: the real path and a
+// path reaching it through a symlink. It is how herdr can name one checkout two
+// ways, which is the join this guard has to survive.
+func symlinkedPair(t *testing.T) (real, linked string) {
+	t.Helper()
+
+	real = t.TempDir()
+	linked = filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, linked); err != nil {
+		t.Skipf("this filesystem will not make a symlink: %v", err)
+	}
+	return real, linked
+}
+
+// Guard b again, with the two sides spelled differently. herdr reports the
+// checkout resolved in one call and unresolved in another, so a join by raw
+// string equality misses and the agent guard never fires — the failure this
+// whole project exists to prevent.
+func TestNeverPrunesWorktreeHostingALiveAgentUnderADifferentSpelling(t *testing.T) {
+	real, link := symlinkedPair(t)
+
+	w := linked(link, "a")
+	state := reconcile.State{
+		Base:      "main",
+		Worktrees: []reconcile.Worktree{w},
+		Workspaces: []reconcile.Workspace{
+			{ID: "w2", CheckoutPath: real, IsLinked: true, PaneIDs: []string{"w2:p1"}},
+		},
+		AgentPanes: map[string]bool{"w2:p1": true},
+	}
+
+	actions := reconcile.Reconcile(state)
+	if find(actions, reconcile.KindPrune, link) != nil {
+		t.Fatal("a worktree whose pane hosts a live agent must never be pruned, however its path is spelled")
+	}
+	if keep := find(actions, reconcile.KindKeep, link); keep == nil || keep.Reason != "agent running" {
+		t.Errorf("expected an explanatory keep, got %+v", keep)
+	}
+}
+
+// The same join, from the staffing side: a workspace whose checkout is spelled
+// differently must still find its worktree, or a resumable session is started
+// cold and the branch column goes blank.
+func TestStaffFindsItsWorktreeUnderADifferentSpelling(t *testing.T) {
+	real, link := symlinkedPair(t)
+
+	state := reconcile.State{
+		Base: "main",
+		Worktrees: []reconcile.Worktree{
+			{Path: link, Branch: "a", IsLinked: true, WorkspaceID: "w2", HasTranscript: true},
+		},
+		Workspaces: []reconcile.Workspace{
+			{ID: "w2", CheckoutPath: real, IsLinked: true, PaneIDs: []string{"w2:p1"}},
+		},
+	}
+
+	actions := reconcile.Reconcile(state)
+	staff := find(actions, reconcile.KindStaff, real)
+	if staff == nil {
+		t.Fatal("the agentless workspace should be staffed")
+	}
+	if !staff.Resume {
+		t.Error("a prior transcript exists, so staffing must resume rather than start cold")
+	}
+	if staff.Branch != "a" {
+		t.Errorf("branch = %q, want the joined worktree's branch %q", staff.Branch, "a")
 	}
 }

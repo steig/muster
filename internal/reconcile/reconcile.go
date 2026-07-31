@@ -1,16 +1,25 @@
 // Package reconcile decides what a repository's worktrees need, as a pure
 // function over already-collected state.
 //
-// Nothing here touches git, herdr, gh, or the filesystem: Reconcile takes facts
-// and returns intentions. Collecting the facts is Collect's job and carrying
-// out the intentions is the executor's, which is what makes the interesting
-// logic — especially the prune guards — testable without a live herdr.
+// Nothing here runs git, herdr or gh: Reconcile takes facts and returns
+// intentions. Collecting the facts is Collect's job and carrying out the
+// intentions is the executor's, which is what makes the interesting logic —
+// especially the prune guards — testable without a live herdr.
+//
+// The one filesystem read is path normalisation. Worktrees and workspaces are
+// joined by checkout path, herdr does not promise one spelling of a directory,
+// and a guard that misses because two paths name the same place differently is
+// a guard that does not run at all.
 //
 // Reconcile is idempotent and converges over passes. A worktree adopted in this
 // pass has no workspace yet, so it cannot also be staffed until the next one.
 package reconcile
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/steig/muster/internal/gitx"
+)
 
 // PRState is a pull request's state as gh reports it.
 type PRState string
@@ -167,7 +176,7 @@ func staff(state State) []Action {
 		// Resume onto an existing transcript when there is one; otherwise a
 		// cold start, because an unstaffed worktree is doing no work either
 		// way.
-		resume := byPath[ws.CheckoutPath].HasTranscript
+		resume := byPath[pathKey(ws.CheckoutPath)].HasTranscript
 		reason := "no agent, no prior session"
 		if resume {
 			reason = "no agent, prior session to resume"
@@ -176,7 +185,7 @@ func staff(state State) []Action {
 		actions = append(actions, Action{
 			Kind:        KindStaff,
 			Path:        ws.CheckoutPath,
-			Branch:      byPath[ws.CheckoutPath].Branch,
+			Branch:      byPath[pathKey(ws.CheckoutPath)].Branch,
 			WorkspaceID: ws.ID,
 			PaneID:      ws.PaneIDs[0],
 			AgentName:   AgentName(Slug(baseName(ws.CheckoutPath))),
@@ -216,7 +225,7 @@ func prune(state State) []Action {
 
 		// Guard b: an agent is mid-task here. Never delete the ground it
 		// stands on, whatever the branch looks like.
-		if ws, ok := byPath[w.Path]; ok && hasAgent(state, ws) {
+		if ws, ok := byPath[pathKey(w.Path)]; ok && hasAgent(state, ws) {
 			keep("agent running")
 			continue
 		}
@@ -289,10 +298,22 @@ func hasAgent(state State, ws Workspace) bool {
 	return false
 }
 
+// pathKey is how a checkout is identified when joining worktrees to
+// workspaces.
+//
+// Raw string equality is not enough, and this is guard b's whole failure mode.
+// herdr answers worktree.list and workspace.list from different sources, so one
+// checkout can arrive resolved in one and symlinked in the other — on macOS
+// that is the ordinary case, since anything under /var is really /private/var.
+// A join that misses does not fail loudly: the worktree simply appears to have
+// no workspace, the agent check has nothing to look at, and a checkout with a
+// live agent in it is planned for removal.
+func pathKey(path string) string { return gitx.Resolve(path) }
+
 func worktreesByPath(state State) map[string]Worktree {
 	index := make(map[string]Worktree, len(state.Worktrees))
 	for _, w := range state.Worktrees {
-		index[w.Path] = w
+		index[pathKey(w.Path)] = w
 	}
 	return index
 }
@@ -300,7 +321,7 @@ func worktreesByPath(state State) map[string]Worktree {
 func workspacesByPath(state State) map[string]Workspace {
 	index := make(map[string]Workspace, len(state.Workspaces))
 	for _, ws := range state.Workspaces {
-		index[ws.CheckoutPath] = ws
+		index[pathKey(ws.CheckoutPath)] = ws
 	}
 	return index
 }
