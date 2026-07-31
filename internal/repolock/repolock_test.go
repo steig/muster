@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -271,5 +272,99 @@ func TestAnUnusableStateDirDoesNotBlock(t *testing.T) {
 	}
 	if err := took.Release(); err != nil {
 		t.Errorf("release of an unlocked holder should be a no-op, got %v", err)
+	}
+}
+
+// A lock file that does not parse is treated as ABANDONED by every reader, so a
+// claim that becomes readable before it is complete is a live lock that can be
+// stolen while it is held — and the file's own MaxHold note says what a stolen
+// live lock costs: a second agent.start against a pane mid-start, landing on a
+// conversation that exists nowhere else.
+//
+// The invariant is therefore not "the record is written eventually" but "the
+// lock file never exists in a state a reader would discard". This asserts it
+// under contention; a create-then-write claim leaves exactly that window.
+func TestAClaimIsNeverObservableBeforeItIsComplete(t *testing.T) {
+	dir := t.TempDir()
+	path := lockPath(dir, repo)
+
+	stop := make(chan struct{})
+	unreadable := make(chan []byte, 1)
+
+	var watching sync.WaitGroup
+	watching.Add(1)
+	go func() {
+		defer watching.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				continue // no lock held at this instant, which is fine
+			}
+			var h holder
+			if json.Unmarshal(raw, &h) != nil || h.PID == 0 {
+				select {
+				case unreadable <- raw:
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 3000; i++ {
+		lock, err := Acquire(dir, repo)
+		if err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		if lock == nil {
+			t.Fatal("nothing else holds this lock, so the claim should have succeeded")
+		}
+		if err := lock.Release(); err != nil {
+			t.Fatalf("release: %v", err)
+		}
+	}
+	close(stop)
+	watching.Wait()
+
+	select {
+	case raw := <-unreadable:
+		t.Fatalf("a held lock was observable as %q, which any other process would treat as abandoned and take", raw)
+	default:
+	}
+}
+
+// A state directory that cannot carry a claim must not read as a busy
+// repository. The lock fails OPEN by design: a claim that can never be made
+// would stop every reconcile, and a handler that never runs looks exactly like
+// an event that never fired.
+func TestAStateDirThatCannotBeWrittenDegradesRatherThanBlocks(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a read-only directory anyway")
+	}
+
+	dir := t.TempDir()
+	locks := filepath.Dir(lockPath(dir, repo))
+	if err := os.MkdirAll(locks, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(locks, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locks, 0o700) })
+
+	lock, err := Acquire(dir, repo)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("an unwritable lock directory was reported as another process holding the repository")
+	}
+	if err := lock.Release(); err != nil {
+		t.Errorf("releasing a degraded lock should be a no-op, got %v", err)
 	}
 }

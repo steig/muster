@@ -88,8 +88,15 @@ func Acquire(stateDir, repository string) (*Lock, error) {
 	}
 
 	lock := &Lock{path: path, dirty: dirtyPath(stateDir, repository)}
-	if lock.claim(repository) {
+	acquired, usable := lock.claim(repository)
+	switch {
+	case acquired:
 		return lock, nil
+	case !usable:
+		// The state directory cannot carry a claim. Same answer as having
+		// nowhere to record one: proceed unserialised rather than mistake a
+		// broken lock path for a busy repository and never run again.
+		return &Lock{}, nil
 	}
 
 	// Someone holds it. Take it anyway if the evidence says they are gone.
@@ -97,8 +104,11 @@ func Acquire(stateDir, repository string) (*Lock, error) {
 		// Removing another process's lock file is safe here precisely because
 		// the reconcile it guards is idempotent.
 		_ = os.Remove(path)
-		if lock.claim(repository) {
+		switch acquired, usable = lock.claim(repository); {
+		case acquired:
 			return lock, nil
+		case !usable:
+			return &Lock{}, nil
 		}
 	}
 	return nil, nil
@@ -164,25 +174,60 @@ func (l *Lock) Repeat(maxPasses int, body func() error) error {
 	return nil
 }
 
-// claim creates the lock file exclusively, which is what makes the claim atomic
-// between processes.
-func (l *Lock) claim(repository string) bool {
-	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return false
-	}
-	defer file.Close()
-
+// claim writes the holder record into a temporary file and links it into place,
+// so the lock file carries its evidence from the instant it exists.
+//
+// The order is the whole point. A claim made first and filled in afterwards is
+// readable in between, and an unreadable lock file is treated as abandoned by
+// every reader — which is a LIVE lock being stolen, not a stale one being
+// cleared. A dropped write error makes that state permanent: a zero-byte file
+// nobody will ever respect again. So a record that cannot be written is a
+// failed claim, and the file at l.path is only ever complete.
+//
+// link rather than rename: rename REPLACES an existing target, which would take
+// a lock somebody else holds. link refuses, and that refusal is the mutual
+// exclusion O_EXCL used to provide.
+//
+// acquired reports the claim; usable reports whether the state directory can
+// carry a claim at all. A directory that cannot is degraded to unserialised
+// rather than treated as busy — this lock fails open by design, and a caller
+// that can never claim would be an outage, not a queue.
+func (l *Lock) claim(repository string) (acquired, usable bool) {
 	record, err := json.Marshal(holder{
 		PID:        os.Getpid(),
 		StartedAt:  time.Now().UnixMilli(),
 		Repository: repository,
 	})
-	if err == nil {
-		_, _ = file.Write(record)
+	if err != nil {
+		return false, false
 	}
+
+	file, err := os.CreateTemp(filepath.Dir(l.path), "claim-*")
+	if err != nil {
+		return false, false
+	}
+	// The temporary name is never the lock; it is unlinked either way, and on
+	// the success path the link at l.path keeps the content alive.
+	defer os.Remove(file.Name())
+
+	if _, err := file.Write(record); err != nil {
+		file.Close()
+		return false, false
+	}
+	if err := file.Close(); err != nil {
+		return false, false
+	}
+
+	if err := os.Link(file.Name(), l.path); err != nil {
+		// Someone got there first: an ordinary busy outcome.
+		if errors.Is(err, os.ErrExist) {
+			return false, true
+		}
+		return false, false
+	}
+
 	l.acquired = true
-	return true
+	return true, true
 }
 
 // heldByALiveHolder reports whether the existing lock file is evidence of a
