@@ -20,7 +20,7 @@ import (
 	"github.com/steig/herdr-wt/internal/wt"
 )
 
-const usage = "usage: herdr-wt <ls|sync|prune|prune-apply|on-event|startup>"
+const usage = "usage: herdr-wt <ls|sync|prune|prune-apply|report|on-event|startup>"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -50,6 +50,10 @@ func run(args []string, out io.Writer) error {
 	case "prune-apply":
 		// The explicit opt-in to actually removing them.
 		return pruneCommand(out, true)
+	case "report":
+		// A worker filling slots for its coordinator. Touches neither herdr nor
+		// the repository, so it takes no session and needs no lock.
+		return reportCommand(args[1:], out)
 	case "on-event":
 		// Invoked by herdr, never by hand. Off unless opted in.
 		return onEventCommand(out)
