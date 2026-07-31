@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/herdr-wt/internal/gitx"
-	"github.com/steig/herdr-wt/internal/herdrtest"
-	"github.com/steig/herdr-wt/internal/repolock"
+	"github.com/steig/muster/internal/gitx"
+	"github.com/steig/muster/internal/herdrtest"
+	"github.com/steig/muster/internal/repolock"
 )
 
 // armEvent sets the environment herdr sets when it invokes an [[events]] hook.
@@ -86,7 +86,7 @@ func unadoptedRepo(t *testing.T) (*herdrtest.Repo, string, *herdrtest.Server) {
 
 // The safety property, and the reason this test is first.
 //
-// steig.wt is linked into a live herdr session straight from the working
+// steig.muster is linked into a live herdr session straight from the working
 // checkout, so an [[events]] block is armed the moment it is saved. It is also
 // the correct shipping default: a marketplace plugin must not start autonomous
 // coding agents on install without being asked.
@@ -108,15 +108,42 @@ func TestEventHandlerIsOffByDefault(t *testing.T) {
 		}
 	}
 	// A silent no-op is the failure mode this whole codebase avoids.
-	if !strings.Contains(out.String(), "HERDR_WT_EVENTS") {
+	if !strings.Contains(out.String(), "MUSTER_EVENTS") {
 		t.Errorf("a disabled handler must say why it did nothing, got: %q", out.String())
+	}
+}
+
+// The rename's one real hazard. Someone who exported the old name months ago
+// has a variable that is still set and an opt-in that no longer exists, and the
+// failure is quiet: events simply stop. The old name must enable nothing and
+// must be named in the output, so the silence has a printed cause.
+func TestEventHandlerRefusesTheOldEnvNameAndSaysSo(t *testing.T) {
+	repo, checkout, server := unadoptedRepo(t)
+	armEvent(t, checkout, "wip", repo.RealRoot, "")
+	t.Setenv(eventsEnv, "")
+	t.Setenv(legacyEventsEnv, "1")
+
+	var out strings.Builder
+	if err := onEventCommand(&out); err != nil {
+		t.Fatalf("the old name must decline, not fail: %v", err)
+	}
+
+	for _, method := range []string{"worktree.open", "agent.start", "worktree.remove"} {
+		if called(t, server, method) {
+			t.Errorf("the old env name enabled %s; it must not be an alias", method)
+		}
+	}
+	for _, want := range []string{legacyEventsEnv, eventsEnv} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("declining on the old name must mention %s, got: %q", want, out.String())
+		}
 	}
 }
 
 func TestEventHandlerActsWhenOptedIn(t *testing.T) {
 	repo, checkout, server := unadoptedRepo(t)
 	armEvent(t, checkout, "wip", repo.RealRoot, "")
-	t.Setenv("HERDR_WT_EVENTS", "1")
+	t.Setenv("MUSTER_EVENTS", "1")
 
 	var out strings.Builder
 	if err := onEventCommand(&out); err != nil {
@@ -148,7 +175,7 @@ func TestEventHandlerNeverPrunes(t *testing.T) {
 	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
 
 	armEvent(t, checkout, "done", repo.RealRoot, "")
-	t.Setenv("HERDR_WT_EVENTS", "1")
+	t.Setenv("MUSTER_EVENTS", "1")
 
 	var out strings.Builder
 	if err := onEventCommand(&out); err != nil {
@@ -173,7 +200,7 @@ func TestEventHandlerMakesNoGhCalls(t *testing.T) {
 	herdrtest.FakeGh(t, "touch "+sentinel+"; echo '{\"state\":\"OPEN\"}'")
 
 	armEvent(t, checkout, "wip", repo.RealRoot, "")
-	t.Setenv("HERDR_WT_EVENTS", "1")
+	t.Setenv("MUSTER_EVENTS", "1")
 
 	var out strings.Builder
 	if err := onEventCommand(&out); err != nil {
@@ -196,7 +223,7 @@ func TestEventHandlerScopesFromPayloadNotContext(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", `{"workspace_cwd":"`+elsewhere.Root+`"}`)
 
 	armEvent(t, checkout, "wip", repo.RealRoot, "")
-	t.Setenv("HERDR_WT_EVENTS", "1")
+	t.Setenv("MUSTER_EVENTS", "1")
 
 	var out strings.Builder
 	if err := onEventCommand(&out); err != nil {
@@ -390,7 +417,7 @@ func TestEventHandlerRejectsAMalformedEnvelope(t *testing.T) {
 	repo, _, _ := unadoptedRepo(t)
 	_ = repo
 
-	t.Setenv("HERDR_WT_EVENTS", "1")
+	t.Setenv("MUSTER_EVENTS", "1")
 	t.Setenv("HERDR_PLUGIN_EVENT", "worktree.opened")
 	t.Setenv("HERDR_PLUGIN_EVENT_JSON", `{"event":`)
 
@@ -405,7 +432,7 @@ func TestEventHandlerRejectsAMalformedEnvelope(t *testing.T) {
 func TestEventHandlerIgnoresAnUnhandledKind(t *testing.T) {
 	_, _, server := unadoptedRepo(t)
 
-	t.Setenv("HERDR_WT_EVENTS", "1")
+	t.Setenv("MUSTER_EVENTS", "1")
 	t.Setenv("HERDR_PLUGIN_EVENT", "layout.updated")
 	t.Setenv("HERDR_PLUGIN_EVENT_JSON", `{"event":"layout_updated","data":{"type":"layout_updated"}}`)
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/herdr-wt/internal/herdrtest"
+	"github.com/steig/muster/internal/herdrtest"
 )
 
 // An unrecognised subcommand must fail. herdr records a plugin action that
@@ -95,7 +95,7 @@ func fakeSession(t *testing.T, repo *herdrtest.Repo) *herdrtest.Server {
 	t.Setenv("HERDR_SOCKET_PATH", server.SocketPath)
 	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", `{"workspace_cwd":"`+repo.Root+`"}`)
 	// Point plugin state somewhere disposable. Inherited, it would be the real
-	// ~/.local/state/herdr/plugins/steig.wt, and the suite would leave repository
+	// ~/.local/state/herdr/plugins/steig.muster, and the suite would leave repository
 	// locks in a developer's live plugin state. It happens to be unset in a
 	// normal shell, which is luck rather than isolation.
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())

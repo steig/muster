@@ -1,30 +1,30 @@
 ---
 name: worktrees
-description: Drive git worktrees as herdr workspaces through the herdr-wt plugin — list them, adopt orphans, staff empty workspaces with agents, and remove worktrees whose work has landed. Use when starting work in isolation or in parallel, when a task would mean checking out a branch over work already in progress, and when cleaning up finished worktrees.
+description: Drive git worktrees as herdr workspaces through the muster plugin — list them, adopt orphans, staff empty workspaces with agents, and remove worktrees whose work has landed. Use when starting work in isolation or in parallel, when a task would mean checking out a branch over work already in progress, and when cleaning up finished worktrees.
 ---
 
-# Worktrees via the `steig.wt` herdr plugin
+# Worktrees via the `steig.muster` herdr plugin
 
 This plugin reconciles `git worktree list` against herdr's workspaces and agents:
 adopting checkouts herdr does not know about, staffing empty workspaces, and removing
 worktrees whose work has landed.
 
-**There is no `wt` command.** This is a herdr plugin, not a CLI. Everything goes
+**There is no `muster` command.** This is a herdr plugin, not a CLI. Everything goes
 through `herdr plugin action invoke`.
 
 ## Invoking it
 
 ```bash
-herdr plugin action invoke ls    --plugin steig.wt   # worktrees + workspace + agent state
-herdr plugin action invoke sync  --plugin steig.wt   # adopt orphans, staff empty workspaces
-herdr plugin action invoke prune --plugin steig.wt   # DRY RUN — lists candidates, removes nothing
+herdr plugin action invoke ls    --plugin steig.muster   # worktrees + workspace + agent state
+herdr plugin action invoke sync  --plugin steig.muster   # adopt orphans, staff empty workspaces
+herdr plugin action invoke prune --plugin steig.muster   # DRY RUN — lists candidates, removes nothing
 ```
 
 **The invoke call does not return the action's output.** It returns an invocation
 record with `status: "running"`. Read what the action actually printed from the log:
 
 ```bash
-herdr plugin log list --plugin steig.wt \
+herdr plugin log list --plugin steig.muster \
   | jq -r '.result.logs[-1] | "exit=\(.exit_code)\n\(.stdout)"'
 ```
 
@@ -74,7 +74,7 @@ The plugin declares hooks (`worktree.created`, `worktree.opened`,
 rather than when someone remembers to run `sync`.
 
 **They are off by default and you must not turn them on.** Handlers no-op unless
-`HERDR_WT_EVENTS=1` is set, and they log that they declined. Enabling it means the
+`MUSTER_EVENTS=1` is set, and they log that they declined. Enabling it means the
 plugin can autonomously start coding agents — that is the user's decision, not yours.
 If you think it should be on, ask.
 
@@ -95,7 +95,7 @@ It is gated by the same opt-in as the events above, and adopts and staffs only.
 
 - **Never `git worktree add` by hand.** It produces checkouts herdr never learns
   about. Create through herdr and let `sync` adopt anything created another way.
-- **Never enable `HERDR_WT_EVENTS` yourself.** Ask.
+- **Never enable `MUSTER_EVENTS` yourself.** Ask.
 - **Read the plugin log, not the invoke response**, for an action's output.
 - **Do not run `sync` or `prune-apply` casually against a live session.** `sync` can
   start real agents in whatever repository is in scope. Use a scratch repository when

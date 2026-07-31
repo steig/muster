@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/herdr-wt/internal/reconcile"
+	"github.com/steig/muster/internal/reconcile"
 )
 
 // linked builds a linked worktree that would otherwise be prunable, so each
@@ -420,7 +420,7 @@ func TestSlugAndAgentName(t *testing.T) {
 	for _, tc := range []struct{ in, slug, agent string }{
 		{"fix-auth", "fix-auth", "fix-auth"},
 		{"Feat/249-Segments UI", "feat-249-segments-ui", "feat-249-segments-ui"},
-		{"249-segments", "249-segments", "wt-249-segments"},
+		{"249-segments", "249-segments", "muster-249-segments"},
 		{"--weird--", "weird", "weird"},
 	} {
 		if got := reconcile.Slug(tc.in); got != tc.slug {

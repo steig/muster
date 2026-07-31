@@ -1,4 +1,4 @@
-// Command herdr-wt drives git worktrees as herdr workspaces.
+// Command muster drives git worktrees as herdr workspaces.
 //
 // herdr runs it as a plugin: each subcommand below is registered as an action
 // in herdr-plugin.toml and invoked by herdr, which supplies HERDR_SOCKET_PATH
@@ -12,19 +12,19 @@ import (
 	"os"
 	"time"
 
-	"github.com/steig/herdr-wt/internal/execute"
-	"github.com/steig/herdr-wt/internal/gitx"
-	"github.com/steig/herdr-wt/internal/herdrapi"
-	"github.com/steig/herdr-wt/internal/reconcile"
-	"github.com/steig/herdr-wt/internal/repolock"
-	"github.com/steig/herdr-wt/internal/wt"
+	"github.com/steig/muster/internal/execute"
+	"github.com/steig/muster/internal/gitx"
+	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/muster/internal/reconcile"
+	"github.com/steig/muster/internal/repolock"
+	"github.com/steig/muster/internal/wt"
 )
 
-const usage = "usage: herdr-wt <ls|sync|prune|prune-apply|report|on-event|startup>"
+const usage = "usage: muster <ls|sync|prune|prune-apply|report|on-event|startup>"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "wt:", err)
+		fmt.Fprintln(os.Stderr, "muster:", err)
 		os.Exit(1)
 	}
 }
@@ -166,7 +166,7 @@ func (s *session) perform(out io.Writer, actions []reconcile.Action, applyPrune 
 
 	counts := execute.Counts(results)
 	if counts[execute.StatusPlanned] > 0 {
-		fmt.Fprintln(out, "\nrun the `wt: prune (apply)` action to remove the worktrees listed above")
+		fmt.Fprintln(out, "\nrun the `Muster: prune (apply)` action to remove the worktrees listed above")
 	}
 	if failed := counts[execute.StatusFailed]; failed > 0 {
 		return fmt.Errorf("%d of %d action(s) failed", failed, len(results))
@@ -200,7 +200,7 @@ func syncCommand(out io.Writer) error {
 		return err
 	}
 	if lock == nil {
-		return fmt.Errorf("another wt reconcile has held %s for more than %s; try again", s.root, commandLockWait)
+		return fmt.Errorf("another muster reconcile has held %s for more than %s; try again", s.root, commandLockWait)
 	}
 	defer lock.Release()
 
@@ -238,7 +238,7 @@ func pruneCommand(out io.Writer, apply bool) error {
 		return err
 	}
 	if lock == nil {
-		return fmt.Errorf("another wt reconcile has held %s for more than %s; try again", s.root, commandLockWait)
+		return fmt.Errorf("another muster reconcile has held %s for more than %s; try again", s.root, commandLockWait)
 	}
 	defer lock.Release()
 

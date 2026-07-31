@@ -1,4 +1,4 @@
-# herdr-wt
+# muster
 
 Drive git worktrees as [herdr](https://github.com/herdr/herdr) workspaces — list them,
 adopt them, staff them with agents, and tear them down again.
@@ -7,8 +7,8 @@ Plenty of tools create worktrees. This one is mostly about the other end: knowin
 checkouts are finished, and removing them without ever removing one that wasn't.
 
 ```
-$ herdr plugin action invoke ls --plugin steig.wt
-* main                      w21  idle     herdr-wt
+$ herdr plugin action invoke ls --plugin steig.muster
+* main                      w21  idle     muster
   feat/1-reconcile-execute  w22  working  1-reconcile-execute
   fix/257-erasure-comments  w1K  idle     257-erasure-comments
   worktree/brave-valley     -    -        brave-valley-66f8
@@ -28,7 +28,7 @@ a checkout with no workspace and no agent, which is exactly what `sync` picks up
 ## Install
 
 ```sh
-herdr plugin install steig/herdr-wt
+herdr plugin install steig/muster
 ```
 
 Installing runs `scripts/build.sh`, which prefers a local Go toolchain and falls back to a
@@ -53,12 +53,12 @@ immediately.
 
 | Action | What it does |
 | --- | --- |
-| `wt: list worktrees` | Every worktree in the current repository, with its herdr workspace and agent status. |
-| `wt: sync worktrees` | Opens a workspace for any worktree that lacks one, and starts an agent in any workspace sitting idle as a bare shell. Never removes anything. |
-| `wt: prune (list)` | Reports which worktrees look finished and which were spared, and why. Changes nothing. |
-| `wt: prune (apply)` | Actually removes them. |
+| `Muster: list worktrees` | Every worktree in the current repository, with its herdr workspace and agent status. |
+| `Muster: sync worktrees` | Opens a workspace for any worktree that lacks one, and starts an agent in any workspace sitting idle as a bare shell. Never removes anything. |
+| `Muster: prune (list)` | Reports which worktrees look finished and which were spared, and why. Changes nothing. |
+| `Muster: prune (apply)` | Actually removes them. |
 
-Output lands in `herdr plugin log list --plugin steig.wt`.
+Output lands in `herdr plugin log list --plugin steig.muster`.
 
 `prune` and `prune-apply` are two actions rather than one with a confirmation, because a
 plugin action has no prompt surface — there is nowhere to ask "are you sure?". Splitting
@@ -72,7 +72,7 @@ staffed the moment it exists instead of the next time you remember to run `sync`
 **Events are off by default. They do nothing until you opt in:**
 
 ```sh
-export HERDR_WT_EVENTS=1
+export MUSTER_EVENTS=1
 ```
 
 That is deliberate. These hooks start coding agents, and a plugin that begins spawning
@@ -97,7 +97,7 @@ There is no watcher and no poll loop. The zsh original had one — `wt watch`, w
 startup pass makes no network calls at all: pull request state only ever authorises a
 removal, and startup never removes anything.
 
-It shares the `HERDR_WT_EVENTS` opt-in above, and is off without it. Same reason, more so:
+It shares the `MUSTER_EVENTS` opt-in above, and is off without it. Same reason, more so:
 it starts agents across every open repository at once, on every launch.
 
 ## How it decides things
@@ -136,7 +136,7 @@ that `prune` and `prune-apply` are different in kind, and that enabling events i
 its call to make. A skill covering that ships in this repository:
 
 ```sh
-npx skills add steig/herdr-wt --skill worktrees -g
+npx skills add steig/muster --skill worktrees -g
 ```
 
 Or vendor `skills/worktrees/SKILL.md` into your own agent configuration, which pins it

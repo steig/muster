@@ -1,7 +1,7 @@
 name: release
 
 # scripts/build.sh falls back to
-# releases/latest/download/herdr-wt_<os>_<arch> when the installing machine has
+# releases/latest/download/muster_<os>_<arch> when the installing machine has
 # no Go toolchain. That URL only resolves if a release actually carries those
 # assets under exactly those names, so this workflow is what makes installing
 # without Go work at all.
@@ -34,12 +34,12 @@ jobs:
           for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
             os="${target%_*}"
             arch="${target#*_}"
-            GOOS="$os" GOARCH="$arch" go build -trimpath -o "dist/herdr-wt_${target}" .
+            GOOS="$os" GOARCH="$arch" go build -trimpath -o "dist/muster_${target}" .
           done
-          GOOS=windows GOARCH=amd64 go build -trimpath -o dist/herdr-wt_windows_amd64.exe .
+          GOOS=windows GOARCH=amd64 go build -trimpath -o dist/muster_windows_amd64.exe .
 
       - name: checksums
-        run: cd dist && sha256sum herdr-wt_* > checksums.txt && cat checksums.txt
+        run: cd dist && sha256sum muster_* > checksums.txt && cat checksums.txt
 
       - name: publish
         env:

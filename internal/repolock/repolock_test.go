@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steig/herdr-wt/internal/execute"
+	"github.com/steig/muster/internal/execute"
 )
 
 const repo = "/tmp/example-repo"

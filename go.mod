@@ -1,3 +1,3 @@
-module github.com/steig/herdr-wt
+module github.com/steig/muster
 
 go 1.26.5

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steig/herdr-wt/internal/execute"
-	"github.com/steig/herdr-wt/internal/herdrapi"
-	"github.com/steig/herdr-wt/internal/herdrtest"
-	"github.com/steig/herdr-wt/internal/reconcile"
+	"github.com/steig/muster/internal/execute"
+	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/muster/internal/herdrtest"
+	"github.com/steig/muster/internal/reconcile"
 )
 
 // fixture wires an executor to a fake herdr with no agents and no panes.

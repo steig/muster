@@ -6,10 +6,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/steig/herdr-wt/internal/gitx"
-	"github.com/steig/herdr-wt/internal/herdrapi"
-	"github.com/steig/herdr-wt/internal/reconcile"
-	"github.com/steig/herdr-wt/internal/repolock"
+	"github.com/steig/muster/internal/gitx"
+	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/muster/internal/reconcile"
+	"github.com/steig/muster/internal/repolock"
 )
 
 // eventsEnv opts a session in to the event fast path. Unset means events do
@@ -22,7 +22,22 @@ import (
 // agents without being asked, and a plugin that does that on install is handing
 // its user an autonomous trigger they never requested. Opting in is one
 // exported variable; opting out after a surprise is not.
-const eventsEnv = "HERDR_WT_EVENTS"
+const eventsEnv = "MUSTER_EVENTS"
+
+// legacyEventsEnv is what eventsEnv was called before the plugin was renamed.
+// It enables nothing. It exists so the gate can SAY so.
+//
+// A silent rename is the bad case here, and it is bad in a quiet direction: a
+// set variable becomes an unset one, which fails safe — events go off — but
+// gives no one a reason to look. Someone who opted in months ago would find
+// their hooks inert with nothing anywhere saying why.
+//
+// Honouring it as an alias was the alternative and it is worse. This variable
+// arms an autonomous trigger that starts coding agents, so keeping it live
+// under a name the plugin no longer documents means the loudest thing here
+// answers to a spelling that appears in no current README. Detect, refuse, and
+// name the replacement.
+const legacyEventsEnv = "HERDR_WT_EVENTS"
 
 // eventsEnabled reports whether the fast path is opted in to.
 func eventsEnabled() bool {
@@ -32,6 +47,18 @@ func eventsEnabled() bool {
 	default:
 		return true
 	}
+}
+
+// renamedEnvNotice is the line owed to a session still exporting the old name,
+// or "" when nothing is owed. An explicit MUSTER_EVENTS of any value silences
+// it: at that point the caller knows the current spelling, including when they
+// used it to opt out.
+func renamedEnvNotice() string {
+	if os.Getenv(eventsEnv) != "" || os.Getenv(legacyEventsEnv) == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s is set, but it was renamed to %s and the old name is not honoured; export %s=1 instead\n",
+		legacyEventsEnv, eventsEnv, eventsEnv)
 }
 
 // onEventCommand is the whole event fast path.
@@ -55,6 +82,7 @@ func onEventCommand(out io.Writer) error {
 	// been opted in does nothing whatsoever.
 	if !eventsEnabled() {
 		fmt.Fprintf(out, "events are off; export %s=1 to enable the worktree fast path\n", eventsEnv)
+		fmt.Fprint(out, renamedEnvNotice())
 		return nil
 	}
 

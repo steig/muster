@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/steig/herdr-wt/internal/gitx"
-	"github.com/steig/herdr-wt/internal/herdrapi"
+	"github.com/steig/muster/internal/gitx"
+	"github.com/steig/muster/internal/herdrapi"
 )
 
 // Collector gathers the facts Reconcile needs. Every field is injectable so

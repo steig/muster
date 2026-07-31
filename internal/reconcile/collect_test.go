@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/herdr-wt/internal/herdrapi"
-	"github.com/steig/herdr-wt/internal/herdrtest"
-	"github.com/steig/herdr-wt/internal/reconcile"
+	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/muster/internal/herdrtest"
+	"github.com/steig/muster/internal/reconcile"
 )
 
 // worktreeJSON builds one entry of a worktree.list reply.

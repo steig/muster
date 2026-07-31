@@ -1,10 +1,10 @@
-# herdr-wt — git worktrees as herdr workspaces.
+# muster — git worktrees as herdr workspaces.
 #
-# Install with `herdr plugin install steig/herdr-wt`, or for local development
+# Install with `herdr plugin install steig/muster`, or for local development
 # `herdr plugin link .` from a checkout.
 
-id = "steig.wt"
-name = "herdr-wt"
+id = "steig.muster"
+name = "muster"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
 description = "Drive git worktrees as herdr workspaces: list, create, and tear down worktrees with their workspace and agent state in one view."
@@ -23,28 +23,28 @@ command = ["sh", "scripts/build.sh"]
 # Windows therefore needs Go on PATH.
 [[build]]
 platforms = ["windows"]
-command = ["go", "build", "-o", "bin/herdr-wt.exe", "."]
+command = ["go", "build", "-o", "bin/muster.exe", "."]
 
 # Every entry point is declared twice — a unix entry and a windows twin — because
 # herdr requires a unique id per action and the two platforms need different
 # commands. The windows command goes through powershell rather than invoking
-# .\bin\herdr-wt.exe directly: herdr sets the child's cwd to the plugin root, but
+# .\bin\muster.exe directly: herdr sets the child's cwd to the plugin root, but
 # CreateProcessW resolves a relative application path against herdr's own cwd, so
 # the bare relative path fails. powershell's `&` resolves it from the right place.
 
 # ls — list every worktree in the current repository with the herdr workspace and
-# agent status attached. Output lands in `herdr plugin log list --plugin steig.wt`.
+# agent status attached. Output lands in `herdr plugin log list --plugin steig.muster`.
 [[actions]]
 id = "ls"
-title = "wt: list worktrees"
+title = "Muster: list worktrees"
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "ls"]
+command = ["./bin/muster", "ls"]
 
 [[actions]]
 id = "ls-windows"
-title = "wt: list worktrees"
+title = "Muster: list worktrees"
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe ls"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe ls"]
 
 # sync — adopt every worktree herdr has no workspace for, and staff every
 # workspace sitting there as a bare shell. Both are non-destructive, so they act
@@ -52,30 +52,30 @@ command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\
 # surface, so there is no confirmation step and pruning never happens here.
 [[actions]]
 id = "sync"
-title = "wt: sync worktrees"
+title = "Muster: sync worktrees"
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "sync"]
+command = ["./bin/muster", "sync"]
 
 [[actions]]
 id = "sync-windows"
-title = "wt: sync worktrees"
+title = "Muster: sync worktrees"
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe sync"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe sync"]
 
 # prune — the safe half: reports which worktrees look finished and why, and
 # which were spared and why, without touching anything. This is the action to
 # reach for; prune-apply below is the deliberate second step.
 [[actions]]
 id = "prune"
-title = "wt: prune (list)"
+title = "Muster: prune (list)"
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "prune"]
+command = ["./bin/muster", "prune"]
 
 [[actions]]
 id = "prune-windows"
-title = "wt: prune (list)"
+title = "Muster: prune (list)"
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe prune"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe prune"]
 
 # prune-apply — the destructive twin of `prune`, kept as its own action so that
 # removing worktrees is always a deliberate choice and never something a stray
@@ -83,15 +83,15 @@ command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\
 # that gained uncommitted work or an agent since the plan is skipped and said so.
 [[actions]]
 id = "prune-apply"
-title = "wt: prune (apply)"
+title = "Muster: prune (apply)"
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "prune-apply"]
+command = ["./bin/muster", "prune-apply"]
 
 [[actions]]
 id = "prune-apply-windows"
-title = "wt: prune (apply)"
+title = "Muster: prune (apply)"
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe prune-apply"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe prune-apply"]
 
 # Startup — the one-shot herdr runs after the server is ready.
 #
@@ -105,22 +105,22 @@ command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\
 # where a worktree added from a plain shell or a workspace restored without its
 # agent comes from. That gap opens once, at startup.
 #
-# Like the event hooks, this does nothing unless HERDR_WT_EVENTS is set — the
+# Like the event hooks, this does nothing unless MUSTER_EVENTS is set — the
 # same opt-in, because it is the same autonomous act of starting coding agents,
 # fired across every open repository at once.
 [[startup]]
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "startup"]
+command = ["./bin/muster", "startup"]
 
 [[startup]]
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe startup"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe startup"]
 
 # Events — the live half. herdr invokes these when worktrees appear, so a new
 # checkout is adopted and staffed as it happens rather than the next time
 # someone remembers to run `sync`.
 #
-# THESE DO NOTHING UNLESS HERDR_WT_EVENTS IS SET. The handler checks that before
+# THESE DO NOTHING UNLESS MUSTER_EVENTS IS SET. The handler checks that before
 # it even parses the event, so an un-opted-in install runs a process that exits
 # immediately and says why. That default is deliberate: these hooks start coding
 # agents, and a plugin that begins spawning agents the moment it is installed has
@@ -144,32 +144,32 @@ command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\
 [[events]]
 on = "worktree.created"
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "on-event"]
+command = ["./bin/muster", "on-event"]
 
 [[events]]
 on = "worktree.created"
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe on-event"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe on-event"]
 
 # An existing checkout that just gained a workspace, and so now wants staffing.
 [[events]]
 on = "worktree.opened"
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "on-event"]
+command = ["./bin/muster", "on-event"]
 
 [[events]]
 on = "worktree.opened"
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe on-event"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe on-event"]
 
 # An agent attached to or was RELEASED from a pane. The release case is the
 # valuable one: a worktree whose agent has gone is unstaffed again.
 [[events]]
 on = "pane.agent_detected"
 platforms = ["linux", "macos"]
-command = ["./bin/herdr-wt", "on-event"]
+command = ["./bin/muster", "on-event"]
 
 [[events]]
 on = "pane.agent_detected"
 platforms = ["windows"]
-command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe on-event"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\muster.exe on-event"]

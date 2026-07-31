@@ -7,8 +7,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/steig/herdr-wt/internal/gitx"
-	"github.com/steig/herdr-wt/internal/herdrapi"
+	"github.com/steig/muster/internal/gitx"
+	"github.com/steig/muster/internal/herdrapi"
 )
 
 // missing is printed for a column with nothing to show.

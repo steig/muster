@@ -29,13 +29,13 @@ func Slug(s string) string {
 const agentNameMax = 32
 
 // AgentName coerces a slug into a name herdr will accept. A name that does not
-// start with a letter gets a "wt-" prefix rather than being rejected.
+// start with a letter gets a "muster-" prefix rather than being rejected.
 func AgentName(slug string) string {
 	if slug == "" {
-		return "wt"
+		return "muster"
 	}
 	if c := slug[0]; c < 'a' || c > 'z' {
-		return truncate("wt-"+slug, agentNameMax)
+		return truncate("muster-"+slug, agentNameMax)
 	}
 	return truncate(slug, agentNameMax)
 }
