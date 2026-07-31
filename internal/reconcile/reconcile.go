@@ -37,9 +37,10 @@ type Worktree struct {
 	Dirty bool
 	// OwnCommits is the number of commits base does not already have.
 	OwnCommits int
-	// MergedIntoBase reports that base absorbed the branch through a merge.
-	// It is deliberately NOT "is an ancestor of base": a never-started branch
-	// is that too. See gitx.IsMergedInto.
+	// MergedIntoBase reports that base absorbed the branch through a merge
+	// commit. It is ADVISORY ONLY — see verdict for why topology never
+	// removes anything — and is used to explain a keep, not to justify a
+	// prune.
 	MergedIntoBase bool
 	// HasTranscript reports a prior Claude conversation for this checkout,
 	// which makes the difference between resuming and starting cold.
@@ -220,50 +221,62 @@ func prune(state State) []Action {
 			continue
 		}
 
-		// Positive evidence that the work finished beats guard c below. A
-		// merged PR, or a merge commit in base, both mean commits happened
-		// and landed — "no commits base lacks" is the consequence of the
-		// merge, not a sign the branch was never started.
-		if reason := finishedReason(w, state.Base); reason != "" {
+		if landed, reason := verdict(w, state.Base); landed {
 			actions = append(actions, Action{
 				Kind: KindPrune, Path: w.Path, Branch: w.Branch,
 				WorkspaceID: w.WorkspaceID, Reason: reason,
 			})
-			continue
+		} else {
+			keep(reason)
 		}
-
-		// Guard c: with no such evidence, a branch holding no commits of its
-		// own has not started. It is trivially an ancestor of base, and a
-		// naive merged test would offer to bin a worktree created seconds
-		// ago. Unstarted is not finished.
-		if w.OwnCommits == 0 {
-			keep("no commits yet (not started)")
-			continue
-		}
-
-		keep("still open")
 	}
 	return actions
 }
 
-// finishedReason explains why a branch is done, or returns empty when it is
-// not. A PR verdict wins; without one, fall back to whether base already
-// contains the branch.
-func finishedReason(w Worktree, base string) string {
+// verdict decides whether a branch's work has landed, and always explains
+// itself.
+//
+// The governing principle: "has this work landed" is NOT decidable from git
+// topology. Across fast-forward, squash, rebase and merge-commit workflows the
+// graph shapes overlap, and every attempt to separate them with one more
+// topological test has produced another case that test gets wrong:
+//
+//   - A fast-forward merge moves base onto the branch tip, so the tip is a
+//     first-parent trunk commit — identical to a branch that never committed.
+//   - A branch forked off already-merged work inherits a tip that sits off
+//     trunk, so it looks merged while having done nothing. It is literally the
+//     same commit as the branch that did land; no graph query separates them.
+//   - Squash and rebase rewrite commits entirely, so a fully landed branch is
+//     not an ancestor of base at all.
+//
+// So topology is not used to remove anything. PR state is authoritative
+// wherever it exists; where it does not, ambiguity resolves to keeping, and the
+// ambiguity is stated rather than dressed up as a verdict. An un-pruned
+// worktree costs disk. A wrongly pruned one costs work that exists nowhere
+// else. Those are not comparable, so the tie never goes to deletion.
+func verdict(w Worktree, base string) (landed bool, reason string) {
 	switch w.PR {
 	case PRMerged:
-		return "PR merged"
+		// The only authoritative "yes" available.
+		return true, "PR merged"
 	case PRClosed:
-		return "PR closed"
+		// Closed without merging is abandoned work, not finished work: the
+		// branch still holds commits that exist nowhere else. Surface it and
+		// let a human decide.
+		return false, "PR closed without merging — abandoned; remove it by hand if you are sure"
 	case PROpen:
-		// An open PR is active work even if base happens to contain the
-		// commits, so do not fall through to the ancestor test.
-		return ""
+		return false, "still open"
 	}
+
+	// No PR to appeal to. Everything below is a shape git cannot disambiguate.
 	if w.MergedIntoBase {
-		return fmt.Sprintf("merged into %s", base)
+		return false, fmt.Sprintf(
+			"looks merged into %s, but cannot tell that from a branch forked off merged work — keeping", base)
 	}
-	return ""
+	if w.OwnCommits == 0 {
+		return false, "no commits of its own — cannot tell unstarted from fast-forward merged — keeping"
+	}
+	return false, "still open"
 }
 
 // hasAgent reports whether any pane in the workspace hosts an agent.

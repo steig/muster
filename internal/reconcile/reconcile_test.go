@@ -1,6 +1,7 @@
 package reconcile_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/steig/herdr-wt/internal/reconcile"
@@ -133,33 +134,18 @@ func TestStaffResumesWhenATranscriptExists(t *testing.T) {
 	}
 }
 
+// A merged PR is the only signal that removes anything.
 func TestPrunesFinishedWork(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		mutate     func(*reconcile.Worktree)
-		wantReason string
-	}{
-		{"merged PR", func(w *reconcile.Worktree) { w.PR = reconcile.PRMerged }, "PR merged"},
-		{"closed PR", func(w *reconcile.Worktree) { w.PR = reconcile.PRClosed }, "PR closed"},
-		{"merged into base without a PR", func(w *reconcile.Worktree) {
-			w.PR = reconcile.PRNone
-			w.OwnCommits = 0
-			w.MergedIntoBase = true
-		}, "merged into main"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w := linked("/repo/wt/a", "a")
-			tc.mutate(&w)
-			state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{w}}
+	w := linked("/repo/wt/a", "a")
+	w.PR = reconcile.PRMerged
+	state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{w}}
 
-			action := find(reconcile.Reconcile(state), reconcile.KindPrune, "/repo/wt/a")
-			if action == nil {
-				t.Fatalf("expected a prune action, got %+v", reconcile.Reconcile(state))
-			}
-			if action.Reason != tc.wantReason {
-				t.Errorf("Reason = %q, want %q", action.Reason, tc.wantReason)
-			}
-		})
+	action := find(reconcile.Reconcile(state), reconcile.KindPrune, "/repo/wt/a")
+	if action == nil {
+		t.Fatalf("expected a prune action, got %+v", reconcile.Reconcile(state))
+	}
+	if action.Reason != "PR merged" {
+		t.Errorf("Reason = %q, want \"PR merged\"", action.Reason)
 	}
 }
 
@@ -216,15 +202,87 @@ func TestNeverPrunesBranchWithNoCommitsOfItsOwn(t *testing.T) {
 	}
 }
 
-// The exception that makes guard c safe to keep: zero own commits is also what
-// a merge leaves behind, so positive merge evidence must still win.
-func TestPrunesMergedBranchDespiteZeroOwnCommits(t *testing.T) {
+// A closed-but-unmerged PR is abandoned work, not finished work: the branch
+// still holds commits that exist nowhere else. It must be surfaced for a human
+// to decide, never auto-pruned.
+func TestNeverPrunesBranchWithAClosedPR(t *testing.T) {
+	w := linked("/repo/wt/a", "a")
+	w.PR = reconcile.PRClosed
+	state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{w}}
+
+	actions := reconcile.Reconcile(state)
+	if find(actions, reconcile.KindPrune, "/repo/wt/a") != nil {
+		t.Fatal("a closed PR is abandoned work, not landed work")
+	}
+
+	keep := find(actions, reconcile.KindKeep, "/repo/wt/a")
+	if keep == nil {
+		t.Fatal("a closed PR must still be surfaced")
+	}
+	if !strings.Contains(keep.Reason, "closed") {
+		t.Errorf("the reason must say the PR was closed so a human can decide, got %q", keep.Reason)
+	}
+}
+
+// Topology cannot tell a merged branch from a branch forked off merged work:
+// both point at the same commit. Where the PR is silent, keep.
+func TestNeverPrunesOnTopologyAlone(t *testing.T) {
 	state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{
-		{Path: "/repo/wt/done", Branch: "done", IsLinked: true, OwnCommits: 0, MergedIntoBase: true},
+		{Path: "/repo/wt/looks-merged", Branch: "looks-merged", IsLinked: true,
+			OwnCommits: 0, MergedIntoBase: true, PR: reconcile.PRNone},
 	}}
 
-	if find(reconcile.Reconcile(state), reconcile.KindPrune, "/repo/wt/done") == nil {
-		t.Fatal("a merged branch must be pruned even though it has no commits base lacks")
+	actions := reconcile.Reconcile(state)
+	if find(actions, reconcile.KindPrune, "/repo/wt/looks-merged") != nil {
+		t.Fatal("git topology alone must never be enough to remove a worktree")
+	}
+
+	keep := find(actions, reconcile.KindKeep, "/repo/wt/looks-merged")
+	if keep == nil {
+		t.Fatal("expected a keep")
+	}
+	// The ambiguity has to be visible, not dressed up as a confident verdict.
+	if !strings.Contains(keep.Reason, "cannot tell") {
+		t.Errorf("the reason should admit the ambiguity, got %q", keep.Reason)
+	}
+}
+
+// A merged PR is authoritative and prunes whatever shape the graph is in.
+func TestPrunesOnAMergedPRRegardlessOfTopology(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w    reconcile.Worktree
+	}{
+		{"merge commit", reconcile.Worktree{OwnCommits: 0, MergedIntoBase: true}},
+		{"fast-forward", reconcile.Worktree{OwnCommits: 0, MergedIntoBase: false}},
+		{"squash, commits still local", reconcile.Worktree{OwnCommits: 3, MergedIntoBase: false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := tc.w
+			w.Path, w.Branch, w.IsLinked, w.PR = "/repo/wt/a", "a", true, reconcile.PRMerged
+			state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{w}}
+
+			if find(reconcile.Reconcile(state), reconcile.KindPrune, "/repo/wt/a") == nil {
+				t.Fatal("a merged PR is authoritative")
+			}
+		})
+	}
+}
+
+// A fast-forward merge leaves no trace distinguishing it from a branch that
+// never started, so the reason must not claim the branch is unstarted.
+func TestZeroCommitReasonDoesNotClaimUnstarted(t *testing.T) {
+	state := reconcile.State{Base: "main", Worktrees: []reconcile.Worktree{
+		{Path: "/repo/wt/maybe", Branch: "maybe", IsLinked: true, OwnCommits: 0},
+	}}
+
+	keep := find(reconcile.Reconcile(state), reconcile.KindKeep, "/repo/wt/maybe")
+	if keep == nil {
+		t.Fatal("expected a keep")
+	}
+	if !strings.Contains(keep.Reason, "cannot tell") {
+		t.Errorf("a fast-forwarded branch looks identical to an unstarted one; "+
+			"the reason must not assert one of them, got %q", keep.Reason)
 	}
 }
 

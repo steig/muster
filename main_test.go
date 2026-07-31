@@ -182,6 +182,9 @@ func TestPruneListsWithoutRemoving(t *testing.T) {
 	repo.CommitIn(checkout, "done.txt", "work")
 	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
 
+	// Topology alone never prunes; an authoritative PR verdict does.
+	herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+
 	server := fakeSession(t, repo)
 	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "done", ""))
 	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
@@ -256,6 +259,9 @@ func TestPruneApplyRemoves(t *testing.T) {
 	checkout := repo.AddWorktree("done", "done")
 	repo.CommitIn(checkout, "done.txt", "work")
 	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+
+	// Topology alone never prunes; an authoritative PR verdict does.
+	herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
 
 	server := fakeSession(t, repo)
 	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "done", ""))

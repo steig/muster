@@ -137,6 +137,16 @@ func WriteFile(t *testing.T, path, content string) {
 	}
 }
 
+// AddWorktreeFrom creates a linked worktree on a new branch forked from start,
+// which need not be the base branch.
+func (r *Repo) AddWorktreeFrom(slug, branch, start string) string {
+	r.t.Helper()
+
+	path := filepath.Join(r.Root, ".claude", "worktrees", slug)
+	r.Git("worktree", "add", "-b", branch, path, start)
+	return path
+}
+
 // FakeGh puts a stub `gh` on PATH for the duration of the test. The script is a
 // shell body; write to stdout to fake a response.
 func FakeGh(t *testing.T, script string) {

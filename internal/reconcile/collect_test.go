@@ -80,16 +80,103 @@ func TestCollectAndReconcileAgainstRealGit(t *testing.T) {
 	}
 	actions := reconcile.Reconcile(state)
 
-	// The merged worktree is finished; the fresh one has not started.
-	if find(actions, reconcile.KindPrune, done) == nil {
-		t.Errorf("a merged worktree should be pruned, got %+v", actions)
-	}
-	if find(actions, reconcile.KindPrune, fresh) != nil {
-		t.Error("a worktree created seconds ago must not be pruned")
+	// With no PR to appeal to, neither is removed: git alone cannot tell a
+	// merged branch from a branch forked off merged work, and cannot tell an
+	// unstarted branch from a fast-forwarded one.
+	for _, checkout := range []string{done, fresh} {
+		if find(actions, reconcile.KindPrune, checkout) != nil {
+			t.Errorf("nothing should be pruned on topology alone, got %+v", actions)
+		}
+		keep := find(actions, reconcile.KindKeep, checkout)
+		if keep == nil {
+			t.Fatalf("every candidate must be explained, none for %s", checkout)
+		}
+		if !strings.Contains(keep.Reason, "cannot tell") {
+			t.Errorf("%s: reason should admit the ambiguity, got %q", filepath.Base(checkout), keep.Reason)
+		}
 	}
 	// Both lack a workspace, so both get adopted.
 	if find(actions, reconcile.KindAdopt, fresh) == nil {
 		t.Error("the fresh worktree should be adopted")
+	}
+}
+
+// The same repository with a merged PR: the authoritative signal removes what
+// topology alone could not.
+func TestCollectPrunesOnlyWithAPRVerdict(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	done := repo.AddWorktree("done", "done")
+	repo.CommitIn(done, "shipped.txt", "work")
+	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+
+	herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+
+	collector := collectFixture(t, repo,
+		[]map[string]any{worktreeJSON(done, "done", true, "")}, nil, nil, nil)
+	collector.LookupPR = func(branch string) reconcile.PRState {
+		return reconcile.GhPRState(repo.Root, branch)
+	}
+
+	state, err := collector.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if find(reconcile.Reconcile(state), reconcile.KindPrune, done) == nil {
+		t.Error("a merged PR should prune the worktree")
+	}
+}
+
+// A branch forked off already-merged work points at the same commit as the
+// branch that landed, so topology calls it merged. It has done nothing, and
+// removing it would bin a worktree someone just set up.
+func TestCollectDoesNotPruneABranchForkedOffMergedWork(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	done := repo.AddWorktree("done", "done")
+	repo.CommitIn(done, "done.txt", "work")
+	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+
+	// Brand-new branch off the merged tip: no work of its own.
+	later := repo.AddWorktreeFrom("later", "later", "done")
+
+	collector := collectFixture(t, repo,
+		[]map[string]any{worktreeJSON(later, "later", true, "")}, nil, nil, nil)
+
+	state, err := collector.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if find(reconcile.Reconcile(state), reconcile.KindPrune, later) != nil {
+		t.Fatal("a branch forked off merged work has done nothing and must not be pruned")
+	}
+}
+
+// A fast-forward merged branch and an unstarted one reach the reconciler with
+// identical facts, so neither may be removed and neither may be described as
+// definitely unstarted.
+func TestCollectKeepsFastForwardMergedWorktree(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	ff := repo.AddWorktree("ff", "ff")
+	repo.CommitIn(ff, "ff.txt", "work")
+	repo.Git("merge", "--ff-only", "ff")
+
+	collector := collectFixture(t, repo,
+		[]map[string]any{worktreeJSON(ff, "ff", true, "")}, nil, nil, nil)
+
+	state, err := collector.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	actions := reconcile.Reconcile(state)
+	if find(actions, reconcile.KindPrune, ff) != nil {
+		t.Fatal("a fast-forward merge is indistinguishable from unstarted work; keep it")
+	}
+	keep := find(actions, reconcile.KindKeep, ff)
+	if keep == nil {
+		t.Fatal("expected a keep")
+	}
+	if !strings.Contains(keep.Reason, "cannot tell") {
+		t.Errorf("the reason must not claim the branch is unstarted, got %q", keep.Reason)
 	}
 }
 

@@ -118,6 +118,62 @@ func TestIsMergedIntoRejectsUnmergedBranch(t *testing.T) {
 	}
 }
 
+// A fast-forward merge moves base's pointer to the branch tip, so the tip
+// becomes a first-parent trunk commit — exactly what a branch that never
+// committed also looks like. This test pins that indistinguishability: both
+// states produce the same two answers, so no caller may claim to tell them
+// apart.
+func TestFastForwardMergeIsIndistinguishableFromUnstarted(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	merged := repo.AddWorktree("ff", "ff")
+	repo.CommitIn(merged, "ff.txt", "work")
+	repo.Git("merge", "--ff-only", "ff")
+
+	unstarted := repo.AddWorktree("fresh", "fresh")
+
+	for _, tc := range []struct {
+		name     string
+		branch   string
+		checkout string
+	}{
+		{"fast-forward merged", "ff", merged},
+		{"never started", "fresh", unstarted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if gitx.IsMergedInto(repo.Root, tc.branch, "main") {
+				t.Error("a tip on base's trunk cannot be reported as merged")
+			}
+			if got := gitx.OwnCommits(tc.checkout, "main"); got != 0 {
+				t.Errorf("OwnCommits = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// A branch forked off already-merged work inherits a tip that sits off base's
+// trunk, so the topological test calls it merged even though the branch has
+// done nothing. Same commit, two branches: graph shape cannot separate them.
+func TestBranchForkedOffMergedWorkLooksMerged(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	done := repo.AddWorktree("done", "done")
+	repo.CommitIn(done, "done.txt", "work")
+	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+
+	// Fork a brand-new branch from the merged branch's tip.
+	fresh := repo.AddWorktreeFrom("later", "later", "done")
+
+	if !gitx.IsMergedInto(repo.Root, "later", "main") {
+		t.Skip("topology no longer reports this as merged; the guard below is moot")
+	}
+	// The branch has no work of its own, which is what makes acting on the
+	// topological verdict alone unsafe.
+	if got := gitx.OwnCommits(fresh, "main"); got != 0 {
+		t.Errorf("OwnCommits = %d, want 0", got)
+	}
+}
+
 // A squash merge rewrites the commit, so the branch is not an ancestor of base
 // at all. git cannot see it as merged; only the PR state can.
 func TestIsMergedIntoMissesSquashMerge(t *testing.T) {
