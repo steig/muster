@@ -93,6 +93,29 @@ title = "wt: prune (apply)"
 platforms = ["windows"]
 command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe prune-apply"]
 
+# Startup — the one-shot herdr runs after the server is ready.
+#
+# This is what replaces the zsh original's `wt watch`, a 90s loop that asked the
+# GitHub API about every worktree on every cycle. There is no loop here and no
+# resident process: one adopt-and-staff pass per repository herdr has a worktree
+# workspace open for, and then the command exits.
+#
+# The division of labour with [[events]] is the whole design. Events cover the
+# session; they cannot cover the interval when herdr was not running, which is
+# where a worktree added from a plain shell or a workspace restored without its
+# agent comes from. That gap opens once, at startup.
+#
+# Like the event hooks, this does nothing unless HERDR_WT_EVENTS is set — the
+# same opt-in, because it is the same autonomous act of starting coding agents,
+# fired across every open repository at once.
+[[startup]]
+platforms = ["linux", "macos"]
+command = ["./bin/herdr-wt", "startup"]
+
+[[startup]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\\herdr-wt.exe startup"]
+
 # Events — the live half. herdr invokes these when worktrees appear, so a new
 # checkout is adopted and staffed as it happens rather than the next time
 # someone remembers to run `sync`.

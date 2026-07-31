@@ -81,6 +81,16 @@ If you think it should be on, ask.
 When enabled the event path adopts and staffs only. It never prunes, and it makes no
 `gh` calls.
 
+## Startup
+
+The plugin also declares a `[[startup]]` one-shot: after herdr's server is ready it
+runs one adopt-and-staff pass per open repository, then exits. It exists to cover what
+events cannot — anything that changed while herdr was not running. It is not a watcher
+and does not poll; if you are ever tempted to add a loop here, that is the thing this
+replaced.
+
+It is gated by the same opt-in as the events above, and adopts and staffs only.
+
 ## Rules
 
 - **Never `git worktree add` by hand.** It produces checkouts herdr never learns

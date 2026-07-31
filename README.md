@@ -85,6 +85,21 @@ in your shell profile) rather than in a single pane.
 When enabled, the event path **adopts and staffs only — it never prunes.** Removal stays
 something you ask for by name.
 
+## Startup
+
+Events cover the session. They cannot cover the time herdr was not running — a worktree
+you added from a plain shell, a workspace restored without the agent that used to live in
+it. That gap opens exactly once, so it is closed exactly once: herdr runs a single
+adopt-and-staff pass per open repository after the server is ready, and the command exits.
+
+There is no watcher and no poll loop. The zsh original had one — `wt watch`, waking every
+90 seconds to ask the GitHub API about every worktree — and this is what replaced it. The
+startup pass makes no network calls at all: pull request state only ever authorises a
+removal, and startup never removes anything.
+
+It shares the `HERDR_WT_EVENTS` opt-in above, and is off without it. Same reason, more so:
+it starts agents across every open repository at once, on every launch.
+
 ## How it decides things
 
 Two ideas do most of the work here.
