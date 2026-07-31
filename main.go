@@ -10,15 +10,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/steig/herdr-wt/internal/execute"
 	"github.com/steig/herdr-wt/internal/gitx"
 	"github.com/steig/herdr-wt/internal/herdrapi"
 	"github.com/steig/herdr-wt/internal/reconcile"
+	"github.com/steig/herdr-wt/internal/repolock"
 	"github.com/steig/herdr-wt/internal/wt"
 )
 
-const usage = "usage: herdr-wt <ls|sync|prune|prune-apply>"
+const usage = "usage: herdr-wt <ls|sync|prune|prune-apply|on-event>"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -48,10 +50,29 @@ func run(args []string, out io.Writer) error {
 	case "prune-apply":
 		// The explicit opt-in to actually removing them.
 		return pruneCommand(out, true)
+	case "on-event":
+		// Invoked by herdr, never by hand. Off unless opted in.
+		return onEventCommand(out)
 	default:
 		return fmt.Errorf("unknown command %q; %s", args[0], usage)
 	}
 }
+
+// stateDir is where herdr lets this plugin keep state between invocations.
+//
+// Empty when we are not running under herdr, which repolock treats as "no lock
+// available" and proceeds through, rather than as a reason to stop.
+func stateDir() string { return os.Getenv("HERDR_PLUGIN_STATE_DIR") }
+
+// commandLockWait is how long a human-invoked command waits for a reconcile
+// already in progress. An event hook coalesces into the running pass instead,
+// but a person asked for this one, so it queues rather than quietly doing
+// nothing.
+const commandLockWait = 30 * time.Second
+
+// reconcilePasses bounds the coalescing loop. Two is the natural maximum — one
+// pass, plus one for whatever arrived while it ran — and the third is slack.
+const reconcilePasses = 3
 
 // session is what every command needs: a herdr connection, the repository being
 // worked on, and the directory the user invoked from.
@@ -111,7 +132,13 @@ func newSession(allowFallback bool) (*session, error) {
 
 // plan collects the current state and decides what the repository needs.
 func (s *session) plan() ([]reconcile.Action, error) {
-	state, err := reconcile.NewCollector(s.client, s.root).Collect()
+	return s.planWith(reconcile.NewCollector(s.client, s.root))
+}
+
+// planWith is plan against a collector the caller has adjusted, which is how
+// the event path drops the PR lookup.
+func (s *session) planWith(collector *reconcile.Collector) ([]reconcile.Action, error) {
+	state, err := collector.Collect()
 	if err != nil {
 		return nil, err
 	}
@@ -158,11 +185,25 @@ func syncCommand(out io.Writer) error {
 		return err
 	}
 
-	actions, err := s.plan()
+	// Serialise against an event hook reconciling the same repository. The
+	// executor re-checks its guards regardless, so this is about not doing the
+	// work twice rather than about safety.
+	lock, err := repolock.AcquireWithin(stateDir(), s.root, commandLockWait)
 	if err != nil {
 		return err
 	}
-	return s.perform(out, reconcile.Only(actions, reconcile.KindAdopt, reconcile.KindStaff), false)
+	if lock == nil {
+		return fmt.Errorf("another wt reconcile has held %s for more than %s; try again", s.root, commandLockWait)
+	}
+	defer lock.Release()
+
+	return lock.Repeat(reconcilePasses, func() error {
+		actions, err := s.plan()
+		if err != nil {
+			return err
+		}
+		return s.perform(out, reconcile.Only(actions, reconcile.KindAdopt, reconcile.KindStaff), false)
+	})
 }
 
 // pruneCommand reports finished worktrees, and removes them only when apply is
@@ -175,9 +216,31 @@ func pruneCommand(out io.Writer, apply bool) error {
 		return err
 	}
 
+	// Listing changes nothing, so it needs no claim on the repository; only the
+	// half that removes worktrees serialises against a concurrent reconcile.
+	if !apply {
+		actions, err := s.plan()
+		if err != nil {
+			return err
+		}
+		return s.perform(out, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), false)
+	}
+
+	lock, err := repolock.AcquireWithin(stateDir(), s.root, commandLockWait)
+	if err != nil {
+		return err
+	}
+	if lock == nil {
+		return fmt.Errorf("another wt reconcile has held %s for more than %s; try again", s.root, commandLockWait)
+	}
+	defer lock.Release()
+
+	// Deliberately a single pass, not Repeat: re-running a REMOVAL because more
+	// work was marked would be acting on a trigger someone else observed. The
+	// mark is left for the next reconcile, which is the adopt/staff path.
 	actions, err := s.plan()
 	if err != nil {
 		return err
 	}
-	return s.perform(out, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), apply)
+	return s.perform(out, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), true)
 }
