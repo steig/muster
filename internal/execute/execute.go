@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/steig/herdr-wt/internal/gitx"
 	"github.com/steig/herdr-wt/internal/herdrapi"
@@ -45,12 +46,20 @@ type Result struct {
 	Detail string
 }
 
-// agentStartTimeoutMS bounds herdr's own wait for a pane to become usable.
+// AgentStartTimeout bounds herdr's own wait for a pane to become usable.
 //
 // A worktree that has just been created is often still running direnv or nix
 // when staffing is attempted, and an agent cannot start against a busy prompt.
 // herdr will wait up to this long rather than failing instantly.
-const agentStartTimeoutMS = 60_000
+//
+// It is exported because it is also the longest a reconcile can LEGITIMATELY
+// hold the repository lock — a handler blocked here for a full minute is
+// healthy, not wedged. repolock.MaxHold is sized from it, and a test asserts the
+// two cannot drift apart.
+const AgentStartTimeout = 60 * time.Second
+
+// agentStartTimeoutMS is the same bound in the units the wire protocol wants.
+const agentStartTimeoutMS = int(AgentStartTimeout / time.Millisecond)
 
 // agentKind is the herdr agent to start when staffing a worktree.
 const agentKind = "claude"
