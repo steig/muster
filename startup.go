@@ -43,6 +43,7 @@ func startupCommand(out io.Writer) error {
 	// while the other kept firing.
 	if !eventsEnabled() {
 		fmt.Fprintf(out, "events are off; export %s=1 to reconcile worktrees at startup\n", eventsEnv)
+		fmt.Fprint(out, unrecognisedEventsNotice())
 		fmt.Fprint(out, renamedEnvNotice())
 		return nil
 	}

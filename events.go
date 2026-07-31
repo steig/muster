@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/steig/muster/internal/gitx"
 	"github.com/steig/muster/internal/herdrapi"
@@ -41,12 +42,53 @@ const legacyEventsEnv = "HERDR_WT_EVENTS"
 
 // eventsEnabled reports whether the fast path is opted in to.
 func eventsEnabled() bool {
-	switch os.Getenv(eventsEnv) {
-	case "", "0", "false":
-		return false
+	on, _ := parseEventsValue(os.Getenv(eventsEnv))
+	return on
+}
+
+// parseEventsValue reads the gate, reporting whether it is on and whether the
+// value is one this gate has a rule for.
+//
+// Two asymmetries, both deliberate, both because of what this variable arms.
+//
+// Falsey spellings are accepted, case-insensitively and whitespace-trimmed,
+// rather than only "0" and "false". `MUSTER_EVENTS=off` is what someone reaches
+// for when they want this to stop, and a switch that reads "off" as ON is worse
+// than no switch: it starts coding agents in response to being told not to.
+//
+// An UNRECOGNISED value reads as OFF. The counter-argument is real — a typo'd
+// opt-in gets nothing — but the two failure modes are not the same size. Falling
+// open means a mistyped opt-OUT silently arms an autonomous trigger; falling
+// closed means a mistyped opt-IN does nothing, and unrecognisedEventsNotice
+// makes even that loud. Nobody types a value nobody wrote a rule for and means
+// "start agents".
+func parseEventsValue(raw string) (on, recognised bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		// Unset, and a value that is nothing but whitespace, which is what a
+		// stray `export MUSTER_EVENTS=" "` leaves behind.
+		return false, true
+	case "1", "true", "yes", "y", "on", "enabled":
+		return true, true
+	case "0", "false", "no", "n", "off", "disabled":
+		return false, true
 	default:
-		return true
+		return false, false
 	}
+}
+
+// unrecognisedEventsNotice is the line owed to a session whose gate holds a
+// value no rule covers, or "" when nothing is owed.
+//
+// This is the whole price of failing closed, paid in full: someone who meant to
+// opt in and mistyped it gets a printed cause instead of silence.
+func unrecognisedEventsNotice() string {
+	raw := os.Getenv(eventsEnv)
+	if _, recognised := parseEventsValue(raw); recognised {
+		return ""
+	}
+	return fmt.Sprintf("%s=%q is not a value this gate recognises, so events stay off; export %s=1 to enable them\n",
+		eventsEnv, raw, eventsEnv)
 }
 
 // renamedEnvNotice is the line owed to a session still exporting the old name,
@@ -82,6 +124,7 @@ func onEventCommand(out io.Writer) error {
 	// been opted in does nothing whatsoever.
 	if !eventsEnabled() {
 		fmt.Fprintf(out, "events are off; export %s=1 to enable the worktree fast path\n", eventsEnv)
+		fmt.Fprint(out, unrecognisedEventsNotice())
 		fmt.Fprint(out, renamedEnvNotice())
 		return nil
 	}

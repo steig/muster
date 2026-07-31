@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,85 @@ func TestEventHandlerIsOffByDefault(t *testing.T) {
 	// A silent no-op is the failure mode this whole codebase avoids.
 	if !strings.Contains(out.String(), "MUSTER_EVENTS") {
 		t.Errorf("a disabled handler must say why it did nothing, got: %q", out.String())
+	}
+}
+
+// The inversion this gate used to have, pinned as a table.
+//
+// The old rule was `"", "0", "false" -> off, everything else -> on`, so
+// MUSTER_EVENTS=off armed the trigger it was typed to disarm — as did "no",
+// "False", "disabled" and a lone space. That is a switch that starts coding
+// agents in response to being told not to, and the README's whole safety
+// argument rests on it not doing that.
+func TestEventsGateReadsFalseySpellingsAsOff(t *testing.T) {
+	for _, value := range []string{
+		"0", "false", "FALSE", "False",
+		"no", "NO", "n", "N",
+		"off", "OFF", "Off",
+		"disabled", "DISABLED",
+		" ", "\t", " off ", " 0 ",
+	} {
+		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
+			t.Setenv(eventsEnv, value)
+			if eventsEnabled() {
+				t.Errorf("%s=%q enabled autonomous agent starts", eventsEnv, value)
+			}
+		})
+	}
+}
+
+func TestEventsGateReadsTruthySpellingsAsOn(t *testing.T) {
+	for _, value := range []string{
+		"1", "true", "TRUE", "True",
+		"yes", "YES", "y", "Y",
+		"on", "ON", "enabled", " 1 ",
+	} {
+		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
+			t.Setenv(eventsEnv, value)
+			if !eventsEnabled() {
+				t.Errorf("%s=%q did not opt in", eventsEnv, value)
+			}
+		})
+	}
+}
+
+// A value no rule covers is not a request to start agents. Falling closed costs
+// a mistyped opt-in its opt-in, so the cost is paid back in the output: the
+// handler names the value it did not understand.
+func TestEventsGateFailsClosedOnAnUnrecognisedValueAndSaysSo(t *testing.T) {
+	repo, checkout, server := unadoptedRepo(t)
+	armEvent(t, checkout, "wip", repo.RealRoot, "")
+	t.Setenv(eventsEnv, "ture")
+
+	var out strings.Builder
+	if err := onEventCommand(&out); err != nil {
+		t.Fatalf("an unrecognised value must decline, not fail: %v", err)
+	}
+
+	for _, method := range []string{"worktree.open", "agent.start", "worktree.remove"} {
+		if called(t, server, method) {
+			t.Errorf("%s=ture enabled %s; an unparsed value must not arm the trigger", eventsEnv, method)
+		}
+	}
+	if !strings.Contains(out.String(), "ture") {
+		t.Errorf("declining must name the value it did not understand, got: %q", out.String())
+	}
+}
+
+// The other half of the same bargain: an opt-OUT is understood, so it gets no
+// "I did not understand you" line. Only the plain off-by-default explanation.
+func TestEventsGateDoesNotScoldADeliberateOptOut(t *testing.T) {
+	repo, checkout, _ := unadoptedRepo(t)
+	armEvent(t, checkout, "wip", repo.RealRoot, "")
+	t.Setenv(eventsEnv, "off")
+
+	var out strings.Builder
+	if err := onEventCommand(&out); err != nil {
+		t.Fatalf("opting out must not fail: %v", err)
+	}
+
+	if strings.Contains(out.String(), "not a value this gate recognises") {
+		t.Errorf("%s=off is a recognised opt-out, got: %q", eventsEnv, out.String())
 	}
 }
 
