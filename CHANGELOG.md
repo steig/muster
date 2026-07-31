@@ -21,6 +21,21 @@ install` tracks branch HEAD rather than a tag — the version in
   identity is a per-channel counter rather than content — two identical reports
   are two reports.
 
+### Changed
+
+- **Split the README into `docs/`** (#47). At 542 lines it carried the problem
+  statement, quickstart, action surface, the whole dispatch design, exit codes,
+  event hooks, the removal model and the supply-chain argument in one scroll —
+  reference material a first-time reader does not need and a returning reader
+  could not find. README is now 216 lines; the rest moved to `docs/dispatch.md`,
+  `docs/pruning.md`, `docs/events.md`, `docs/reference.md` and `docs/trust.md`.
+
+  **The unsandboxed warning stayed in README, above the install decision.**
+  Moving it into `docs/trust.md` would have re-created #18 in a new form. So did
+  the two quickstart surprises — that `prune-apply` deletes local branches, and
+  that `gh` must be authenticated. No prose was lost; this was a re-container,
+  not an edit.
+
 ### Added
 
 - Exit codes and the errors a user is most likely to meet.

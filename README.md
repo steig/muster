@@ -92,7 +92,7 @@ Three things worth knowing before step 5 surprises you:
 - **jq** — for reading action output out of the plugin log, as above.
 - **gh**, *authenticated* *(optional)* — only used to read pull request state.
   Without it, the only removals left are the ones a deleted upstream authorises
-  (see [How it decides what to remove](#how-it-decides-what-to-remove)), and a
+  (see [How removal is decided](docs/pruning.md)), and a
   repository that uses pull requests will prune almost nothing.
 
 ## Actions
@@ -115,366 +115,30 @@ Staffing starts `claude`, and **resumes rather than restarts**: a checkout that
 already has a Claude Code transcript in `~/.claude/projects` is picked up with
 `--continue`, so re-staffing does not throw away the conversation.
 
-### Binding a key to an action
-
-herdr has no `plugin_action` keybinding type — its key commands are `command`,
-`pane`, `popup` and `split`. So a binding runs the invoke CLI like any other
-command, in your own `config.toml`:
-
-```toml
-[[keys.command]]
-key = "prefix+alt+s"
-type = "popup"
-command = "herdr plugin action invoke sync --plugin steig.worktender"
-width = "70%"
-height = "50%"
-```
-
-**Bind `sync` and `prune`, never `prune-apply`.** A key that can reach a removal
-is exactly what splitting those two actions was meant to prevent.
-
-This plugin deliberately ships **no** `[[keys.command]]` entries of its own. An
-install that silently claims `prefix+alt+s` is the same class of surprise as one
-that edits your agent's configuration — and you may already have that key.
-
-That is the whole of the herdr *action* surface, and not the whole of the plugin:
-`report` and `gate` are commands rather than actions, for reasons covered below.
-
-## Dispatching a worker, and waiting for it
-
-This is what the plugin is for once more than one agent is involved: a
-coordinating agent hands a slice of work to another and needs to know when it is
-done — without reading everything that agent did to get there.
-
-```sh
-# Resolve the binary once. It is not on PATH; herdr owns the install.
-worktender=$(herdr plugin list --json \
-  | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
-
-# COORDINATOR — dispatch first, then wait. Order matters.
-"$worktender" dispatch --pane w22:p1 --name reconcile-split --model sonnet
-"$worktender" gate --target reconcile-split --until done --require-pr --timeout 20m
-
-# WORKER — from inside its own pane:
-"$worktender" report --status done --pr 42 --note "landed the reconcile split"
-```
-
-The gate prints the report and exits 0 when the predicate holds. It exits
-non-zero when the worker reports `blocked`, when the worker dies before
-reporting, and when it times out.
-
-```sh
-worktender dispatch --pane <id> --name <agent> [--model <model>] [--permission-mode <mode>] [--resume]
-worktender report --status planned|blocked|done [--pr N] --note <text>
-worktender gate --target <agent|pane> [--until done] [--require-pr] [--timeout 15m]
-```
-
-### Why dispatch is separate from `sync`
-
-`sync` staffs a bare agent with no arguments, and that is deliberate. It runs
-from a keybinding and from event hooks, where nothing knows what the work is —
-so there is no role to route on, and giving an unattended reconciler an opinion
-about which model to spend or how much autonomy to grant is how a hook that
-fires on every new worktree quietly starts doing both. **`sync` stays dumb;
-dispatch routes.**
-
-Dispatch goes through the same executor `sync` does, which is what guarantees it
-re-checks the pane before starting. `agent.start` against a pane that already
-hosts an agent does not bounce off — it lands on a live conversation and
-destroys context that exists nowhere else.
-
-### The permission-mode problem, stated plainly
-
-A dispatched worker has no human at its pane, so it stalls on the first
-permission prompt and stays stalled — and a coordinating agent structurally
-cannot clear it. `--permission-mode` is the way out, and it comes with a real
-caveat rather than a reassurance:
-
-**worktender cannot sandbox the agent it starts.** `claude` takes no sandbox
-flag; sandboxing lives in settings.json, and this plugin does not write your
-agent's configuration. So a mode that stops the agent asking before it acts
-grants autonomy *without* the boundary that should accompany it.
-
-An allowlist does not substitute. A guard on command spelling only holds where
-the action has exactly one spelling: `$(...)` and `find -exec` are never
-auto-allowed by a prefix rule because they can run anything, and during this
-plugin's own development a worker denied `Bash(herdr agent start:*)` reached a
-live agent anyway by calling herdr's socket from Go, logging zero denials.
-Blocking the CLI blocked the convenient path, not the capability.
-
-So `--permission-mode bypassPermissions` and `acceptEdits` are **refused** unless
-you confirm the worker already has a boundary that does not depend on spelling —
-a sandbox profile, or a separate uid:
-
-```sh
-export WORKTENDER_UNSANDBOXED_OK=1
-```
-
-Nothing is defaulted. Without `--permission-mode`, dispatch changes nothing about
-what an agent may do.
-
-Details that bite:
-
-- **Dispatch, then gate.** The gate ignores whatever the pane already held when it
-  opened — that was a previous task's answer, and releasing on it is the stale
-  hand-off the gate exists to prevent.
-- **The worker reads `HERDR_PANE_ID` from its own environment and never asks.**
-  Running `report` from another pane's shell files the report against *that* pane.
-- **Outside herdr, `report` prints the envelope, warns on stderr, and exits 0.** A
-  caller checking only the exit code sees success where nothing was delivered.
-- **`--until` is repeatable** — pass it more than once to release on any of
-  several statuses.
-- **`--timeout` defaults to 15 minutes, and there is no wait-forever option.** A
-  gate that cannot expire wedges a coordinator with no diagnosis, which is worse
-  than no gate.
-- A `--pr` that is not a positive integer is **fatal, not dropped**. A note over
-  200 characters is **refused, not truncated** — shorten it and report again.
-
-Report `blocked` when you are actually blocked: that releases the coordinator's
-gate with a failure instead of making it wait out its clock, and the only party
-who can unblock you is the one sitting in that wait.
-
-### Why the report has no free text
-
-**A report is three fixed slots**: a status from a closed set, an optional pull
-request number, and a note capped at 200 characters. The shape is the feature,
-not a limitation of it.
-
-A worker's task usually arrived as a GitHub issue, whose body is written by anyone
-who can file one, so a worker may be relaying a stranger's words — and a report is
-therefore not a message the worker composes but slots the *coordinator* renders
-into its own prompt. The note reaches the coordinator quoted and announced as
-untrusted data, and the cap bounds how much of it can ever reach the context most
-worth protecting.
-
-The same reasoning bounds the gate. `--until` matches the status, `--require-pr`
-matches the presence of the pull request number, and there is no way to write a
-predicate over the note. A `--note-contains` would hand whoever wrote that issue
-the decision of when the coordinator's next agent starts.
-
-**What a gate does not establish is authorship.** It proves a well-formed report
-appeared in the worker's pane after the gate started, and nothing about who
-composed it. Any process already holding the herdr socket could write those slots
-onto another pane. That is a limit to state rather than a hole to engineer around:
-it needs code already running as you, so it crosses no privilege boundary — and a
-shared secret would not close it either, because the dispatch prompt sits in the
-worker's context beside the untrusted text, so anything that can talk the worker
-into faking a report can read the secret out of the same context and include it.
-
-Treat a `done` as a claim. Check the pull request it names.
-
-### How a report actually reaches a gate
-
-**Two channels, read on every look, and neither wins.**
-
-`report` attaches the envelope to the worker's own pane as herdr metadata, and
-also prints it. The gate reads the metadata *and* the pane's terminal buffer
-each time it wakes.
-
-Metadata exists because the pane alone never worked for the agent kind this is
-used with: Claude Code collapses a finished tool call to `Ran 1 shell command`,
-so a worker that *runs* `report` leaves the envelope in its transcript and
-nothing on screen.
-
-But metadata does not supersede the terminal, and that asymmetry was tried and
-removed. A reader that stopped at metadata the moment it held anything left a
-worker that reported `planned` over the tool call and finished by echoing `done`
-permanently unreleased.
-
-Three consequences worth knowing before you build on this:
-
-- **A worker that merely prints a well-formed envelope has reported.** It need
-  never run the command. The parser tolerates Claude Code's `⏺ ` decoration and
-  arbitrary indentation, because one demanding the bare header at column zero
-  read nothing at all from the pane of the very agent this exists to gate.
-- **Identity is a per-channel counter, never content.** Two byte-identical
-  reports are two reports, so a coordinator dispatching the same slice twice is
-  heard twice — which content comparison would have made inaudible. The
-  terminal's counter legitimately goes *down* as the buffer scrolls, and the
-  gate follows it down on purpose.
-- **Neither channel authenticates authorship**, only shape and position. See
-  above, and [SECURITY.md](SECURITY.md).
-
-## Exit codes and errors
-
-There are exactly two exit codes: **0**, or **1** with `worktender: <error>` on
-stderr.
-
-Everything fails loudly on purpose. herdr records a plugin action that exits 0
-as "succeeded", so a command that reports a problem and exits 0 is a silent
-failure — which is why `sync` and `prune` exit 1 with `%d of %d action(s)
-failed` rather than printing a warning and returning success.
-
-Errors you are most likely to meet:
-
-| Message | Means |
-| --- | --- |
-| `refusing to guess which repository to change` | You ran a changing command outside herdr. `ls` and `prune` allow it; `sync`, `prune-apply` and the event paths do not. |
-| `another worktender reconcile has held X for more than 30s` | A concurrent pass. Retry. |
-| `WORKTENDER_EVENTS="ture" is not a value this gate recognises` | Events stay **off**. Fix the value yourself; nothing here rewrites it. |
-| `MUSTER_EVENTS is set, but it was renamed` | A superseded opt-in enabling nothing. So is `HERDR_WT_EVENTS`. |
-| `--note is N characters; the limit is 200` | Refused, never truncated. Shorten and report again. |
-| `the worker reported blocked after Ns` | The gate failed fast rather than waiting out its clock. |
-| `no new report reached status done within Ns` | Timed out. The message quotes what the pane already held when the gate opened, which it ignored as a previous task's answer. |
-
-## Smaller things worth knowing
-
-- **`base` is `origin/HEAD`, not `main`.** It falls back to `main` only when
-  origin cannot be asked, so a repository defaulting to `master` or `develop` is
-  handled without configuration.
-- **`list` is an alias for `ls`.**
-- **Agent names** come from the checkout's directory basename, lowercased to
-  `[a-z0-9-]`, truncated to 32 characters, and prefixed `worktender-` if the
-  result does not start with a letter.
-- **Adoption does not focus the workspace**, so adopting a batch does not drag
-  you through every one of them.
-- **The repository lock is fail-open.** It lives under
-  `HERDR_PLUGIN_STATE_DIR`, and if that is absent or unwritable it degrades to a
-  lock that excludes nothing, silently. Any lock held longer than five minutes is
-  taken. It stops two reconciles duplicating work; **it is not a safety
-  control** — the guards that are re-checked immediately before removal are.
-
-## Events
-
-herdr can invoke this plugin when worktrees appear, so a new checkout is adopted
-and staffed the moment it exists instead of the next time you remember to run
-`sync`.
-
-**Events are off by default. They do nothing until you opt in:**
-
-```sh
-export WORKTENDER_EVENTS=1
-```
-
-That is deliberate. These hooks start coding agents, and a plugin that begins
-spawning agents the moment it is installed has handed you an autonomous trigger
-you never asked for. Opting in is one exported variable; opting out after a
-surprise is not.
-
-Turning it off works the way you would expect: `0`, `false`, `no`, `off` and
-`disabled` all disable events, in any capitalisation. So does unsetting it.
-Anything the variable does not recognise leaves events **off** and says so on the
-next hook — a value nobody wrote a rule for is not a request to start agents, and
-a typo in an opt-in is cheaper to notice than a typo in an opt-out is to survive.
-
-The variable is read from herdr's own environment, so export it before starting
-herdr (or in your shell profile) rather than in a single pane.
-
-If you opted in under an older name — `MUSTER_EVENTS`, or `HERDR_WT_EVENTS`
-before that — **it enables nothing**, and the next hook says so rather than
-failing quietly.
-
-When enabled, the event path **adopts and staffs only — it never prunes.** Removal
-stays something you ask for by name.
-
-## Startup
-
-Events cover the session. They cannot cover the time herdr was not running — a
-worktree you added from a plain shell, a workspace restored without the agent that
-used to live in it. That gap opens exactly once, so it is closed exactly once:
-herdr runs a single adopt-and-staff pass per open repository after the server is
-ready, and the command exits.
-
-There is no watcher and no poll loop. The zsh original had one — `wt watch`,
-waking every 90 seconds to ask the GitHub API about every worktree — and this is
-what replaced it. The startup pass makes no network calls at all: pull request
-state only ever authorises a removal, and startup never removes anything.
-
-It shares the `WORKTENDER_EVENTS` opt-in above, and is off without it. Same
-reason, more so: it starts agents across every open repository at once, on every
-launch.
-
-## How it decides what to remove
-
-Two ideas do most of the work here.
-
-**An event is a trigger, never a fact.** The event handler does not act on what
-the event says. It reads it for one thing — which repository — and then runs the
-same whole-repository pass that `sync` runs, against live state. An event payload
-describes the world as it was before this process started, so it is out of date on
-arrival. This also means the event path and the reconciler cannot disagree,
-because they are the same code.
-
-**Whether work has landed is not decidable from git topology.** Across
-fast-forward, squash, rebase and merge-commit workflows the graph shapes overlap:
-a branch merged by fast-forward looks exactly like a branch that never committed,
-and a branch forked off already-merged work looks exactly like one that landed. So
-topology never removes anything **on its own** here, ambiguity always resolves to
-keeping the worktree, and the reason is printed rather than dressed up as a
-verdict.
-
-An un-pruned worktree costs disk. A wrongly pruned one costs work that exists
-nowhere else. Those are not comparable, so the tie never goes to deletion.
-
-Two things can authorise a removal:
-
-1. **A merged pull request.** The only unambiguous "yes" available, and the only
-   one that covers squash and rebase workflows — those rewrite commits, so the
-   branch is not an ancestor of base at all and no amount of topology will say so.
-2. **A deleted upstream, together with the branch's commits already being in
-   base.** Both halves are required.
-
-The second exists because the first goes inert in a repository that does not use
-pull requests. It works because **a deleted remote branch is a human action rather
-than a graph shape**, and that is exactly the fact topology is missing. The
-ambiguous case is "did this branch land, or was it forked off work that had
-already landed?" — indistinguishable by shape, since they can be the same commit,
-but not by publication history: a branch forked off merged work and never pushed
-has no upstream to delete, while a branch that landed was pushed and had its
-remote ref removed, which is what a merge button does by default.
-
-Neither half is enough alone. A deleted upstream by itself is equally what
-abandoning work looks like, so it is reported and the worktree kept. Being an
-ancestor of base by itself is the original ambiguity.
-
-That principle shows up as a set of guards, each re-checked immediately before
-anything is removed rather than trusted from the plan:
-
-- uncommitted changes, including untracked files
-- an agent currently running in the worktree
-- the directory you are standing in
-- a pull request that is closed but not merged — abandoned work still holds commits
-
-A guard that cannot be checked counts as unsatisfied. If herdr cannot be asked
-whether an agent is running, the worktree is kept rather than removed.
-
 ## Trust
 
 **A herdr plugin is not sandboxed.** This one runs as you, with your files, your
 shell and your credentials, and what it does with them is start coding agents and
 delete git worktrees and branches. That is what it is *for* rather than a side
-effect — most of this README is about the guards on the deleting half — but
-installing it is a decision to let code from someone else's repository do those
-things on your machine, and it is worth making on purpose. The two capabilities
-most worth knowing: removal needs either a merged pull request or a deleted
-upstream over commits base already has, and keeps anything ambiguous; and the
-hooks that would start agents without being asked are off until you turn them on.
+effect, but installing it is a decision to let code from someone else's
+repository do those things on your machine, and it is worth making on purpose.
 
-Installing runs `scripts/build.sh`, which prefers a local Go toolchain and falls
-back to a prebuilt release binary, so it works with or without Go. On Windows the
-build needs Go on `PATH`.
+The two capabilities most worth knowing before you install:
 
-With Go present you get the stronger of the two paths by a distance: the binary is
-compiled from the source that was just cloned, so what you can read is what you
-run.
+- **Removal needs either a merged pull request, or a deleted upstream over
+  commits base already has.** Anything ambiguous is kept, and the reason is
+  printed.
+- **The hooks that would start agents without being asked are off** until you
+  turn them on.
 
-Without Go, the script downloads the release matching the version in the manifest
-it cloned — pinned to that tag rather than to `latest`, so reading `v0.4.1` and
-installing cannot hand you something newer — and checks it against the
-`checksums.txt` published alongside. A missing or mismatched checksum aborts the
-install rather than warning about it, and no unverified download is left behind on
-any failure path.
+With a Go toolchain the binary is compiled from the source that was just cloned,
+so what you can read is what you run. Without Go, a prebuilt release binary is
+downloaded, pinned to the manifest version and checksummed — which proves the
+download arrived intact and **nothing about who published it**.
 
-That check proves the download arrived intact, and nothing beyond it. The binary
-and its checksum come from the same release, so both are published by whoever can
-publish releases here, and there is no signature and no attestation to say who
-that was. On the no-Go path you are trusting this GitHub account rather than a
-proof of authorship. That is the same trust nearly all software installed from
-GitHub asks for — which is a reason to say so plainly, not a reason to imply the
-checksum is doing more work than it is.
-
-See [SECURITY.md](SECURITY.md) for the trust boundary in full, and for how to
-report something privately.
+The full argument, including what the checksum does not establish, is in
+[docs/trust.md](docs/trust.md). How to report something privately is in
+[SECURITY.md](SECURITY.md).
 
 For local development, from a checkout:
 
@@ -482,8 +146,18 @@ For local development, from a checkout:
 herdr plugin link .
 ```
 
-Note that `link` points herdr at the working tree, so manifest edits take effect
+`link` points herdr at the working tree, so manifest edits take effect
 immediately.
+
+## Documentation
+
+| | |
+| --- | --- |
+| [Dispatching a worker](docs/dispatch.md) | `dispatch`, `report` and `gate` — handing a slice to another agent and waiting for it, and why the report has fixed slots. |
+| [How removal is decided](docs/pruning.md) | What authorises a removal, why git topology never does it alone, and the guards. |
+| [Events and startup](docs/events.md) | The hooks that adopt and staff automatically, and the one-shot pass that covers what they cannot. |
+| [Reference](docs/reference.md) | Exit codes, the errors you are likely to meet, keybindings, and the smaller behaviours. |
+| [Trust](docs/trust.md) | What running unsandboxed means here, and what the install path does and does not prove. |
 
 ## For coding agents
 
