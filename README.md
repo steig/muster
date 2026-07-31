@@ -263,6 +263,77 @@ into faking a report can read the secret out of the same context and include it.
 
 Treat a `done` as a claim. Check the pull request it names.
 
+### How a report actually reaches a gate
+
+**Two channels, read on every look, and neither wins.**
+
+`report` attaches the envelope to the worker's own pane as herdr metadata, and
+also prints it. The gate reads the metadata *and* the pane's terminal buffer
+each time it wakes.
+
+Metadata exists because the pane alone never worked for the agent kind this is
+used with: Claude Code collapses a finished tool call to `Ran 1 shell command`,
+so a worker that *runs* `report` leaves the envelope in its transcript and
+nothing on screen.
+
+But metadata does not supersede the terminal, and that asymmetry was tried and
+removed. A reader that stopped at metadata the moment it held anything left a
+worker that reported `planned` over the tool call and finished by echoing `done`
+permanently unreleased.
+
+Three consequences worth knowing before you build on this:
+
+- **A worker that merely prints a well-formed envelope has reported.** It need
+  never run the command. The parser tolerates Claude Code's `⏺ ` decoration and
+  arbitrary indentation, because one demanding the bare header at column zero
+  read nothing at all from the pane of the very agent this exists to gate.
+- **Identity is a per-channel counter, never content.** Two byte-identical
+  reports are two reports, so a coordinator dispatching the same slice twice is
+  heard twice — which content comparison would have made inaudible. The
+  terminal's counter legitimately goes *down* as the buffer scrolls, and the
+  gate follows it down on purpose.
+- **Neither channel authenticates authorship**, only shape and position. See
+  above, and [SECURITY.md](SECURITY.md).
+
+## Exit codes and errors
+
+There are exactly two exit codes: **0**, or **1** with `worktender: <error>` on
+stderr.
+
+Everything fails loudly on purpose. herdr records a plugin action that exits 0
+as "succeeded", so a command that reports a problem and exits 0 is a silent
+failure — which is why `sync` and `prune` exit 1 with `%d of %d action(s)
+failed` rather than printing a warning and returning success.
+
+Errors you are most likely to meet:
+
+| Message | Means |
+| --- | --- |
+| `refusing to guess which repository to change` | You ran a changing command outside herdr. `ls` and `prune` allow it; `sync`, `prune-apply` and the event paths do not. |
+| `another worktender reconcile has held X for more than 30s` | A concurrent pass. Retry. |
+| `WORKTENDER_EVENTS="ture" is not a value this gate recognises` | Events stay **off**. Fix the value yourself; nothing here rewrites it. |
+| `MUSTER_EVENTS is set, but it was renamed` | A superseded opt-in enabling nothing. So is `HERDR_WT_EVENTS`. |
+| `--note is N characters; the limit is 200` | Refused, never truncated. Shorten and report again. |
+| `the worker reported blocked after Ns` | The gate failed fast rather than waiting out its clock. |
+| `no new report reached status done within Ns` | Timed out. The message quotes what the pane already held when the gate opened, which it ignored as a previous task's answer. |
+
+## Smaller things worth knowing
+
+- **`base` is `origin/HEAD`, not `main`.** It falls back to `main` only when
+  origin cannot be asked, so a repository defaulting to `master` or `develop` is
+  handled without configuration.
+- **`list` is an alias for `ls`.**
+- **Agent names** come from the checkout's directory basename, lowercased to
+  `[a-z0-9-]`, truncated to 32 characters, and prefixed `worktender-` if the
+  result does not start with a letter.
+- **Adoption does not focus the workspace**, so adopting a batch does not drag
+  you through every one of them.
+- **The repository lock is fail-open.** It lives under
+  `HERDR_PLUGIN_STATE_DIR`, and if that is absent or unwritable it degrades to a
+  lock that excludes nothing, silently. Any lock held longer than five minutes is
+  taken. It stops two reconciles duplicating work; **it is not a safety
+  control** — the guards that are re-checked immediately before removal are.
+
 ## Events
 
 herdr can invoke this plugin when worktrees appear, so a new checkout is adopted
