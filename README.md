@@ -333,8 +333,21 @@ events is not its call to make. A skill covering that ships in this repository:
 npx skills add steig/worktender --skill worktrees -g
 ```
 
-Or vendor `skills/worktrees/SKILL.md` into your own agent configuration, which
-pins it rather than tracking this repository.
+A second skill covers the other end — an agent that *dispatches* worktender's
+agents rather than being one:
+
+```sh
+npx skills add steig/worktender --skill coordinator -g
+```
+
+It encodes what a session running as a router needs and keeps getting wrong:
+never read a worker's diff, verify with targeted commands instead of relaying
+claims, ask whether something was run or merely reasoned, pass a brief inline so
+no worker stalls on a file-read prompt, and keep anything touching live or shared
+state out of a dispatch entirely.
+
+Or vendor `skills/worktrees/SKILL.md` and `skills/coordinator/SKILL.md` into your
+own agent configuration, which pins them rather than tracking this repository.
 
 Nothing here writes to your agent's configuration during install, and nothing
 should. Running unsandboxed as it does, a plugin that quietly edits how your
