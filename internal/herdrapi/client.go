@@ -114,7 +114,7 @@ func (c *Client) callWithin(method string, params map[string]any, out any, timeo
 		params = map[string]any{}
 	}
 	// Encode appends a trailing newline, which is exactly herdr's framing.
-	if err := json.NewEncoder(conn).Encode(request{ID: "muster", Method: method, Params: params}); err != nil {
+	if err := json.NewEncoder(conn).Encode(request{ID: "worktender", Method: method, Params: params}); err != nil {
 		return fmt.Errorf("write %s request: %w", method, err)
 	}
 

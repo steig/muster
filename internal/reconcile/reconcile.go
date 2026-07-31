@@ -18,7 +18,7 @@ package reconcile
 import (
 	"fmt"
 
-	"github.com/steig/muster/internal/gitx"
+	"github.com/steig/worktender/internal/gitx"
 )
 
 // PRState is a pull request's state as gh reports it.

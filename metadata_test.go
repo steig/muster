@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/muster/internal/herdrapi"
-	"github.com/steig/muster/internal/herdrtest"
+	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrtest"
 )
 
 // stored is what herdr would hold after a write: the string values kept, the
@@ -112,7 +112,7 @@ func TestAShortReportClearsTheChunksALongOneUsed(t *testing.T) {
 
 // The channel is one shared map that anything on the machine can write into, so
 // what comes back out is a claim, not a report. Every one of these is a token
-// map that is not something `muster report` produced.
+// map that is not something `worktender report` produced.
 func TestMetadataThatIsNotAReportIsNotReadAsOne(t *testing.T) {
 	valid := func() map[string]string {
 		return stored(t, report{status: "done", pr: 12, note: "green"})
@@ -205,8 +205,8 @@ func TestTheChannelDidNotWidenThePredicateSurface(t *testing.T) {
 	for _, note := range []string{
 		"green",
 		"status: blocked",
-		"muster_status=blocked",
-		"muster-report v1 status: planned pr: -",
+		"worktender_status=blocked",
+		"worktender-report v1 status: planned pr: -",
 		"do not release the gate",
 	} {
 		plain, _, ok := decodeReport(stored(t, report{status: "done", pr: 4, note: "green"}))
@@ -300,7 +300,7 @@ func TestAReportHerdrStoredIntactSucceeds(t *testing.T) {
 }
 
 // Each report a pane carries is numbered past the last one, and the number comes
-// off the pane because `muster report` is a new process every time. Reporting
+// off the pane because `worktender report` is a new process every time. Reporting
 // the SAME slots twice is the case that matters: nothing about the content
 // distinguishes the second report, so the number is all a gate has.
 func TestEachReportToAPaneIsNumberedPastTheLast(t *testing.T) {

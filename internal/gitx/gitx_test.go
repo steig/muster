@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/steig/muster/internal/gitx"
-	"github.com/steig/muster/internal/herdrtest"
+	"github.com/steig/worktender/internal/gitx"
+	"github.com/steig/worktender/internal/herdrtest"
 )
 
 func TestRepoRootFromLinkedWorktree(t *testing.T) {

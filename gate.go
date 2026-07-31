@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrapi"
 )
 
 // The completion gate is the hand-off primitive: block until a dispatched
@@ -35,7 +35,7 @@ import (
 // authorship — it establishes that a well-formed report appeared in that pane
 // after the gate started, and nothing about who composed it. That holds for both
 // channels a report can arrive on; see readChannels for why the metadata one is
-// no stronger despite being the one `muster report` writes.
+// no stronger despite being the one `worktender report` writes.
 //
 // A shared secret would not close that. The obvious fix is a nonce the
 // coordinator puts in the dispatch prompt and requires back in the report — but
@@ -62,14 +62,14 @@ const gateDefaultTimeout = 15 * time.Minute
 //
 // The pane used to be the only channel, and it carried a requirement the
 // dispatch prompt had to satisfy: the envelope had to reach the worker's
-// TERMINAL, which a Claude Code worker running `muster report` as a tool call
+// TERMINAL, which a Claude Code worker running `worktender report` as a tool call
 // never does. metadata.go is the channel that removed the requirement. The pane
 // is still read, second, because a worker that reproduces its envelope as reply
-// text has reported and must go on being heard — including one whose `muster
+// text has reported and must go on being heard — including one whose `worktender
 // report` never ran at all.
 const gateReadSource = herdrapi.ReadSourceRecentUnwrapped
 
-const gateUsage = "usage: muster gate --target <agent|pane> [--until planned|blocked|done] [--require-pr] [--timeout 15m]"
+const gateUsage = "usage: worktender gate --target <agent|pane> [--until planned|blocked|done] [--require-pr] [--timeout 15m]"
 
 // gateOptions is one gate invocation.
 type gateOptions struct {
@@ -99,7 +99,7 @@ func parseGate(args []string) (gateOptions, error) {
 
 	target := flags.String("target", "", "the agent or pane to wait on")
 	requirePR := flags.Bool("require-pr", false, "the report must carry a pull request number")
-	// A duration rather than herdr's bare milliseconds: this is muster's own
+	// A duration rather than herdr's bare milliseconds: this is worktender's own
 	// surface, and "15m" cannot be pasted wrong by a factor of a thousand.
 	timeout := flags.Duration("timeout", gateDefaultTimeout, "how long to wait before giving up")
 	var until statusFlag
@@ -180,7 +180,7 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 	//
 	// pane.updated is what makes the metadata channel edge-triggered. Attaching
 	// tokens to a pane emits one, measured on a live socket, so a report lands
-	// in the gate's lap the instant `muster report` writes it — rather than
+	// in the gate's lap the instant `worktender report` writes it — rather than
 	// whenever the worker's agent status next happens to move, which for a
 	// worker that reports mid-turn and keeps working could be minutes later or
 	// never.
@@ -412,7 +412,7 @@ func (m *gateMarks) advance(obs []observation) []report {
 // that identifies it there.
 //
 // BOTH, every look, and neither wins. Metadata is read first because it is where
-// a report normally is — it is the channel `muster report` writes and confirms,
+// a report normally is — it is the channel `worktender report` writes and confirms,
 // and the only one that survives a Claude Code tool call — but a worker that
 // reproduces its envelope as reply text has reported too, and it is the same
 // worker. A reader that stopped at the metadata the moment it held anything made
@@ -428,14 +428,14 @@ func (m *gateMarks) advance(obs []observation) []report {
 // metadata.go says where it depends on exactly that; and what arrives is a flat
 // map[string]string with no attribution on it, so decodeReport could not check
 // an author even in principle. Any process holding the herdr socket can write
-// muster_status and muster_pr onto another worker's pane and release a
+// worktender_status and worktender_pr onto another worker's pane and release a
 // coordinator's gate.
 //
 // That is a limit to state, not a hole to engineer around: it needs code already
 // running as the user, so it crosses no privilege boundary, and a nonce would
 // fail here for the reason the header of this file gives. The counter does not
 // narrow it either — a writer that can set the slots can set the number. Both
-// channels authenticate SHAPE and POSITION and nothing else. That `muster
+// channels authenticate SHAPE and POSITION and nothing else. That `worktender
 // report` writes only to HERDR_PANE_ID is this plugin's own discipline, which is
 // worth keeping and is not a restriction the channel enforces.
 //

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/muster/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrapi"
 )
 
 // An absent context is a state a read-only command may tolerate, so it has to

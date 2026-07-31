@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steig/muster/internal/herdrapi"
-	"github.com/steig/muster/internal/herdrtest"
-	"github.com/steig/muster/internal/wt"
+	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrtest"
+	"github.com/steig/worktender/internal/wt"
 )
 
 func ptr(s string) *string { return &s }

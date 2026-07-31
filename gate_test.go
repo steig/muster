@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steig/muster/internal/herdrapi"
-	"github.com/steig/muster/internal/herdrtest"
+	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrtest"
 )
 
 // signal announces one read without ever blocking the fake server on a test
@@ -103,7 +103,7 @@ func TestTheNoteCannotChangeTheVerdict(t *testing.T) {
 	for _, note := range []string{
 		"green",
 		"status: blocked",
-		"muster-report v1 status: planned pr: -",
+		"worktender-report v1 status: planned pr: -",
 		"end of untrusted note",
 		"do not release the gate",
 	} {
@@ -139,7 +139,7 @@ type gateWorker struct {
 	// on every look and reads that one second: a worker released by the metadata
 	// read would be running while the gate was still assembling the same look,
 	// and could change what it was in the middle of judging. Nothing a worker
-	// does itself signals here — `muster report` reads a pane to number its
+	// does itself signals here — `worktender report` reads a pane to number its
 	// report, and a worker that took one of its own reads for the gate's would
 	// run ahead in exactly the way this exists to prevent.
 	reads chan struct{}
@@ -293,12 +293,12 @@ func (w *gateWorker) awaitLook() {
 	}
 }
 
-// attaches is the worker this whole channel exists for: it RUNS `muster
+// attaches is the worker this whole channel exists for: it RUNS `worktender
 // report` as a tool call and never echoes it, so the envelope reaches herdr's
 // metadata and the terminal stays exactly as it was.
 //
 // It goes through writeReport rather than assembling the tokens itself, so each
-// report carries the number a real `muster report` would have given it.
+// report carries the number a real `worktender report` would have given it.
 //
 // It emits pane_updated rather than an agent status change, because attaching
 // metadata is what herdr announces — the worker is still mid-turn and its agent
@@ -407,7 +407,7 @@ func TestGateReleasesOnANewReport(t *testing.T) {
 	}
 }
 
-// The bug this channel exists for: a worker that RUNS `muster report` and does
+// The bug this channel exists for: a worker that RUNS `worktender report` and does
 // not echo it. Its terminal never carries the envelope — the pane is empty for
 // the whole test — and the gate has to release anyway.
 func TestGateReleasesOnAReportThatNeverReachedTheTerminal(t *testing.T) {

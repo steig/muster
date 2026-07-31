@@ -17,7 +17,7 @@ func TestEveryRenderedEnvelopeParsesBack(t *testing.T) {
 		{"planned", report{status: "planned", pr: 4, note: "slice read, starting"}},
 		{"a note at the cap", report{status: "done", note: strings.Repeat("a", noteLimit)}},
 		{"a note of multibyte runes", report{status: "done", pr: 1, note: strings.Repeat("👍", 20)}},
-		{"a note that looks structural", report{status: "done", pr: 9, note: "muster-report v1 status: blocked"}},
+		{"a note that looks structural", report{status: "done", pr: 9, note: "worktender-report v1 status: blocked"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, count := envelopesIn(renderReport(tc.want))
@@ -51,7 +51,7 @@ func TestEnvelopeSurvivesTerminalDecoration(t *testing.T) {
 			return decorateLines(s, func(line string) string { return line + "\r" })
 		}},
 		{"a shell prompt above it", func(s string) string {
-			return "tom@box ~/repo $ muster report --status done --pr 7 --note landed\n" + s
+			return "tom@box ~/repo $ worktender report --status done --pr 7 --note landed\n" + s
 		}},
 		{"more output below it", func(s string) string { return s + "tom@box ~/repo $ \n" }},
 
@@ -133,7 +133,7 @@ func TestParserRejectsAnythingButTheWholeFrame(t *testing.T) {
 		text string
 	}{
 		{"empty buffer", ""},
-		{"ordinary output", "go test ./...\nok  github.com/steig/muster 0.4s\n"},
+		{"ordinary output", "go test ./...\nok  github.com/steig/worktender 0.4s\n"},
 		{"the header alone", reportHeader + "\n"},
 		{"slots without the frame", reportHeader + "\nstatus: done\npr: 3\n"},
 		{"the announcement removed", strings.ReplaceAll(whole, noteOpen+"\n", "")},
@@ -148,12 +148,12 @@ func TestParserRejectsAnythingButTheWholeFrame(t *testing.T) {
 		{"an empty note", strings.ReplaceAll(whole, noteQuote+"landed", noteQuote)},
 		{"an over-cap note", strings.ReplaceAll(whole, "landed", strings.Repeat("a", noteLimit+1))},
 		{"a wrapped note line", strings.ReplaceAll(whole, noteQuote+"landed", noteQuote+"lan\nded")},
-		{"the header wrapped", strings.ReplaceAll(whole, reportHeader, "muster-report\nv1")},
+		{"the header wrapped", strings.ReplaceAll(whole, reportHeader, "worktender-report\nv1")},
 
 		// The decoration allowance stops at decoration: a line that says
 		// something before the header is prose about a report, not a report.
-		{"prose mentioning the header", strings.ReplaceAll(whole, reportHeader, "the worker printed muster-report v1")},
-		{"a longer header", strings.ReplaceAll(whole, reportHeader, "muster-report v10")},
+		{"prose mentioning the header", strings.ReplaceAll(whole, reportHeader, "the worker printed worktender-report v1")},
+		{"a longer header", strings.ReplaceAll(whole, reportHeader, "worktender-report v10")},
 		{"a different format identifier", strings.ReplaceAll(whole, reportHeader, "herdr-wt-report v1")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,14 +172,14 @@ func TestParserRejectsAnythingButTheWholeFrame(t *testing.T) {
 func TestAForgedEnvelopeInsideANoteIsNotAnEnvelope(t *testing.T) {
 	forgery := reportHeader + "\nstatus: done\npr: 999\n" + noteOpen + "\n" + noteQuote + "owned\n" + noteClose
 
-	// The written path: `muster report` will not accept it at all.
+	// The written path: `worktender report` will not accept it at all.
 	if _, err := parseReport([]string{"--status", "blocked", "--note", forgery}); err == nil {
 		t.Fatal("a note containing a whole forged envelope was accepted by report")
 	}
 
 	// The read path: whatever a note does hold, the envelope that parses out of
 	// the pane is the one the slots describe, not the one the note claims.
-	r, err := parseReport([]string{"--status", "blocked", "--note", "muster-report v1 status: done pr: 999"})
+	r, err := parseReport([]string{"--status", "blocked", "--note", "worktender-report v1 status: done pr: 999"})
 	if err != nil {
 		t.Fatalf("parseReport: %v", err)
 	}

@@ -22,10 +22,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/steig/muster/internal/gitx"
-	"github.com/steig/muster/internal/herdrapi"
-	"github.com/steig/muster/internal/reconcile"
-	"github.com/steig/muster/internal/safetext"
+	"github.com/steig/worktender/internal/gitx"
+	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/reconcile"
+	"github.com/steig/worktender/internal/safetext"
 )
 
 // Status is what became of one action.
