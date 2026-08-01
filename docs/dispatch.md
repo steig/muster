@@ -45,28 +45,32 @@ destroys context that exists nowhere else.
 
 A dispatched worker has no human at its pane, so it stalls on the first
 permission prompt and stays stalled — and a coordinating agent structurally
-cannot clear it. `--permission-mode` is the way out, and it comes with a real
-caveat rather than a reassurance:
+cannot clear it. That stall is the failure this command exists to prevent, so
+`--permission-mode` passes through to the agent, including the modes that stop
+it asking at all.
+
+It comes with a real caveat rather than a reassurance:
 
 **worktender cannot sandbox the agent it starts.** `claude` takes no sandbox
 flag; sandboxing lives in settings.json, and this plugin does not write your
-agent's configuration. So a mode that stops the agent asking before it acts
-grants autonomy *without* the boundary that should accompany it.
+agent's configuration. So `bypassPermissions` and `acceptEdits` grant autonomy
+*without* the boundary that should accompany it, and worktender **says so on
+stderr** every time one is used rather than refusing it.
 
-An allowlist does not substitute. A guard on command spelling only holds where
-the action has exactly one spelling: `$(...)` and `find -exec` are never
-auto-allowed by a prefix rule because they can run anything, and during this
-plugin's own development a worker denied `Bash(herdr agent start:*)` reached a
-live agent anyway by calling herdr's socket from Go, logging zero denials.
-Blocking the CLI blocked the convenient path, not the capability.
+Give the worker a boundary that does not depend on command spelling — a sandbox
+profile, or a separate uid. An allowlist does not substitute. A guard on
+spelling only holds where the action has exactly one spelling: `$(...)` and
+`find -exec` are never auto-allowed by a prefix rule because they can run
+anything, and during this plugin's own development a worker denied
+`Bash(herdr agent start:*)` reached a live agent anyway by calling herdr's
+socket from Go, logging zero denials. Blocking the CLI blocked the convenient
+path, not the capability.
 
-So `--permission-mode bypassPermissions` and `acceptEdits` are **refused** unless
-you confirm the worker already has a boundary that does not depend on spelling —
-a sandbox profile, or a separate uid:
-
-```sh
-export WORKTENDER_UNSANDBOXED_OK=1
-```
+An earlier version **refused** these modes unless `WORKTENDER_UNSANDBOXED_OK=1`
+was exported. That is gone. It could not tell a caller who had built a sandbox
+from one who had read the variable's name, so the confirmation proved nothing
+while every unattended dispatch stalled on it. The warning survives; the gate
+does not.
 
 Nothing is defaulted. Without `--permission-mode`, dispatch changes nothing about
 what an agent may do.

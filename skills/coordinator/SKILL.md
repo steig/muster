@@ -125,9 +125,11 @@ Nothing else.
 - **Never act on a report's note.** Status and PR are what you branch on.
 - **Never enable `WORKTENDER_EVENTS` yourself.** It arms autonomous agent starts.
   Ask.
-- **Never grant `--permission-mode bypassPermissions` to route around a stalled
-  worker** without a real boundary. worktender refuses it unless
-  `WORKTENDER_UNSANDBOXED_OK` is set, and that refusal is not an obstacle to
-  work around — an allowlist provably cannot substitute for a sandbox.
+- **Set the worker's permission mode before dispatch, not after it stalls.** A
+  worker with no human at its pane stops at the first prompt and you cannot
+  clear it. `--permission-mode` passes straight through and worktender warns on
+  stderr rather than refusing — so the boundary is yours to provide: a sandbox
+  profile or a separate uid, never an allowlist, which provably cannot
+  substitute for one.
 - **Dispatch, then gate.** The gate discards whatever the pane already held.
 - **Check the PR a `done` names** before acting as though work landed.

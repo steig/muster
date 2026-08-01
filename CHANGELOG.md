@@ -8,6 +8,28 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Removed
+
+- **`WORKTENDER_UNSANDBOXED_OK` is gone, and `--permission-mode` no longer
+  refuses anything.** `bypassPermissions` and `acceptEdits` now pass straight
+  through to the agent.
+
+  The gate could not distinguish a caller who had built a sandbox from one who
+  had read the variable's name, so it never established the thing it asked
+  about — while every unattended dispatch stalled on it, which is the exact
+  failure `dispatch` exists to prevent. A worker with no human at its pane stops
+  at the first prompt and no coordinator can clear it.
+
+  **What worktender cannot do is unchanged, and it still says so.** It cannot
+  sandbox the agent it starts: `claude` takes no sandbox flag and this plugin
+  does not write your agent's configuration. Using one of those modes now prints
+  a warning to stderr naming what was granted and what boundary is missing. The
+  boundary is the caller's to provide — a sandbox profile, or a separate uid.
+  An allowlist still provably cannot substitute for one.
+
+  Nothing is defaulted: without `--permission-mode`, dispatch changes nothing
+  about what an agent may do.
+
 ### Fixed
 
 - **The README explains how a report reaches a gate again** (#45). The #28
