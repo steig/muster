@@ -7,9 +7,14 @@
 set -eu
 
 REPO="steig/worktender"
-OUT="bin/worktender"
 
-mkdir -p bin
+# WORKTENDER_BUILD_OUT is how `worktender update` asks for the binary somewhere
+# other than its live path. It must never be built over: an update is normally
+# run BY the binary being replaced, and herdr may be running an action through
+# the same file. The update stages the build here and renames it into place.
+OUT="${WORKTENDER_BUILD_OUT:-bin/worktender}"
+
+mkdir -p "$(dirname "$OUT")"
 
 if command -v go >/dev/null 2>&1; then
 	go build -o "$OUT" .

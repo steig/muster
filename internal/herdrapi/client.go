@@ -179,6 +179,21 @@ func (c *Client) PaneList(workspaceID string) (*PaneListResponse, error) {
 	return &out, nil
 }
 
+// PluginList returns every installed plugin, with the commit herdr recorded when
+// it installed each one.
+//
+// That commit is why this exists. herdr records it at install time and never
+// re-reads the checkout, so it is the only way to see that `plugin list` is
+// naming a commit an in-place update has since replaced. The manifest VERSION
+// beside it is re-read, so the two can disagree — measured against 0.7.5.
+func (c *Client) PluginList() (*PluginListResponse, error) {
+	var out PluginListResponse
+	if err := c.call("plugin.list", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // WorktreeOpen opens an existing checkout into a herdr workspace. focus is
 // deliberately a parameter: adopting a batch of worktrees must not yank the
 // user between workspaces.

@@ -25,7 +25,7 @@ import (
 // from. One list rather than two: a hand-written usage string and a
 // hand-written test list had already drifted apart — the test named "every
 // command" omitted `gate`, so usage could have dropped it and stayed green.
-var commands = []string{"ls", "doctor", "sync", "dispatch", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
+var commands = []string{"ls", "doctor", "update", "sync", "dispatch", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
 
 var usage = "usage: worktender <" + strings.Join(commands, "|") + ">"
 
@@ -68,6 +68,10 @@ func run(args []string, out io.Writer) error {
 		// Reports the environment the silent failures hide in. Read-only, takes
 		// no lock, and works from outside a repository.
 		return doctorCommand(out)
+	case "update":
+		// Moves this plugin's own install forward. It touches no repository of
+		// the user's, so it takes no session and no lock.
+		return updateCommand(args[1:], out)
 	case "sync":
 		// Adopt and staff. Both are non-destructive, so they act directly;
 		// finished worktrees are only listed.

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/herdrtest"
 	"github.com/steig/worktender/internal/wt"
 )
 
@@ -52,6 +54,68 @@ func TestDoctorTreatsMissingGhAsAWarningNotAFailure(t *testing.T) {
 	}
 	if !strings.Contains(got.note, "prune") {
 		t.Errorf("the note must say what it costs, got %q", got.note)
+	}
+}
+
+// Version drift is the failure that hides longest: an install pins a commit and
+// stays on it, and herdr has no `plugin update` to move it, so nothing in
+// ordinary operation ever mentions being four releases behind.
+func TestDoctorReportsVersionDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, origin *herdrtest.Repo, root string)
+		state state
+		says  string
+	}{
+		{"at origin", func(*testing.T, *herdrtest.Repo, string) {}, stateOK, ""},
+		{"behind origin", func(t *testing.T, origin *herdrtest.Repo, root string) {
+			publish(t, origin, "0.2.0")
+		}, stateWarn, "worktender update"},
+		// A developer's own checkout is on a branch and is theirs to move;
+		// reporting work in progress as drift would be noise.
+		{"a linked checkout", func(t *testing.T, origin *herdrtest.Repo, root string) {
+			origin.GitIn(root, "checkout", "-b", "work")
+		}, stateOK, "linked checkout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origin, root := newInstall(t)
+			tc.setup(t, origin, root)
+
+			got := installCheck(nil, root)
+
+			if got.state != tc.state {
+				t.Errorf("state = %q, want %q (note %q)", got.state, tc.state, got.note)
+			}
+			if !strings.Contains(got.note, tc.says) {
+				t.Errorf("note should mention %q, got %q", tc.says, got.note)
+			}
+			if !strings.Contains(got.value, "0.1.0") {
+				t.Errorf("the installed version must be named, got %q", got.value)
+			}
+		})
+	}
+}
+
+// The drift an update creates rather than closes. herdr records the installed
+// commit once and never re-reads the checkout, so `plugin list` answers "what am
+// I running" with a commit that is not on disk — and nothing else marks it.
+func TestDoctorNamesAStaleHerdrRecord(t *testing.T) {
+	origin, root := newInstall(t)
+	installed := origin.GitIn(root, "rev-parse", "HEAD")
+
+	server := herdrtest.NewServer(t)
+	server.HandleResult("plugin.list", pluginListReply(root, strings.Repeat("a", 40)))
+
+	got := installCheck(herdrapi.NewWithSocket(server.SocketPath), root)
+
+	if got.state != stateWarn {
+		t.Errorf("state = %q, want %q", got.state, stateWarn)
+	}
+	if !strings.Contains(got.note, "plugin list") {
+		t.Errorf("the note must name the command that lies, got %q", got.note)
+	}
+	if strings.Contains(got.note, short(installed)) {
+		t.Errorf("the note quotes the installed commit rather than the recorded one: %q", got.note)
 	}
 }
 

@@ -19,27 +19,29 @@ import (
 // doctor answers "what is wrong", for the failure modes that do not announce
 // themselves.
 //
-// Three of this plugin's documented failures are environmental, silent, and
+// Four of this plugin's documented failures are environmental, silent, and
 // shaped exactly like ordinary operation. An unauthenticated `gh` collapses to
 // "no pull request", so prune keeps everything and every printed reason looks
 // reasonable. An unrecognised WORKTENDER_EVENTS leaves events off, and the
 // notice that would say so is printed by a hook that no longer fires. A stale
-// remote-tracking ref reads as an upstream still present. Each was previously
-// diagnosed by remembering it exists.
+// remote-tracking ref reads as an upstream still present. An install left four
+// releases behind reads as an install. Each was previously diagnosed by
+// remembering it exists.
 //
 // It is read-only and takes no lock, and it must work from outside a
 // repository: someone who cannot tell what is wrong often cannot tell where
 // they are either. So it asks herdr for the repositories rather than asking git
 // where it is standing.
 func doctorCommand(out io.Writer) error {
-	checks := []check{herdrCheck(), ghCheck(), eventsCheck()}
-
 	client, clientErr := herdrapi.New()
+	herdr := check{name: "herdr", value: "unreachable", state: stateFail}
 	if clientErr == nil {
-		checks[0] = herdrReachable(client)
+		herdr = herdrReachable(client)
 	} else {
-		checks[0] = check{name: "herdr", value: "unreachable", state: stateFail, note: clientErr.Error()}
+		herdr.note = clientErr.Error()
 	}
+
+	checks := []check{versionCheck(client), herdr, ghCheck(), eventsCheck()}
 
 	// Rendered through a buffer so the padding of a check with no note does not
 	// leave a line of trailing spaces.
@@ -83,8 +85,64 @@ type check struct {
 	note  string
 }
 
-// herdrCheck is the placeholder replaced once a client either dials or does not.
-func herdrCheck() check { return check{name: "herdr"} }
+// versionCheck reports what is installed and whether anything newer exists.
+//
+// This is the fourth silent failure, and the one that hides longest. An install
+// pins a commit and stays on it: herdr has no `plugin update`, so moving forward
+// is something you have to know to do, and nothing in ordinary use ever mentions
+// it. One install sat on 8ef0de9 across four releases while `doctor` itself, the
+// --permission-mode passthrough and the docs split all landed.
+func versionCheck(client *herdrapi.Client) check {
+	root, err := installRoot()
+	if err != nil {
+		return check{name: "version", value: "unknown", state: stateWarn, note: err.Error()}
+	}
+	return installCheck(client, root)
+}
+
+// installCheck is versionCheck against an explicit install root.
+//
+// It reports TWO drifts, because they are different and both silent. Behind
+// origin is the ordinary one. herdr recording a commit that is not on disk is
+// the one an update creates: herdr records the commit at install time and never
+// re-reads the checkout, so after any in-place update `plugin list` — the one
+// command that answers "what am I running" — answers with a commit that is gone.
+func installCheck(client *herdrapi.Client, root string) check {
+	version, err := manifestVersion(root)
+	if err != nil {
+		return check{name: "version", value: "unknown", state: stateWarn, note: err.Error()}
+	}
+	head, err := gitIn(root, "rev-parse", "HEAD")
+	if err != nil {
+		return check{name: "version", value: version, state: stateWarn,
+			note: "not a git checkout, so nothing can be compared against origin"}
+	}
+
+	c := check{name: "version", value: version + " @" + short(head), state: stateOK}
+
+	// A linked development checkout is on a branch and is the developer's to
+	// move. Comparing it against origin would report work in progress as drift.
+	if branch, err := gitIn(root, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		c.note = "linked checkout on " + branch + ", so it is not compared against origin"
+		return c
+	}
+
+	var notes []string
+	if recorded := recordedCommitVia(client, root); recorded != "" && recorded != head {
+		notes = append(notes, fmt.Sprintf("herdr records @%s, so `plugin list` names a commit that is not installed", short(recorded)))
+	}
+	switch branch, commit, err := remoteHead(root); {
+	case err != nil:
+		notes = append(notes, "origin could not be asked, so drift is unknown")
+	case commit != head:
+		notes = append(notes, fmt.Sprintf("origin/%s is at @%s; run `worktender update`", branch, short(commit)))
+	}
+	if len(notes) > 0 {
+		c.state = stateWarn
+		c.note = strings.Join(notes, "; ")
+	}
+	return c
+}
 
 // herdrReachable reports the running herdr's version when it can be had.
 //

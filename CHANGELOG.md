@@ -8,6 +8,36 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Added
+
+- **`worktender update`, and a `version` line in `doctor`** (#60). herdr has no
+  `plugin update` — its plugin subcommands are `install`, `uninstall`, `link`,
+  `unlink`, `enable`, `disable`, `list`, `config-dir`, `action`, `log` and
+  `pane` — so an install pinned a commit and then stayed on it silently. One sat
+  on `8ef0de9` across four releases while `doctor`, the `--permission-mode`
+  passthrough and the docs split all landed, and nothing in ordinary use said so.
+
+  `doctor` is the half that matters, because an update command nobody knows they
+  need is not much use: it names the installed version and commit and reports
+  when the origin default branch has moved past them. `update` performs the
+  fetch-and-rebuild — an install is a **shallow, detached clone with no local
+  branch**, so `git pull` cannot work in one and it fetches one commit deep and
+  resets onto `FETCH_HEAD` instead.
+
+  The rebuild is staged beside the live binary and **renamed into place**, never
+  written over it: an update is normally run by the binary it replaces, and herdr
+  may be running an action through the same file. `scripts/build.sh` takes
+  `WORKTENDER_BUILD_OUT` for that.
+
+  Both halves say the one thing neither can fix. **herdr records the installed
+  commit at install time and never re-reads the checkout**, so after any in-place
+  update `herdr plugin list` — the one command that answers "what am I running" —
+  names a commit that is no longer on disk. The manifest version beside it *is*
+  re-read, so the two disagree. `update` prints it and `doctor` repeats it.
+
+  It refuses a checkout on a branch (that is `herdr plugin link`, and it is
+  yours to move with git) and a checkout with uncommitted changes.
+
 ## [0.5.0] — 2026-08-01
 
 ### Added
