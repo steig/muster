@@ -8,6 +8,7 @@ package herdrtest
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,6 +16,16 @@ import (
 	"testing"
 	"time"
 )
+
+// CodedError makes a handler reply with a chosen herdr error code. Callers
+// branch on the code and not the message, so a test that cares which failure it
+// is cannot use a bare error — every one of those arrives as `handler_error`.
+type CodedError struct {
+	Code    string
+	Message string
+}
+
+func (e *CodedError) Error() string { return e.Message }
 
 // Handler answers one method call. Returning an error makes the server reply
 // with a herdr-shaped error object.
@@ -174,7 +185,12 @@ func (s *Server) handleConn(conn net.Conn) {
 		default:
 			result, err := handler(req.Params)
 			if err != nil {
-				resp.Error = &wireError{Code: "handler_error", Message: err.Error()}
+				var coded *CodedError
+				if errors.As(err, &coded) {
+					resp.Error = &wireError{Code: coded.Code, Message: coded.Message}
+				} else {
+					resp.Error = &wireError{Code: "handler_error", Message: err.Error()}
+				}
 			} else {
 				resp.Result = result
 			}

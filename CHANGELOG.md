@@ -8,6 +8,25 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Fixed
+
+- **One vanished workspace no longer fails a whole repository** (#66). herdr
+  lists workspaces and is then asked for each one's panes, and a workspace closed
+  between those two calls answered `workspace_not_found` — which propagated out
+  of collection, so the reconcile lost every *other* worktree's verdict too.
+  Seen live as `prune` exiting 1 having printed nothing but its `repository:`
+  header, on the pass straight after a `sync` that had opened the workspace.
+
+  A workspace that no longer exists is one there is nothing left to decide
+  about, so it is skipped and named on stderr. **Only that code is survivable**:
+  every other `pane.list` failure still fails the collection, because it still
+  means the repository's state is unknown. There is a test for each half — the
+  skip, and the refusal to widen it into ignore-on-error.
+
+  `internal/herdrtest` grew a `CodedError` for this. Its fake herdr reported
+  every handler failure as `handler_error`, so a test could not previously
+  express *which* failure it was — and this fix branches on exactly that.
+
 ## [0.6.0] — 2026-08-01
 
 ### Added
