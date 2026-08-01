@@ -8,6 +8,8 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-01
+
 ### Added
 
 - **`worktender start <issue>` — an issue number in, an agent working on it
@@ -431,6 +433,7 @@ Worktree lifecycle reconcile and execute, the four herdr actions
 (`ls`/`sync`/`prune`/`prune-apply`), the merged-PR removal rule, and the
 `skills/worktrees` agent skill.
 
+[0.7.0]: https://github.com/steig/worktender/releases/tag/v0.7.0
 [0.6.0]: https://github.com/steig/worktender/releases/tag/v0.6.0
 [0.5.0]: https://github.com/steig/worktender/releases/tag/v0.5.0
 [0.4.1]: https://github.com/steig/worktender/releases/tag/v0.4.1
