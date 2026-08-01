@@ -104,6 +104,9 @@ Three things worth knowing before step 5 surprises you:
   without a word. `doctor`'s `version` line says when origin has moved past you
   and `update` fetches and rebuilds; the one thing neither can fix is that
   `herdr plugin list` keeps reporting the commit it recorded at install time.
+  **Step 7 cannot be how you first reach step 7**, either — an install older than
+  0.6.0 has no `update` to run, so `herdr plugin install steig/worktender` is the
+  way onto it, and the only way to correct that recorded commit.
   See [Staying current](docs/reference.md#staying-current).
 
 ## Requirements

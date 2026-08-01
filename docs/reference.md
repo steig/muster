@@ -95,6 +95,32 @@ Like `doctor`, it is a command rather than an action. An action's output lands i
 the plugin log, and herdr running it as an action would be herdr executing the
 binary the rebuild replaces.
 
+### Getting onto it the first time
+
+`update` arrived in 0.6.0, so no install that predates it can reach it by
+running it — which is every install that existed when it shipped:
+
+```sh
+$ worktender update
+worktender: unknown command "update"; usage: worktender <ls|doctor|sync|dispatch|prune|prune-apply|report|gate|on-event|startup>
+```
+
+Reinstall instead:
+
+```sh
+herdr plugin install steig/worktender
+```
+
+That is the one to reach for first, and not only because the alternative is
+longer: it re-clones *and* re-records, so it is also the only thing that corrects
+the commit herdr holds. The hand path — fetch one commit deep, reset onto
+`FETCH_HEAD`, rebuild — is exactly what `update` performs, and it leaves `herdr
+plugin list` naming the commit the install started on; one checkout still read
+`@8ef0de9` after two updates by hand, which `doctor` now reports as a warn.
+
+This is once per install rather than a standing tax. Any install carrying
+`update` moves forward with `update`.
+
 ## Exit codes and errors
 
 There are exactly two exit codes: **0**, or **1** with `worktender: <error>` on

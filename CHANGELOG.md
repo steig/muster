@@ -26,6 +26,14 @@ install` tracks branch HEAD rather than a tag — the version in
   branch**, so `git pull` cannot work in one and it fetches one commit deep and
   resets onto `FETCH_HEAD` instead.
 
+  **Getting onto it is a reinstall, not `update`.** Every install that exists
+  predates the command, so on 0.5.0 and earlier it answers `unknown command
+  "update"` — reading these notes and trying what they announce is exactly how
+  you find that out. The first move is `herdr plugin install steig/worktender`,
+  which is also the only one that corrects the recorded commit below; the hand
+  path is what `update` performs, and it does not. This is once per install
+  rather than permanent: anything carrying `update` moves forward with it.
+
   The rebuild is staged beside the live binary and **renamed into place**, never
   written over it: an update is normally run by the binary it replaces, and herdr
   may be running an action through the same file. `scripts/build.sh` takes
