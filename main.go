@@ -76,10 +76,10 @@ func run(args []string, out io.Writer) error {
 		return dispatchCommand(args[1:], out)
 	case "prune":
 		// Lists finished worktrees and removes nothing.
-		return pruneCommand(out, false)
+		return pruneCommand(args[1:], out, false)
 	case "prune-apply":
 		// The explicit opt-in to actually removing them.
-		return pruneCommand(out, true)
+		return pruneCommand(args[1:], out, true)
 	case "report":
 		// A worker filling slots for its coordinator; touches neither herdr nor
 		// the repository.
@@ -164,6 +164,35 @@ func newSession(allowFallback bool) (*session, error) {
 		}
 	}
 	return &session{client: client, root: gitx.Resolve(root), dir: gitx.Resolve(dir)}, nil
+}
+
+// newSessionIn resolves against a repository the caller named, skipping herdr's
+// context entirely.
+//
+// The context is the right source when herdr is the one invoking — an action
+// carries no arguments, so there is nothing else to go on. It is the wrong
+// source when a person is: the context names herdr's current workspace, which
+// on a machine with several repositories open is routinely not the one they are
+// standing in or thinking about. Observed live: a dry run inside a repository
+// with four staffed worktrees planned against a different project's checkout.
+//
+// `dir` is set to the resolved root rather than to what was passed, so a `--repo
+// .` from a subdirectory behaves the same as naming the root. Nothing here falls
+// back: a path that is not a repository is an error, because the whole point of
+// naming one is to stop the resolution from wandering.
+func newSessionIn(repo string) (*session, error) {
+	client, err := herdrapi.New()
+	if err != nil {
+		return nil, err
+	}
+
+	root, err := gitx.RepoRoot(repo)
+	if err != nil {
+		return nil, fmt.Errorf("--repo: %w", err)
+	}
+
+	resolved := gitx.Resolve(root)
+	return &session{client: client, root: resolved, dir: resolved}, nil
 }
 
 // plan collects the current state and decides what the repository needs.
@@ -274,12 +303,44 @@ func syncCommand(out io.Writer) error {
 	})
 }
 
+// pruneName and pruneUsage keep the two halves' errors saying which half they
+// came from. `prune` and `prune-apply` are one function and separate commands,
+// and an error naming the wrong one sends you to the wrong place.
+func pruneName(apply bool) string {
+	if apply {
+		return "prune-apply"
+	}
+	return "prune"
+}
+
+func pruneUsage(apply bool) string {
+	return "usage: worktender " + pruneName(apply) + " [--repo <path>]"
+}
+
 // pruneCommand reports finished worktrees, and removes them only when apply is
 // set. It deliberately excludes adoptions and staffing: asking to prune must
 // not open workspaces or start agents as a side effect.
-func pruneCommand(out io.Writer, apply bool) error {
-	// Listing is read-only; applying removes worktrees.
-	s, err := newSession(!apply)
+func pruneCommand(args []string, out io.Writer, apply bool) error {
+	fs := flag.NewFlagSet(pruneName(apply), flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	repo := fs.String("repo", "", "repository to act on, instead of the one herdr is currently in")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%v; %s", err, pruneUsage(apply))
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), pruneUsage(apply))
+	}
+
+	// Named repository wins outright. Listing is otherwise read-only and may
+	// fall back to the working directory; applying removes worktrees and may not.
+	var s *session
+	var err error
+	if *repo != "" {
+		s, err = newSessionIn(*repo)
+	} else {
+		s, err = newSession(!apply)
+	}
 	if err != nil {
 		return err
 	}

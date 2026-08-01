@@ -109,7 +109,7 @@ worktender=$(herdr plugin list --json \
 "$worktender" sync
 
 # 5. ask what looks finished — a DRY RUN, it removes nothing
-"$worktender" prune
+"$worktender" prune                     # or: prune --repo /path/to/repo
 
 # 6. only once you have read step 5's reasons
 "$worktender" prune-apply
@@ -121,7 +121,7 @@ worktender=$(herdr plugin list --json \
 Each of those four is also a herdr action — `Worktender: list worktrees` and
 friends — for reaching them from a keybinding or the plugin menu.
 
-Three things worth knowing before step 5 surprises you:
+Four things worth knowing before step 5 surprises you:
 
 - **`prune-apply` deletes the local branch too**, not just the checkout. It uses
   `git branch -d` and never `-D`, so a branch git considers unmerged survives and
@@ -133,6 +133,13 @@ Three things worth knowing before step 5 surprises you:
   almost nothing is pruned, and the reasons look entirely ordinary while that
   happens. If prune keeps everything on a repository where you expect otherwise,
   check `gh auth status` first.
+- **The repository comes from herdr, not from where you are standing.** Run as an
+  action it resolves herdr's current workspace, which on a machine with several
+  repositories open is routinely not the one you meant — a dry run inside a repository
+  with four staffed worktrees, planning against a different project. Both halves print
+  the root they resolved, so read the `repository:` line before acting on a plan. Pass
+  `--repo <path>` to settle it: a path anywhere inside a repository resolves to its
+  root, and a path that is not one is an error rather than a fallback.
 - **Prune reads remote-tracking refs, so run `git fetch --prune` first** if you
   want a deleted upstream to count. A stale tracking ref reads as still present,
   which keeps the worktree — being out of date fails in the safe direction.
