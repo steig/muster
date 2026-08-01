@@ -8,6 +8,28 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Added
+
+- **`worktender doctor` — one command that says what is wrong** (#56). Three of
+  this plugin's documented failures are environmental, silent, and shaped
+  exactly like ordinary operation, so each was previously diagnosed by
+  remembering it exists.
+
+  It reports herdr's reachability and version, whether `gh` is installed *and*
+  authenticated, the events opt-in **as the gate parses it** rather than as it
+  is spelled, and every repository herdr has a worktree workspace for with its
+  worktree and agent counts.
+
+  `gh` missing or unauthenticated is a `warn`, not a `fail`: a repository that
+  does not use pull requests is entitled to no `gh`, but it silently costs prune
+  everything a merged pull request would have authorised. A herdr that cannot be
+  reached is said once and the command stops, rather than repeated as the cause
+  of every line below it.
+
+  Read-only, takes no lock, and works from outside a repository — someone who
+  cannot tell what is wrong often cannot tell where they are either, so the
+  repository list is herdr's open workspaces rather than the caller's directory.
+
 ### Changed
 
 - **The docs now point at the binary instead of `plugin action invoke`.** `ls`,

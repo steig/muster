@@ -61,8 +61,9 @@ herdr plugin install steig/worktender
 worktender=$(herdr plugin list --json \
   | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
 
-# 3. see where you stand
+# 3. see where you stand — and, if anything looks wrong, why
 "$worktender" ls
+"$worktender" doctor
 
 # 4. adopt every orphan checkout, staff every idle workspace
 "$worktender" sync
