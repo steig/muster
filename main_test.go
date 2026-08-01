@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrtest"
 )
 
@@ -62,7 +64,7 @@ func TestDestructiveCommandsRefuseWithoutContext(t *testing.T) {
 		run  func(io.Writer) error
 	}{
 		{"sync starts agents", syncCommand},
-		{"prune-apply removes worktrees", func(w io.Writer) error { return pruneCommand(w, true) }},
+		{"prune-apply removes worktrees", func(w io.Writer) error { return pruneCommand(nil, w, true) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HERDR_SOCKET_PATH", server.SocketPath)
@@ -90,8 +92,8 @@ func TestEveryCommandRejectsAMalformedContext(t *testing.T) {
 	}{
 		{"ls", lsCommand},
 		{"sync", syncCommand},
-		{"prune", func(w io.Writer) error { return pruneCommand(w, false) }},
-		{"prune-apply", func(w io.Writer) error { return pruneCommand(w, true) }},
+		{"prune", func(w io.Writer) error { return pruneCommand(nil, w, false) }},
+		{"prune-apply", func(w io.Writer) error { return pruneCommand(nil, w, true) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HERDR_SOCKET_PATH", server.SocketPath)
@@ -214,7 +216,7 @@ func TestPruneListsWithoutRemoving(t *testing.T) {
 	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
 
 	var out strings.Builder
-	if err := pruneCommand(&out, false); err != nil {
+	if err := pruneCommand(nil, &out, false); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
 
@@ -243,7 +245,7 @@ func TestPruneDoesNotAdoptOrStaff(t *testing.T) {
 	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
 
 	var out strings.Builder
-	if err := pruneCommand(&out, false); err != nil {
+	if err := pruneCommand(nil, &out, false); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
 
@@ -329,7 +331,7 @@ func TestPruneApplyRemoves(t *testing.T) {
 	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
 
 	var out strings.Builder
-	if err := pruneCommand(&out, true); err != nil {
+	if err := pruneCommand(nil, &out, true); err != nil {
 		t.Fatalf("prune-apply: %v", err)
 	}
 	if repo.Exists(checkout) {
@@ -364,7 +366,7 @@ func TestBothPruneHalvesNameTheRepositoryTheyResolved(t *testing.T) {
 			server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
 
 			var out strings.Builder
-			if err := pruneCommand(&out, tc.apply); err != nil {
+			if err := pruneCommand(nil, &out, tc.apply); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
 
@@ -375,5 +377,70 @@ func TestBothPruneHalvesNameTheRepositoryTheyResolved(t *testing.T) {
 				t.Errorf("%s named a root other than %s:\n%s", tc.name, repo.RealRoot, out.String())
 			}
 		})
+	}
+}
+
+// --- --repo ------------------------------------------------------------------------------
+// An action carries no arguments, so herdr's context is the only thing prune can resolve
+// from — and that context names herdr's current workspace, not the repository the operator
+// is standing in. Observed live: a dry run inside a repository with four staffed worktrees
+// planned against a different project entirely.
+
+func TestPruneActsOnTheNamedRepositoryRatherThanHerdrsContext(t *testing.T) {
+	current := herdrtest.NewRepo(t) // what herdr thinks is current
+	named := herdrtest.NewRepo(t)   // what the operator asked for
+
+	server := fakeSession(t, current)
+	server.HandleResult("worktree.list", map[string]any{
+		"type": "worktree_list",
+		"source": map[string]any{"repo_key": "k", "repo_name": "named",
+			"repo_root": named.Root, "source_checkout_path": named.Root},
+		"worktrees": []map[string]any{},
+	})
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list", "panes": []map[string]any{}})
+
+	var out bytes.Buffer
+	if err := run([]string{"prune", "--repo", named.Root}, &out); err != nil {
+		t.Fatalf("prune --repo: %v", err)
+	}
+
+	want := "repository: " + gitx.Resolve(named.Root)
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("expected %q in output, got:\n%s", want, out.String())
+	}
+	// The header is the whole safety property: it must not name the one it did not act on.
+	if strings.Contains(out.String(), gitx.Resolve(current.Root)) {
+		t.Fatalf("named repository was ignored in favour of herdr's context:\n%s", out.String())
+	}
+}
+
+func TestPruneRefusesARepoThatIsNotOne(t *testing.T) {
+	// Never a fallback. The point of naming a repository is to stop the resolution from
+	// wandering, so a bad path has to stop rather than quietly land somewhere plausible.
+	current := herdrtest.NewRepo(t)
+	fakeSession(t, current)
+
+	var out bytes.Buffer
+	err := run([]string{"prune", "--repo", t.TempDir()}, &out)
+	if err == nil {
+		t.Fatalf("expected an error for a non-repository, got output:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), gitx.Resolve(current.Root)) {
+		t.Fatalf("fell back to herdr's context instead of failing:\n%s", out.String())
+	}
+}
+
+func TestPruneRejectsAStrayArgument(t *testing.T) {
+	// `prune /some/path` is the shape someone reaches for before finding the flag. Taking
+	// it silently would act on the context while looking like it acted on the path.
+	fakeSession(t, herdrtest.NewRepo(t))
+
+	var out bytes.Buffer
+	if err := run([]string{"prune-apply", "/tmp/somewhere"}, &out); err == nil {
+		t.Fatal("expected a stray positional argument to be refused")
+	} else if !strings.Contains(err.Error(), "prune-apply") {
+		t.Fatalf("the error should name the half it came from, got: %v", err)
 	}
 }

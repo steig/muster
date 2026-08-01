@@ -69,6 +69,24 @@ the binary.
 `sync` and `prune-apply` change things, so they refuse to guess a repository when run
 outside herdr. From inside your own pane that context exists and they work.
 
+**That context is herdr's current workspace, not the repository you are standing in.** On a
+machine with several repositories open they are routinely different — a dry run inside a
+repository with four staffed worktrees planned against a different project entirely. The
+`repository:` header both halves print is what makes it visible; read it before acting on a
+plan, every time.
+
+`prune` and `prune-apply` take `--repo` to settle it outright:
+
+```bash
+"$worktender" prune --repo .            # this repository, whatever herdr thinks
+"$worktender" prune-apply --repo /path/to/repo
+```
+
+A path anywhere inside the repository resolves to its root. A path that is not a repository
+is an error rather than a fallback — naming one exists to stop the resolution wandering, so
+it must not wander to something plausible instead. The actions take no arguments and are
+unchanged: `--repo` is how you are explicit, not a new default.
+
 **`sync` converges over two passes, not one.** A checkout adopted this pass has no
 workspace yet, so it cannot be staffed until the next. Running `sync` a second time
 against a brand-new orphan is expected — do not report it as a failure to staff.

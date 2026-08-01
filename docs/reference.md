@@ -136,6 +136,7 @@ Errors you are most likely to meet:
 | Message | Means |
 | --- | --- |
 | `refusing to guess which repository to change` | You ran a changing command outside herdr. `ls` and `prune` allow it; `sync`, `prune-apply` and the event paths do not. |
+| `--repo <path>: not inside a git repository: <path>` | `prune`/`prune-apply` were given a path that is not one. Never a fallback — naming a repository exists to stop the resolution wandering. |
 | `another worktender reconcile has held X for more than 30s` | A concurrent pass. Retry. |
 | `WORKTENDER_EVENTS="ture" is not a value this gate recognises` | Events stay **off**. Fix the value yourself; nothing here rewrites it. |
 | `MUSTER_EVENTS is set, but it was renamed` | A superseded opt-in enabling nothing. So is `HERDR_WT_EVENTS`. |
