@@ -200,7 +200,7 @@ func newSessionIn(repo string) (*session, error) {
 
 	root, err := gitx.RepoRoot(repo)
 	if err != nil {
-		return nil, fmt.Errorf("--repo %s: %w", repo, err)
+		return nil, fmt.Errorf("--repo: %w", err)
 	}
 
 	resolved := gitx.Resolve(root)
@@ -283,7 +283,6 @@ func syncCommand(out io.Writer) error {
 	})
 }
 
-// pruneCommand reports finished worktrees, and removes them only when apply is
 // pruneName and pruneUsage keep the two halves' errors saying which half they
 // came from. `prune` and `prune-apply` are one function and separate commands,
 // and an error naming the wrong one sends you to the wrong place.
@@ -298,6 +297,7 @@ func pruneUsage(apply bool) string {
 	return "usage: worktender " + pruneName(apply) + " [--repo <path>]"
 }
 
+// pruneCommand reports finished worktrees, and removes them only when apply is
 // set. It deliberately excludes adoptions and staffing: asking to prune must
 // not open workspaces or start agents as a side effect.
 func pruneCommand(args []string, out io.Writer, apply bool) error {
