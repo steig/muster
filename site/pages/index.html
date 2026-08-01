@@ -1,0 +1,171 @@
+<section class="hero">
+  <p class="eyebrow">herdr plugin &middot; worktrees for a herd of agents</p>
+  <h1>Eleven checkouts.<br>Nobody deletes anything.</h1>
+  <p class="lede">
+    <strong>worktender</strong> adopts the worktrees herdr does not know about,
+    staffs the empty ones, and removes what has actually landed.
+  </p>
+  <p class="orient">
+    <a href="https://github.com/herdrdev/herdr">herdr</a> is the terminal
+    multiplexer coding agents run in. worktender is a plugin for it, driven by
+    your agent rather than by you.
+  </p>
+  <p class="actions">
+    <a class="button primary" href="#install">Install</a>
+    <a class="button ghost" href="examples.html">Worked examples</a>
+    <a class="button ghost" href="https://github.com/steig/worktender">Source</a>
+  </p>
+</section>
+
+<h2>Is this for you?</h2>
+
+<ul class="qualify">
+  <li>You run <strong>more than one agent at a time</strong>, so you run more than one worktree.</li>
+  <li>You have checkouts you are <strong>not confident enough to delete</strong>.</li>
+  <li>You use herdr, or are willing to.</li>
+  <li class="no">One agent in one checkout? You do not need this yet.</li>
+</ul>
+
+<h2>You will not be typing any of this</h2>
+
+<p>Install the plugin and its skills once. After that you ask:</p>
+
+<ul class="asks">
+  <li>What worktrees do I have, and what is running in them?</li>
+  <li>Clean up anything that has landed.</li>
+  <li>Group the unresolved Sentry issues by root cause and put a worker on each.</li>
+</ul>
+
+<p>Your agent translates that. Here is the first thing it runs:</p>
+
+<figure>
+  <div class="terminal"><span class="prompt">$ worktender ls</span>
+<span class="here">*</span> main                      w21  <span class="none">idle</span>     worktender
+  feat/1-reconcile-execute  w22  <span class="busy">working</span>  1-reconcile-execute
+  fix/257-erasure-comments  w1K  <span class="none">idle</span>     257-erasure-comments
+  worktree/brave-valley     <span class="none">-</span>    <span class="none">-</span>        brave-valley-66f8</div>
+  <figcaption>
+    Branch, workspace, agent status, directory. A <code>-</code> means herdr has
+    nothing for that worktree — the last row is a checkout with no workspace and
+    no agent.
+  </figcaption>
+</figure>
+
+<div class="callout">
+  <span class="label">Two ways in, and one of them is worse</span>
+  <p>
+    <code>ls</code>, <code>sync</code>, <code>prune</code> and
+    <code>prune-apply</code> are also registered as herdr <em>actions</em>, so a
+    keybinding can reach them. Each action is literally
+    <code>./bin/worktender &lt;id&gt;</code> — but reached that way,
+    <code>invoke</code> hands back an invocation record and the output goes to
+    the plugin log instead. <strong>Agents should call the binary.</strong>
+  </p>
+</div>
+
+<div class="callout">
+  <span class="label">Why the skills are not optional</span>
+  <p>
+    An unbriefed agent still gets two things wrong: that <code>prune</code> and
+    <code>prune-apply</code> differ in kind rather than in verbosity, and that
+    enabling event hooks is not its call to make.
+  </p>
+</div>
+
+<h2>What it refuses to do</h2>
+
+<div class="cards">
+  <div class="card">
+    <h3>Ambiguity keeps the worktree</h3>
+    <p>
+      An un-pruned worktree costs disk. A wrongly pruned one costs work that
+      exists nowhere else. The tie never goes to deletion.
+    </p>
+  </div>
+  <div class="card">
+    <h3>Topology never decides alone</h3>
+    <p>
+      A fast-forward merge looks exactly like a branch that never committed.
+      Removal needs a merged pull request, or a deleted upstream over commits
+      base already has.
+    </p>
+  </div>
+  <div class="card">
+    <h3>Nothing starts on its own</h3>
+    <p>
+      The hooks that adopt and staff automatically stay off until you export one
+      variable. Installing this spawns nothing.
+    </p>
+  </div>
+</div>
+
+<p>
+  <a href="pruning.html">How removal is decided</a> has the full argument, and
+  the guards re-checked immediately before anything is deleted.
+</p>
+
+<h2>Once there is more than one agent</h2>
+
+<p>
+  Past two or three workers the bottleneck is the agent coordinating them — it
+  runs out of context long before it runs out of work. So a worker hands back
+  <strong>three fixed slots</strong>: a status —
+  <code class="st-planned">planned</code>,
+  <code class="st-blocked">blocked</code> or
+  <code class="st-done">done</code> — an optional pull request number, and a
+  note capped at 200 characters and treated as data, never instructions.
+</p>
+
+<p>
+  <strong>A worker that cannot finish reports
+  <code class="st-blocked">blocked</code>.</strong>
+  That fails the gate immediately rather than burning its timeout, and puts the
+  question in front of you — the only party who can answer it.
+</p>
+
+<p>
+  A gate otherwise waits on the report rather than on a clock. What it proves is
+  that a well-formed report arrived — not that the work is real.
+  <a href="patterns.html">Delegating to agents</a> covers the gap;
+  <a href="examples.html">worked examples</a> walks five fan-outs through it.
+</p>
+
+<h2 id="install">Install</h2>
+
+<pre><code># the plugin — read Trust first; this runs unsandboxed
+herdr plugin install steig/worktender
+
+# the skills — one for an agent working IN a worktree,
+# one for an agent dispatching them
+npx skills add steig/worktender --skill worktrees -g
+npx skills add steig/worktender --skill coordinator -g</code></pre>
+
+<div class="callout">
+  <span class="label">Read this first</span>
+  <p>
+    <strong>A herdr plugin is not sandboxed.</strong> This one runs as you, and
+    what it does with that is start coding agents and delete worktrees and
+    branches. That is what it is <em>for</em> — but see <a href="trust.html">trust</a>,
+    including what the checksum on the no-Go path does not establish.
+  </p>
+</div>
+
+<p>
+  Needs <strong>herdr 0.7.0+</strong> (0.7.5+ for <code>report</code> and
+  <code>gate</code>), <strong>git</strong>, and <strong>jq</strong>.
+  <strong>gh</strong> is optional but must be <em>authenticated</em> — an
+  unauthenticated <code>gh</code> reads as “no pull request”, so prune keeps
+  almost everything while the reasons look entirely ordinary.
+</p>
+
+<h2>Read on</h2>
+
+<ul class="contents">
+  <li><a href="patterns.html"><span class="name">Delegating to agents</span><span class="what">What the coordinator skill encodes.</span></a></li>
+  <li><a href="examples.html"><span class="name">Worked examples</span><span class="what">Five fan-outs end to end, including when not to.</span></a></li>
+  <li><a href="dispatch.html"><span class="name">Dispatch</span><span class="what">The mechanics: dispatch, report, gate, and the permission-mode problem.</span></a></li>
+  <li><a href="pruning.html"><span class="name">Pruning</span><span class="what">What authorises a removal, and the guards.</span></a></li>
+  <li><a href="events.html"><span class="name">Events</span><span class="what">The hooks that adopt and staff automatically.</span></a></li>
+  <li><a href="trust.html"><span class="name">Trust</span><span class="what">What running unsandboxed means here.</span></a></li>
+  <li><a href="reference.html"><span class="name">Reference</span><span class="what">Exit codes, errors, keybindings.</span></a></li>
+</ul>

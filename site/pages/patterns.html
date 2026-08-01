@@ -1,0 +1,173 @@
+<h1>Delegating to agents without losing the thread</h1>
+
+<p class="lede">
+  Past two or three workers, the thing that breaks is not the machines. It is
+  the one head holding all of them.
+</p>
+
+<p>
+  This is what the <strong>coordinator skill</strong> encodes, so a session
+  acting as router loads it instead of being told. Most of it is not about
+  worktender at all.
+</p>
+
+<pre><code>npx skills add steig/worktender --skill coordinator -g</code></pre>
+
+<h2>Verify, do not relay</h2>
+
+<p>
+  <strong>Never read a worker's diff.</strong> A file read costs two thousand
+  tokens; the check that settles the same question costs ten.
+</p>
+
+<pre><code>PASS=$(go test -count=1 -v ./... | grep -cE "^--- PASS")</code></pre>
+
+<div class="callout">
+  <span class="label">The question worth the most</span>
+  <p>
+    <strong>“Did you run this, or reason it?”</strong> Bugs that survived a
+    careful argument were caught by execution every time. When a worker explains
+    why something must work, ask what it printed.
+  </p>
+</div>
+
+<p>
+  <strong>Reports drift without anyone lying.</strong> Test counts, branch
+  names, “fixed” meaning the mechanism exists but was never exercised. Check the
+  thing, not the sentence about the thing.
+</p>
+
+<h2>What to delegate, and what to keep</h2>
+
+<p>
+  <strong>Delegate</strong> bounded authoring work with a mechanical done
+  condition. If you cannot state the command that proves it finished, groom the
+  slice before handing it out.
+</p>
+
+<p><strong>Keep. These are not preferences:</strong></p>
+
+<ul>
+  <li><strong>Live or shared state</strong> — the running session, <code>main</code>, the install itself.</li>
+  <li><strong>Anything needing two slices at once.</strong> Merge resolution needs both sides' intent; a worker has one.</li>
+  <li><strong>All verification.</strong></li>
+</ul>
+
+<p>
+  Check file overlap before a wave goes out. Two tasks touching one file is one
+  worker's job, or two waves — never two workers.
+</p>
+
+<h2>Make the report a shape, not a sentence</h2>
+
+<p>
+  A worker's task usually arrived as an issue, and an issue body is written by
+  anyone who can file one. So a report should be <strong>fixed slots</strong>: a
+  status from a closed set, a machine-checkable artefact, and a capped note
+  treated as data.
+</p>
+
+<p>
+  <strong>Branch on the status and the artefact, never on the note.</strong> A
+  predicate over free text hands whoever wrote that issue the decision of when
+  your next agent starts.
+</p>
+
+<p>
+  <strong>A <code>done</code> is a claim.</strong> The report proves something
+  well-formed arrived, not who composed it or whether the work exists. Check the
+  artefact it names.
+</p>
+
+<h2>Wait on a signal, not a clock</h2>
+
+<p>
+  <strong>Never hand-roll a readiness wait.</strong> Sleep-polling has failed
+  with <code>agent_not_ready</code> every time it has been tried here —
+  including by a coordinator that knew the readiness event existed and
+  hand-rolled the poll anyway.
+</p>
+
+<p>
+  <strong>A worker reporting <code>blocked</code> is a good outcome.</strong> It
+  releases the wait immediately instead of burning the timeout, and you are the
+  only party who can unblock it.
+</p>
+
+<h2>The stall you cannot clear</h2>
+
+<p>
+  A delegated agent has no human at its terminal. It stalls on the first
+  permission prompt and stays there — and the agent that dispatched it
+  structurally cannot answer. So a worker needs two things settled
+  <em>before</em> the wave: a way to start without asking, and a way to escalate
+  when it genuinely cannot finish.
+</p>
+
+<ul>
+  <li>
+    <strong>Pass the brief inline, never as a file path.</strong> A worker asked
+    to read a path stalls on a grant nobody can give.
+  </li>
+  <li>
+    <strong>Grant a permission mode before the wave, not after it stalls.</strong>
+    <code>--permission-mode</code> passes straight through, including the modes
+    that stop the agent asking at all — a worker that cannot start is the
+    failure the whole command exists to prevent. worktender warns on stderr
+    rather than refusing, because it cannot sandbox the agent it starts:
+    <code>claude</code> takes no sandbox flag, and this plugin does not write
+    your agent's configuration. <strong>The boundary is yours to provide</strong>
+    — a sandbox profile, or a separate uid.
+  </li>
+  <li>
+    <strong>An allowlist is not that boundary.</strong> A worker denied
+    <code>Bash(herdr agent start:*)</code> reached a live agent anyway through
+    the socket, logging zero denials. Blocking the CLI blocked the convenient
+    path, not the capability.
+  </li>
+  <li>
+    <strong><code>blocked</code> is the escalation channel.</strong> A worker
+    that hits a real wall reports it, the gate fails immediately with
+    <em>“it will not reach done without you”</em>, and the question lands with
+    the one party who can resolve it. There is no way to answer a worker
+    mid-run — resolve it yourself, then re-dispatch with <code>--resume</code>
+    to keep its transcript.
+  </li>
+</ul>
+
+<h2>Four failure modes</h2>
+
+<ol>
+  <li><strong>Agents argue instead of proving.</strong></li>
+  <li><strong>The dangerous thing is not where the caution points.</strong> Workers have escalated a read-only probe while the next slice would have armed event hooks in a live session.</li>
+  <li><strong>Reports drift.</strong> The quiet one.</li>
+  <li><strong>Knowing better does not prevent the old habit.</strong> See the sleep-poll above.</li>
+</ol>
+
+<h2>Handoffs</h2>
+
+<p>
+  Write one before delegating, and before your own context is cleared. A handoff
+  that gets <em>corrected</em> by the agent receiving it is working.
+</p>
+
+<p>Hold in your own context: decisions, invariants, what has been verified. Nothing else.</p>
+
+<h2>What the coordinating agent runs</h2>
+
+<pre><code>herdr worktree create --branch feat/12-thing --base main --no-focus --json
+worktender dispatch --pane &lt;pane&gt; --name thing --model sonnet
+herdr agent prompt &lt;pane&gt; "$(cat brief.md)"
+worktender gate --target thing --until done --require-pr --timeout 20m</code></pre>
+
+<p>
+  <strong>Dispatch, then gate — the order matters.</strong> The gate ignores
+  whatever the pane already held; that was a previous task's answer.
+  <a href="dispatch.html">Dispatch</a> has the rest, including the two channels
+  a report travels over and why neither wins.
+</p>
+
+<p>
+  <a href="examples.html">Worked examples</a> walks five fan-outs through all of
+  this — and one case where you should not fan out at all.
+</p>
