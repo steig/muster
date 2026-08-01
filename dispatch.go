@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/steig/worktender/internal/execute"
 	"github.com/steig/worktender/internal/reconcile"
@@ -57,10 +56,7 @@ func dispatchCommand(args []string, out io.Writer) error {
 		return fmt.Errorf("--name is required; %s", dispatchUsage)
 	}
 
-	agentArgs, err := agentArgsFor(*model, *permissionMode)
-	if err != nil {
-		return err
-	}
+	agentArgs := agentArgsFor(*model, *permissionMode, os.Stderr)
 
 	// Dispatch reads herdr and starts an agent; it changes no worktree and
 	// removes nothing, so it needs no repository and takes no lock.
@@ -103,23 +99,30 @@ func dispatchCommand(args []string, out io.Writer) error {
 //
 // That leaves --permission-mode able to grant autonomy without the boundary
 // that was supposed to accompany it, which #26 correctly says is the wrong
-// combination. Two things keep that honest. It is never defaulted: no
-// permission mode is passed unless the caller names one, so nothing here
-// changes what an agent may do until someone asks for it. And a mode that
-// disables prompting is refused unless the caller has separately confirmed the
-// boundary exists, below.
-func agentArgsFor(model, permissionMode string) ([]string, error) {
+// combination. Two things keep that honest, and neither is a refusal. It is
+// never defaulted: no permission mode is passed unless the caller names one, so
+// nothing here changes what an agent may do until someone asks for it. And a
+// mode that disables prompting says so on stderr, naming what was granted and
+// what is missing.
+//
+// A refusal was tried, gated on an environment variable the caller set to
+// confirm a sandbox existed. It was removed because it could not tell a
+// sandboxed caller from one who had read the variable's name: the confirmation
+// was unverifiable, so it bought disclosure at the price of every unattended
+// dispatch stalling. Disclosure without the refusal buys the same thing, and a
+// worker that cannot start is the failure this command exists to prevent.
+func agentArgsFor(model, permissionMode string, warn io.Writer) []string {
 	var args []string
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	if permissionMode != "" {
-		if err := checkPermissionMode(permissionMode); err != nil {
-			return nil, err
+		if unsandboxedModes[permissionMode] {
+			fmt.Fprintf(warn, unsandboxedWarning, permissionMode)
 		}
 		args = append(args, "--permission-mode", permissionMode)
 	}
-	return args, nil
+	return args
 }
 
 // unsandboxedModes are the permission modes that stop an agent asking before it
@@ -135,36 +138,20 @@ func agentArgsFor(model, permissionMode string) ([]string, error) {
 // anyway by calling herdr's socket from Go, logging zero denials.
 //
 // So the boundary has to be capability-based, and this command cannot install
-// one. The most it can do is refuse to remove prompting silently, and say what
+// one. The most it can do is decline to remove prompting silently, and say what
 // is actually being asked for.
 var unsandboxedModes = map[string]bool{
 	"bypassPermissions": true,
 	"acceptEdits":       true,
 }
 
-// permissionModeAck is the environment variable a caller sets to confirm the
-// worker is already sandboxed by something other than this plugin.
-//
-// An environment variable rather than a flag, and deliberately: this is
-// irreducibly textual, which is the one shape a name-based guard actually
-// holds for. A flag would be one more thing a dispatch script carries by
-// default and stops reading.
-const permissionModeAck = "WORKTENDER_UNSANDBOXED_OK"
-
-func checkPermissionMode(mode string) error {
-	if !unsandboxedModes[mode] {
-		return nil
-	}
-	if isTruthy(os.Getenv(permissionModeAck)) {
-		return nil
-	}
-	return fmt.Errorf(
-		"--permission-mode %s stops the agent asking before it acts, and worktender cannot sandbox it — "+
-			"`claude` takes no sandbox flag, and this plugin does not write your agent's configuration. "+
-			"Give the worker a boundary that does not depend on command spelling (a sandbox profile, or a "+
-			"separate uid), then set %s=1 to confirm you have",
-		mode, permissionModeAck)
-}
+// unsandboxedWarning goes to stderr rather than stdout: an action's stdout is
+// read back out of the plugin log and parsed, and a warning that lands there is
+// a warning something eventually starts stripping.
+const unsandboxedWarning = "worktender: --permission-mode %s stops the agent asking before it acts, " +
+	"and worktender cannot sandbox it — `claude` takes no sandbox flag, and this plugin does not " +
+	"write your agent's configuration. Give the worker a boundary that does not depend on command " +
+	"spelling: a sandbox profile, or a separate uid.\n"
 
 const dispatchUsage = "usage: worktender dispatch --pane <id> --name <agent> " +
 	"[--model <model>] [--permission-mode <mode>] [--resume]"
@@ -184,14 +171,4 @@ func workspaceForPane(s *session, pane string) (string, error) {
 		return "", fmt.Errorf("herdr reports no workspace for pane %s; refusing to start an agent there", pane)
 	}
 	return info.Pane.WorkspaceID, nil
-}
-
-// isTruthy reads an opt-in the same way the events gate does, so a user who
-// learned one spelling does not have to learn a second.
-func isTruthy(raw string) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "yes", "y", "on", "enabled":
-		return true
-	}
-	return false
 }
