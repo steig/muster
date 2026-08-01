@@ -1,17 +1,12 @@
 // Package execute carries out the actions the reconciler decided on.
 //
-// The split matters: reconcile.Reconcile is a pure function over a snapshot,
-// and a snapshot goes stale. Every destructive step here re-reads its guards
-// immediately before acting, so a worktree that picked up uncommitted changes
-// or an agent between the two phases survives.
+// reconcile.Reconcile is a pure function over a snapshot, and a snapshot goes
+// stale, so every destructive step here re-reads its guards immediately before
+// acting. Staffing counts as destructive: starting an agent on a pane that
+// already has one lands on a live conversation.
 //
-// Staffing counts as destructive for this purpose. It creates rather than
-// removes, but starting an agent on a pane that already has one lands on a live
-// conversation, and a lost conversation is as unrecoverable as a lost checkout.
-//
-// Pruning is a dry run unless ApplyPrune is set. A plugin action has no good
-// prompt surface, so there is no interactive confirmation to replace the shell
-// version's read -r; applying is a separate, explicit action instead.
+// Pruning is a dry run unless ApplyPrune is set. A plugin action has no prompt
+// surface, so applying is a separate, explicit action instead.
 package execute
 
 import (
@@ -51,16 +46,13 @@ type Result struct {
 	Detail string
 }
 
-// AgentStartTimeout bounds herdr's own wait for a pane to become usable.
+// AgentStartTimeout bounds herdr's own wait for a pane to become usable — a
+// fresh worktree is often still running direnv or nix, and an agent cannot
+// start against a busy prompt.
 //
-// A worktree that has just been created is often still running direnv or nix
-// when staffing is attempted, and an agent cannot start against a busy prompt.
-// herdr will wait up to this long rather than failing instantly.
-//
-// It is exported because it is also the longest a reconcile can LEGITIMATELY
-// hold the repository lock — a handler blocked here for a full minute is
-// healthy, not wedged. repolock.MaxHold is sized from it, and a test asserts the
-// two cannot drift apart.
+// It is exported because it is also the longest a reconcile can legitimately
+// hold the repository lock. repolock.MaxHold is sized from it, and a test
+// asserts the two cannot drift apart.
 const AgentStartTimeout = 60 * time.Second
 
 // agentStartTimeoutMS is the same bound in the units the wire protocol wants.
@@ -87,8 +79,8 @@ func (e *Executor) Run(actions []reconcile.Action) []Result {
 	for _, action := range actions {
 		switch action.Kind {
 		case reconcile.KindKeep:
-			// Explanatory only — it exists so the report can say why a
-			// worktree was spared instead of silently omitting it.
+			// Explanatory only: it lets the report say why a worktree was
+			// spared instead of silently omitting it.
 			results = append(results, Result{action, StatusSkipped, action.Reason})
 		case reconcile.KindAdopt:
 			results = append(results, e.adopt(action))
@@ -120,23 +112,19 @@ func (e *Executor) adopt(action reconcile.Action) Result {
 
 // staff starts an agent in a workspace that has none, re-checking first.
 //
-// Staffing looks non-destructive and is not. The reconciler decided this
-// workspace was empty from a snapshot that has since aged, and an agent
-// appearing in the gap is routine rather than exotic — an event hook and a
-// human `sync` can plan from the same state moments apart. agent.start against
-// a pane that already hosts an agent does not bounce off; it lands on a live
-// conversation, which destroys context that exists nowhere else.
+// The reconciler decided this workspace was empty from a snapshot that has
+// since aged, and an agent appearing in the gap is routine — an event hook and
+// a human `sync` can plan from the same state moments apart. agent.start
+// against an occupied pane lands on a live conversation.
 //
-// The repository lock makes this collision rare. This is what makes it safe,
-// and the two are not interchangeable: the lock is an optimisation that may fail
-// to exclude, so it cannot be the thing standing here.
+// The repository lock makes the collision rare; this re-check is what makes it
+// safe. The lock may fail to exclude, so it cannot be the thing standing here.
 func (e *Executor) staff(action reconcile.Action) Result {
 	if action.WorkspaceID != "" {
 		staffed, err := e.workspaceStaffed(action.WorkspaceID)
 		switch {
 		case err != nil:
-			// An unverifiable guard is not a satisfied one — the same call the
-			// prune path already makes for the same reason.
+			// An unverifiable guard is not a satisfied one.
 			return Result{action, StatusSkipped,
 				fmt.Sprintf("could not confirm the workspace has no agent: %v", err)}
 		case staffed:
@@ -151,9 +139,8 @@ func (e *Executor) staff(action reconcile.Action) Result {
 		args = []string{"--continue"}
 		mode = "resumed"
 	}
-	// Caller arguments go last, so they cannot displace --continue: whether to
-	// resume is this executor's decision, not the caller's. Empty for
-	// everything the reconciler plans — see Action.AgentArgs.
+	// Caller arguments go last so they cannot displace --continue: whether to
+	// resume is this executor's decision, not the caller's.
 	args = append(args, action.AgentArgs...)
 
 	if err := e.Client.AgentStart(action.AgentName, agentKind, action.PaneID, args, agentStartTimeoutMS); err != nil {
@@ -163,11 +150,9 @@ func (e *Executor) staff(action reconcile.Action) Result {
 		fmt.Sprintf("%s %s as %s in %s", mode, agentKind, action.AgentName, action.PaneID)}
 }
 
-// prune removes a finished worktree, re-checking every guard first.
-//
-// The reconciler's verdict came from a snapshot that is now some milliseconds
-// to minutes old. Uncommitted work and a newly started agent are exactly the
-// things that appear in that gap, and both make the removal wrong.
+// prune removes a finished worktree, re-checking every guard first: uncommitted
+// work and a newly started agent are exactly what appears between the plan and
+// the removal, and both make it wrong.
 func (e *Executor) prune(action reconcile.Action) Result {
 	workspaceID, reason, blocked := e.pruneBlocked(action)
 	if blocked {
@@ -189,8 +174,7 @@ func (e *Executor) prune(action reconcile.Action) Result {
 // The workspace it returns is the one herdr currently holds the checkout in,
 // which the plan may have named wrongly or not at all.
 func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason string, blocked bool) {
-	// Guard a, re-checked: work that appeared since the reconcile exists
-	// nowhere else, and worktree.remove is called with force, which bypasses
+	// Guard a, re-checked: worktree.remove is called with force, which bypasses
 	// git's own refusal to delete a dirty checkout.
 	if gitx.IsDirty(action.Path) {
 		return "", "uncommitted changes appeared since the plan was made", true
@@ -198,12 +182,10 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason st
 
 	// Guard b, re-checked: an agent may have started in the gap.
 	//
-	// An empty workspace id is NOT the same fact as "no workspace holds this
-	// checkout". The plan joins worktrees to workspaces by path, and a join
-	// that misses produces exactly this — an action that looks like a
-	// standalone checkout and is really an agent's ground. Treating it as
-	// nothing to check skips the guard on precisely the actions that most need
-	// it, so herdr is asked again here and only its answer decides.
+	// An empty workspace id is not the same fact as "no workspace holds this
+	// checkout" — a path join that missed produces exactly this, an action that
+	// looks standalone and is really an agent's ground. So herdr is asked again
+	// and only its answer decides.
 	workspaceID = action.WorkspaceID
 	if workspaceID == "" {
 		holder, err := e.workspaceHolding(action.Path)
@@ -221,12 +203,8 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason st
 		}
 	}
 
-	// Removing the directory the caller is standing in would leave their
-	// interactive shell on a dead cwd. The shell version stepped out with a
-	// `cd`, which cannot work from a plugin subprocess: this process has its
-	// own cwd (the plugin root), and changing it does nothing for the user's
-	// shell or for any other pane still sitting in the checkout. Refusing is
-	// the only honest option — the user moves, then prunes.
+	// Removing the directory the caller is standing in would leave their shell
+	// on a dead cwd, and a plugin subprocess cannot `cd` on their behalf.
 	if e.CallerDir != "" && isInside(e.CallerDir, action.Path) {
 		return "", fmt.Sprintf("you are in %s — cd out of it first", action.Path), true
 	}
@@ -235,9 +213,8 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason st
 }
 
 // workspaceHolding returns the id of the workspace herdr currently has the
-// checkout open in, empty when there is none. Paths are compared normalised:
-// re-asking herdr is worth nothing if its answer is then matched by raw string
-// equality against a path spelled another way.
+// checkout open in, empty when there is none. Paths are compared normalised, or
+// re-asking herdr buys nothing.
 func (e *Executor) workspaceHolding(checkout string) (string, error) {
 	workspaces, err := e.Client.WorkspaceList()
 	if err != nil {
@@ -280,9 +257,8 @@ func (e *Executor) workspaceStaffed(workspaceID string) (bool, error) {
 // removeCheckout deletes the worktree, preferring herdr so the workspace is
 // torn down with it. A worktree herdr has no workspace for is removed with git.
 //
-// workspaceID comes from the guards rather than from the action, because that
-// is the one the guards actually verified: a workspace rediscovered there must
-// be torn down through herdr, or herdr is left holding a workspace over a
+// workspaceID comes from the guards rather than the action, because that is the
+// one they verified — otherwise herdr is left holding a workspace over a
 // checkout that no longer exists.
 func (e *Executor) removeCheckout(action reconcile.Action, workspaceID string) error {
 	if workspaceID != "" {
@@ -315,9 +291,8 @@ func (e *Executor) dropBranch(branch string) string {
 	}
 
 	detail := fmt.Sprintf("; deleted branch %s", branch)
-	// Branches are published so other machines can pick them up, so the remote
-	// counterpart outlives the local one. Deleting a remote ref is not
-	// something to do silently — an open PR may still point at it.
+	// The remote counterpart outlives the local one, and deleting a remote ref
+	// is not something to do silently — an open PR may still point at it.
 	if e.remoteHasBranch(branch) {
 		detail += fmt.Sprintf("; origin/%s still exists — `git push origin --delete %s` when the PR is closed", branch, branch)
 	}
@@ -341,17 +316,13 @@ func isInside(dir, root string) bool {
 	return rel == "." || !strings.HasPrefix(rel, "..")
 }
 
-// Render writes a human-readable report, one aligned line per action.
+// Render writes a human-readable report, one aligned line per action. The
+// worktree is its own column because several commonly share a reason.
 //
-// The worktree is its own column: several worktrees commonly share a reason
-// ("still open"), and a report that does not say which is which explains
-// nothing.
-//
-// The target and the detail are escaped: both carry branch names, which git
-// will happily let contain a bidi override, and this report is the confirmation
-// a human reads before `prune --apply`. A name that draws as another name
-// spoofs that confirmation. The detail also carries git's own stderr, so
-// escaping keeps the promise of one line per action too.
+// Target and detail are escaped: both carry branch names, git allows a bidi
+// override in one, and this report is the confirmation a human reads before
+// applying a prune. The detail also carries git's stderr, so escaping keeps the
+// promise of one line per action.
 func Render(results []Result) string {
 	if len(results) == 0 {
 		return "nothing to do\n"

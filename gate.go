@@ -12,61 +12,12 @@ import (
 	"github.com/steig/worktender/internal/herdrapi"
 )
 
-// The completion gate is the hand-off primitive: block until a dispatched
-// worker's report satisfies a predicate, then let the coordinator proceed.
-//
-// Nothing in adopt/staff/resume/prune covers this, because those are about the
-// shape of a repository and this is about the order of two agents' work.
-//
-// THE PREDICATE MAY ONLY READ VALIDATED SLOTS. --until matches `status`, a
-// closed set; --require-pr matches the presence of `pr`, a positive integer.
-// There is deliberately no way to write a predicate over the note, and adding
-// one is not a feature request that can be granted. The note is untrusted text
-// authored by whatever the worker swallowed — a GitHub issue body is written by
-// anyone who can file one — and a predicate over it would put that author in
-// charge of when the coordinator's next agent starts. The report envelope
-// exists to keep untrusted text out of the coordinator's control flow; a
-// --note-contains flag would hand it the control flow directly.
-//
-// WHAT THE GATE DOES NOT PROVE. It reads the worker's pane, and a pane is a
-// buffer the worker fully controls: a worker that prints seven crafted lines
-// produces an envelope that parses, and one that echoes a file containing those
-// lines does the same. So the gate authenticates SHAPE and POSITION, never
-// authorship — it establishes that a well-formed report appeared in that pane
-// after the gate started, and nothing about who composed it. That holds for both
-// channels a report can arrive on; see readChannels for why the metadata one is
-// no stronger despite being the one `worktender report` writes.
-//
-// A shared secret would not close that. The obvious fix is a nonce the
-// coordinator puts in the dispatch prompt and requires back in the report — but
-// the dispatch prompt is IN the worker's context, sitting beside the hostile
-// issue body, so any text that can talk the worker into printing a fake report
-// can also read the nonce out of the same context and include it. A secret the
-// attacker can read is not a secret, so the gate does not pretend to have one.
-//
-// What remains true regardless is the part that matters: whatever the status
-// slot says, the note reaches the coordinator quoted and announced, and the
-// gate branched on neither its content nor its length.
-
-// gateDefaultTimeout bounds a wait nobody supplied a bound for.
-//
-// A gate with no timeout wedges a coordinator with no diagnosis, which is worse
-// than no gate at all — so there is no "wait indefinitely" option, unlike
-// `herdr agent wait`, which offers one. Fifteen minutes is long enough for a
-// worker to finish a slice of real work and short enough that a coordinator
-// which loses one gets its terminal back inside a coffee break.
+// gateDefaultTimeout bounds a wait nobody supplied a bound for. There is no
+// "wait indefinitely" option.
 const gateDefaultTimeout = 15 * time.Minute
 
-// gateReadSource is the snapshot the LEGACY half of the report is parsed out
-// of. Unwrapped, because a wrapped envelope line is two lines to a parser.
-//
-// The pane used to be the only channel, and it carried a requirement the
-// dispatch prompt had to satisfy: the envelope had to reach the worker's
-// TERMINAL, which a Claude Code worker running `worktender report` as a tool call
-// never does. metadata.go is the channel that removed the requirement. The pane
-// is still read, second, because a worker that reproduces its envelope as reply
-// text has reported and must go on being heard — including one whose `worktender
-// report` never ran at all.
+// gateReadSource is the snapshot the terminal channel is parsed out of.
+// Unwrapped, because a wrapped envelope line is two lines to a parser.
 const gateReadSource = herdrapi.ReadSourceRecentUnwrapped
 
 const gateUsage = "usage: worktender gate --target <agent|pane> [--until planned|blocked|done] [--require-pr] [--timeout 15m]"
@@ -125,8 +76,8 @@ func parseGate(args []string) (gateOptions, error) {
 }
 
 // satisfies is the whole predicate surface: a status from the closed set, and
-// optionally the presence of the validated pr slot. The note is not reachable
-// from here and there is no third case to add.
+// optionally the presence of the validated pr slot. The note is deliberately
+// not reachable from here.
 func (o gateOptions) satisfies(r report) bool {
 	if !slices.Contains(o.until, r.status) {
 		return false
@@ -134,11 +85,8 @@ func (o gateOptions) satisfies(r report) bool {
 	return !o.requirePR || r.pr > 0
 }
 
-// gateCommand waits for a worker to report, then releases.
-//
-// Like `report`, it takes no repository lock and needs no invocation context: it
-// touches neither git nor the reconciler. It does need herdr, because the pane
-// it reads and the transitions it waits on are herdr's.
+// gateCommand waits for a worker to report, then releases. It takes no
+// repository lock and needs no invocation context, but it does need herdr.
 func gateCommand(args []string, out io.Writer) error {
 	opts, err := parseGate(args)
 	if err != nil {
@@ -152,10 +100,8 @@ func gateCommand(args []string, out io.Writer) error {
 }
 
 func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
-	// Resolving the target first is the cheapest half of the dead-worker
-	// answer: herdr returns agent_not_found both for a name that never existed
-	// and for a pane whose agent has exited, so a gate pointed at something
-	// that will never report fails here instead of at the deadline.
+	// A gate pointed at something that will never report fails here rather than
+	// at the deadline.
 	info, err := client.AgentGet(opts.target)
 	if err != nil {
 		return fmt.Errorf("gate %s: %w", opts.target, err)
@@ -168,22 +114,12 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 	started := time.Now()
 	deadline := started.Add(opts.timeout)
 
-	// Subscribe BEFORE reading the baseline. The other order has a hole exactly
-	// one round trip wide: a report landing between the read and the
-	// subscription would be in neither, and the gate would wait out its whole
-	// timeout on a worker that had already answered.
+	// Subscribe BEFORE reading the baseline, or a report landing between the two
+	// is in neither.
 	//
-	// The last subscription is the one experience added: closing a workspace does
-	// NOT emit pane.exited or pane.closed for the panes inside it, so a gate
-	// subscribed only to the pane events sits through its whole timeout after
-	// its worker's workspace is torn down. That was observed, not predicted.
-	//
-	// pane.updated is what makes the metadata channel edge-triggered. Attaching
-	// tokens to a pane emits one, measured on a live socket, so a report lands
-	// in the gate's lap the instant `worktender report` writes it — rather than
-	// whenever the worker's agent status next happens to move, which for a
-	// worker that reports mid-turn and keeps working could be minutes later or
-	// never.
+	// workspace.closed is subscribed because closing a workspace emits no
+	// pane.exited or pane.closed for the panes inside it. pane.updated is what
+	// makes the metadata channel edge-triggered: attaching tokens emits one.
 	stream, err := client.Subscribe([]herdrapi.Subscription{
 		{Type: herdrapi.SubscriptionPaneAgentStatusChanged, PaneID: pane},
 		{Type: herdrapi.SubscriptionPaneExited, PaneID: pane},
@@ -196,18 +132,9 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 	}
 	defer stream.Close()
 
-	// Whatever is already on either channel is a PREVIOUS task's answer.
-	//
-	// A worker is dispatched, then gated; anything it had reported before the
-	// gate opened was reported about something else. Releasing on it would hand
-	// the coordinator a stale `done` — which is precisely the hand-off bug the
-	// gate exists to remove, not a shortcut worth taking. The baseline is
-	// therefore ignored, and named in the timeout message, so a gate started
-	// too late says so instead of just failing.
-	//
-	// Taking it is the same operation as judging one: what the marks return the
-	// first time is exactly what was already there, so a report only ever counts
-	// as news once, and the rule that decides it is written in one place.
+	// Whatever is already on either channel is a previous task's answer, so it
+	// is ignored — and named in the timeout message, so a gate started too late
+	// says so instead of just failing.
 	var seen gateMarks
 	stale := seen.advance(readChannels(client, pane))
 	baseline, hasBaseline := report{}, len(stale) > 0
@@ -232,26 +159,20 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 			continue
 		}
 
-		// Read before acting on the verdict, so a worker that printed its
-		// report and died in the same breath is still heard. A gate that
-		// checked liveness first would throw that report away.
+		// Read before acting on the verdict, so a worker that printed its report
+		// and died in the same breath is still heard.
 		fresh := seen.advance(readChannels(client, pane))
 
-		// Both channels can move between two looks, so a look can turn up more
-		// than one new report — and then the ORDER they were read in must not
-		// decide the gate. Every one of them is weighed for release before any
-		// of them is weighed for blocked, so a `done` on one channel is not lost
-		// to a `blocked` that happened to be read first.
+		// A look can turn up more than one new report, so every one is weighed
+		// for release before any is weighed for blocked: the order they were
+		// read in must not decide the gate.
 		if i := slices.IndexFunc(fresh, opts.satisfies); i >= 0 {
 			fmt.Fprintf(out, "gate: released after %s\n", time.Since(started).Round(time.Second))
 			fmt.Fprint(out, renderReport(fresh[i]))
 			return nil
 		}
-		// `blocked` is terminal in the direction that matters: a blocked worker
-		// does not reach `done` on its own, and the party that unblocks it is
-		// the coordinator sitting in this wait. Holding the gate open would
-		// spend the whole timeout waiting for something only the waiter can
-		// cause.
+		// A blocked worker does not reach `done` on its own, and the party that
+		// unblocks it is the coordinator sitting in this wait.
 		if i := slices.IndexFunc(fresh, isBlocked); i >= 0 {
 			fmt.Fprint(out, renderReport(fresh[i]))
 			return fmt.Errorf("gate %s: the worker reported blocked after %s; it will not reach %s without you",
@@ -272,14 +193,12 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 type gateEventVerdict int
 
 const (
-	// Not about this worker: a workspace.closed for somebody else's workspace,
-	// which herdr delivers regardless of the filter it was asked for.
+	// Not about this worker; herdr delivers some events regardless of the
+	// filter it was asked for.
 	gateIgnore gateEventVerdict = iota
 	// This worker did something; look at the pane.
 	gateCheck
-	// This worker can no longer report. A gate that waits on one of these out
-	// to its deadline turns a crash into fifteen minutes of silence, which is
-	// the state that makes a gate worse than no gate at all.
+	// This worker can no longer report.
 	gateGone
 )
 
@@ -290,24 +209,17 @@ func gateVerdict(event herdrapi.StreamEvent, pane, workspace string) (gateEventV
 		return gateGone, "the worker's pane ended"
 
 	case herdrapi.StreamEventPaneUpdated:
-		// Unfiltered and backlog-replayed, like workspace.closed: the
-		// subscription takes no pane id, so this is every pane in the session,
-		// and a fresh subscriber is handed the history first.
-		//
-		// Both are harmless here for the same reason, which is that a frame is
-		// only ever a reason to go and look. The payload carries the pane's
-		// tokens AS THEY WERE, and a replayed frame therefore carries metadata
-		// that has since been replaced; reading it would be how a gate releases
-		// on a report from a quarter of an hour ago. So the id is checked here
-		// and the report is read from herdr, never from the frame.
+		// Unfiltered and backlog-replayed, so the id is checked here. A frame is
+		// only ever a reason to go and look: the payload carries the pane's
+		// tokens as they were, so the report is read from herdr, never from the
+		// frame.
 		if event.PaneID() != pane {
 			return gateIgnore, ""
 		}
 		return gateCheck, ""
 
 	case herdrapi.StreamEventWorkspaceClosed:
-		// Unfiltered and replayed from the session's backlog, so the id has to
-		// be checked here or the gate fails on somebody else's history.
+		// Unfiltered and replayed, so the id has to be checked here.
 		if event.WorkspaceID() != workspace {
 			return gateIgnore, ""
 		}
@@ -316,12 +228,10 @@ func gateVerdict(event herdrapi.StreamEvent, pane, workspace string) (gateEventV
 	case herdrapi.StreamEventPaneAgentStatusChanged:
 		data, err := event.AgentStatus()
 		if err != nil {
-			// A frame we cannot read is not a frame we can act on, and the
-			// alternative to saying so is guessing about a live worker.
+			// A frame we cannot read is not a frame we can act on.
 			return gateIgnore, ""
 		}
-		// `unknown` is what an agent that has gone away looks like: herdr had a
-		// state for this pane a moment ago and has none now.
+		// `unknown` is what an agent that has gone away looks like.
 		if data.AgentStatus == herdrapi.AgentStatusUnknown {
 			return gateGone, "herdr lost track of the agent"
 		}
@@ -330,13 +240,9 @@ func gateVerdict(event herdrapi.StreamEvent, pane, workspace string) (gateEventV
 	return gateIgnore, ""
 }
 
-// gateExpired is the diagnosis a caller gets at the deadline.
-//
-// It names the baseline because the most likely reason a gate expires with a
-// report sitting in the pane is that it was started after the worker answered.
-// Only the validated slots are quoted back: a timeout message is not a place to
-// print untrusted text, and status and pr say everything a coordinator needs to
-// decide whether to act on it or dispatch again.
+// gateExpired is the diagnosis a caller gets at the deadline. It names the
+// baseline, and quotes only the validated slots — a timeout message is not a
+// place to print untrusted text.
 func gateExpired(opts gateOptions, pane string, waited time.Duration, baseline report, hasBaseline bool) error {
 	detail := "the pane held no report when the gate opened"
 	if hasBaseline {
@@ -351,9 +257,7 @@ func gateExpired(opts gateOptions, pane string, waited time.Duration, baseline r
 func isBlocked(r report) bool { return r.status == "blocked" }
 
 // The two channels a report can reach a gate on. Each carries its own counter
-// and the two are never compared: one counts writes to a pane's metadata, the
-// other counts envelopes in its output, and a number from one says nothing about
-// a number from the other.
+// and the two are never compared.
 const (
 	channelMetadata = iota
 	channelTerminal
@@ -363,13 +267,9 @@ const (
 // gateMarks is the sequence each channel showed the last time the gate looked.
 type gateMarks [channelCount]uint64
 
-// observation is what one channel held on one look at the pane.
-//
-// A channel the gate could not READ produces no observation at all, which is not
-// the same as one holding no report. A failed read is not evidence that a report
-// went away, and recording it as one would lower that channel's mark and let the
-// gate judge a report it has already judged — releasing, the second time, on the
-// stale answer the baseline exists to refuse.
+// observation is what one channel held on one look at the pane. A channel the
+// gate could not read produces no observation at all, which is not the same as
+// one holding no report.
 type observation struct {
 	channel int
 	report  report
@@ -379,16 +279,10 @@ type observation struct {
 // advance returns the reports the gate has not judged yet, and moves the marks
 // to what it has just been shown.
 //
-// THE RELEASE RULE. A report is new exactly when its channel's counter is higher
-// than the one that channel last showed. Content is never compared, which is
-// what makes a report identical to an earlier one audible: two runs of the same
-// fixed template are two reports, and the second one is news.
-//
-// A counter that goes DOWN re-marks and releases nothing. The terminal's does
-// that legitimately — it counts envelopes in a bounded snapshot, so a buffer
-// that has scrolled past one holds fewer than it did — and following it down is
-// what keeps a long-lived pane audible, at the cost of nothing: a report is
-// still news at any count above the mark it lands on.
+// A report is new exactly when its channel's counter is higher than the one
+// that channel last showed; content is never compared, so two byte-identical
+// reports are two reports. A counter that goes down re-marks and releases
+// nothing — the terminal's does that legitimately as its buffer scrolls.
 func (m *gateMarks) advance(obs []observation) []report {
 	var fresh []report
 	for _, o := range obs {
@@ -403,43 +297,19 @@ func (m *gateMarks) advance(obs []observation) []report {
 // readChannels returns what each of a pane's channels holds, and the sequence
 // that identifies it there.
 //
-// BOTH, every look, and neither wins. Metadata is read first because it is where
-// a report normally is — it is the channel `worktender report` writes and confirms,
-// and the only one that survives a Claude Code tool call — but a worker that
-// reproduces its envelope as reply text has reported too, and it is the same
-// worker. A reader that stopped at the metadata the moment it held anything made
-// the terminal unreachable for the rest of the gate: a worker that reported
-// `planned` over the tool call and finished by echoing `done` was never
-// released. Reading both and comparing each against its own mark is what lets
-// the newer report win whichever channel it arrived on.
+// Both are read on every look and neither wins. Metadata is where a report
+// normally is — it is the only channel that survives a Claude Code tool call —
+// but a worker that reproduces its envelope as reply text has reported too, and
+// a reader that stopped at metadata made the terminal unreachable for the rest
+// of the gate.
 //
-// WHAT THE METADATA CHANNEL AUTHENTICATES, WHICH IS NOT AUTHORSHIP. It is no
-// stronger than the pane here, and this comment used to say it was.
-// pane.report_metadata takes an arbitrary pane_id, so nothing binds a write to
-// the caller's own pane; `source` is provenance rather than a namespace, as
-// metadata.go says where it depends on exactly that; and what arrives is a flat
-// map[string]string with no attribution on it, so decodeReport could not check
-// an author even in principle. Any process holding the herdr socket can write
-// worktender_status and worktender_pr onto another worker's pane and release a
-// coordinator's gate.
+// Neither channel authenticates authorship: any process holding the herdr socket
+// can write the slots onto another pane. Both authenticate shape and position
+// only. That `worktender report` writes solely to HERDR_PANE_ID is this
+// plugin's own discipline, not something the channel enforces.
 //
-// That is a limit to state, not a hole to engineer around: it needs code already
-// running as the user, so it crosses no privilege boundary, and a nonce would
-// fail here for the reason the header of this file gives. The counter does not
-// narrow it either — a writer that can set the slots can set the number. Both
-// channels authenticate SHAPE and POSITION and nothing else. That `worktender
-// report` writes only to HERDR_PANE_ID is this plugin's own discipline, which is
-// worth keeping and is not a restriction the channel enforces.
-//
-// applies_to_source would not change that, which is why it is still not sent.
-// Whatever it constrains on the way in, nothing on the way out carries a source
-// at all: PaneInfo.Tokens is one flat map per pane, so a reader has nothing to
-// check a claimed source against. It could only ever be a field set, not a
-// guarantee gained.
-//
-// Neither read is fatal when it fails. A pane can disappear underneath a gate,
-// and the event that says so is already on its way; failing here would report a
-// vanished pane as a transport fault rather than as a worker that died.
+// Neither read is fatal when it fails: a pane can disappear underneath a gate,
+// and the event that says so is already on its way.
 func readChannels(client *herdrapi.Client, pane string) []observation {
 	var obs []observation
 	if info, err := client.PaneGet(pane); err == nil {

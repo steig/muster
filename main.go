@@ -7,6 +7,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -22,24 +23,17 @@ import (
 )
 
 // commands is every subcommand run dispatches, and the source usage is built
-// from. One list rather than two: a hand-written usage string and a
-// hand-written test list had already drifted apart — the test named "every
-// command" omitted `gate`, so usage could have dropped it and stayed green.
-var commands = []string{"ls", "doctor", "update", "sync", "dispatch", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
+// from. One list rather than two, so usage cannot drift from what exists.
+var commands = []string{"ls", "doctor", "update", "start", "sync", "dispatch", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
 
 var usage = "usage: worktender <" + strings.Join(commands, "|") + ">"
 
-// releaseLock releases and says so when it fails, instead of discarding the
-// error the way a bare deferred Release did at four call sites.
+// releaseLock releases and says so when it fails.
 //
-// A failed release is not cosmetic. The lock file stays on disk, so every other
-// reconcile of this repository — event hooks and the startup pass included —
-// coalesces into a pass that is not running, until repolock.MaxHold expires. A
-// silent defer leaves five minutes of inexplicable no-ops and nothing to read.
-//
-// It reports rather than returns because every caller is a defer whose return
-// value is already spoken for, and because the failure does not invalidate the
-// work that just succeeded.
+// A failed release leaves the lock file on disk, so every other reconcile of
+// this repository coalesces into a pass that is not running until
+// repolock.MaxHold expires. It reports rather than returns because every caller
+// is a defer whose return value is already spoken for.
 func releaseLock(lock *repolock.Lock, out io.Writer) {
 	if err := lock.Release(); err != nil {
 		fmt.Fprintf(out, "warning: %v; this repository stays locked for up to %s\n", err, repolock.MaxHold)
@@ -54,8 +48,7 @@ func main() {
 }
 
 // run dispatches a subcommand. Every failure returns an error so it reaches the
-// process exit code: herdr records a plugin action that exits 0 as "succeeded",
-// so a command that reports a problem and exits 0 is a silent failure.
+// process exit code: herdr records a plugin action that exits 0 as "succeeded".
 func run(args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("%s", usage)
@@ -63,22 +56,23 @@ func run(args []string, out io.Writer) error {
 
 	switch args[0] {
 	case "ls", "list":
-		return lsCommand(out)
+		return lsCommand(args[1:], out)
 	case "doctor":
-		// Reports the environment the silent failures hide in. Read-only, takes
-		// no lock, and works from outside a repository.
+		// Read-only, takes no lock, works from outside a repository.
 		return doctorCommand(out)
 	case "update":
-		// Moves this plugin's own install forward. It touches no repository of
-		// the user's, so it takes no session and no lock.
+		// Moves this plugin's own install forward; touches no repository of the
+		// user's.
 		return updateCommand(args[1:], out)
+	case "start":
+		// Issue number in, agent working on it out. Creates a worktree, so it
+		// must be told which repository.
+		return startCommand(args[1:], out)
 	case "sync":
-		// Adopt and staff. Both are non-destructive, so they act directly;
-		// finished worktrees are only listed.
+		// Adopt and staff. Finished worktrees are only listed.
 		return syncCommand(out)
 	case "dispatch":
-		// Staffs one named pane with configuration `sync` never supplies. Reads
-		// herdr and changes no worktree, so it takes no lock.
+		// Staffs one named pane; changes no worktree, so it takes no lock.
 		return dispatchCommand(args[1:], out)
 	case "prune":
 		// Lists finished worktrees and removes nothing.
@@ -87,12 +81,11 @@ func run(args []string, out io.Writer) error {
 		// The explicit opt-in to actually removing them.
 		return pruneCommand(out, true)
 	case "report":
-		// A worker filling slots for its coordinator. Touches neither herdr nor
-		// the repository, so it takes no session and needs no lock.
+		// A worker filling slots for its coordinator; touches neither herdr nor
+		// the repository.
 		return reportCommand(args[1:], out)
 	case "gate":
-		// A coordinator waiting on a worker it dispatched. Reads herdr but not
-		// the repository, so it takes no lock either.
+		// A coordinator waiting on a worker; reads herdr, not the repository.
 		return gateCommand(args[1:], out)
 	case "on-event":
 		// Invoked by herdr, never by hand. Off unless opted in.
@@ -106,19 +99,17 @@ func run(args []string, out io.Writer) error {
 }
 
 // stateDir is where herdr lets this plugin keep state between invocations.
-//
 // Empty when we are not running under herdr, which repolock treats as "no lock
-// available" and proceeds through, rather than as a reason to stop.
+// available" and proceeds through.
 func stateDir() string { return os.Getenv("HERDR_PLUGIN_STATE_DIR") }
 
 // commandLockWait is how long a human-invoked command waits for a reconcile
-// already in progress. An event hook coalesces into the running pass instead,
-// but a person asked for this one, so it queues rather than quietly doing
-// nothing.
+// already in progress. An event hook coalesces instead, but a person asked for
+// this one, so it queues.
 const commandLockWait = 30 * time.Second
 
-// reconcilePasses bounds the coalescing loop. Two is the natural maximum — one
-// pass, plus one for whatever arrived while it ran — and the third is slack.
+// reconcilePasses bounds the coalescing loop: one pass, plus one for whatever
+// arrived while it ran, plus slack.
 const reconcilePasses = 3
 
 // session is what every command needs: a herdr connection, the repository being
@@ -132,14 +123,12 @@ type session struct {
 // newSession resolves which repository to work on.
 //
 // allowFallback decides what happens when herdr supplied no invocation context.
-// Read-only commands may fall back to the process working directory, which
-// keeps them usable straight from a shell. Commands that change things must
-// not: herdr runs plugin commands with cwd set to the plugin root, which is
-// itself a git repository, so falling back there would point a removal at this
-// plugin's own checkout.
+// Read-only commands may fall back to the process working directory; commands
+// that change things must not, because herdr runs plugin commands with cwd set
+// to the plugin root — itself a git repository.
 //
-// A malformed context is fatal either way. It means herdr sent something we
-// cannot parse, which is a bug to surface, not a state to default around.
+// A malformed context is fatal either way: it is a bug to surface, not a state
+// to default around.
 func newSession(allowFallback bool) (*session, error) {
 	client, err := herdrapi.New()
 	if err != nil {
@@ -214,13 +203,35 @@ func (s *session) perform(out io.Writer, actions []reconcile.Action, applyPrune 
 	return nil
 }
 
-func lsCommand(out io.Writer) error {
+const lsUsage = "usage: worktender ls [--pr]"
+
+func lsCommand(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	withPR := fs.Bool("pr", false, "ask gh for each branch's pull request state")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%v; %s", err, lsUsage)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), lsUsage)
+	}
+
 	// Read-only: usable from a plain shell.
 	s, err := newSession(true)
 	if err != nil {
 		return err
 	}
-	return wt.Ls(s.client, s.root, s.dir, out)
+
+	// Opt-in, because it is one `gh` invocation per branch and they run in
+	// series. A listing people run to see where they stand has to stay fast.
+	var lookupPR func(string) string
+	if *withPR {
+		lookupPR = func(branch string) string {
+			return string(reconcile.GhPRState(s.root, branch))
+		}
+	}
+	return wt.Ls(s.client, s.root, s.dir, lookupPR, out)
 }
 
 // syncCommand adopts unopened worktrees and staffs agentless workspaces. It
@@ -232,9 +243,14 @@ func syncCommand(out io.Writer) error {
 		return err
 	}
 
+	// Named for the reason `prune` names it: sync resolves the repository from
+	// herdr's invocation context first, so it can act somewhere other than where
+	// the caller believes they are standing.
+	fmt.Fprintf(out, "repository: %s\n", s.root)
+
 	// Serialise against an event hook reconciling the same repository. The
 	// executor re-checks its guards regardless, so this is about not doing the
-	// work twice rather than about safety.
+	// work twice, not about safety.
 	lock, err := repolock.AcquireWithin(stateDir(), s.root, commandLockWait)
 	if err != nil {
 		return err
@@ -244,8 +260,13 @@ func syncCommand(out io.Writer) error {
 	}
 	defer releaseLock(lock, out)
 
+	collector := reconcile.NewCollector(s.client, s.root)
+	// No gh: PR state only ever authorises a prune, and prunes are filtered out
+	// below. Every lookup is a network round trip per worktree, deciding nothing.
+	collector.LookupPR = nil
+
 	return lock.Repeat(reconcilePasses, func() error {
-		actions, err := s.plan()
+		actions, err := s.planWith(collector)
 		if err != nil {
 			return err
 		}
@@ -263,25 +284,11 @@ func pruneCommand(out io.Writer, apply bool) error {
 		return err
 	}
 
-	// BOTH HALVES NAME THE REPOSITORY THEY RESOLVED, because they do not
-	// resolve it the same way and must not disagree in silence.
-	//
-	// The asymmetry above is deliberate and stays: listing may fall back to the
-	// working directory, applying may not, because herdr runs plugin commands
-	// with cwd set to the plugin root — itself a git repository — so a removal
-	// that fell back there would point at this plugin's own checkout.
-	//
-	// What that asymmetry cost was legibility. `prune` exists to be the thing
-	// you read before running `prune-apply`; splitting them into two actions IS
-	// the confirmation step, and that only holds if the second acts on what the
-	// first described. Where herdr supplies a context carrying no repository,
-	// the two can land on different roots — observed live, as a dry run listing
-	// six worktrees followed by an apply reporting "nothing to do".
-	//
-	// Printing the root does not prevent the divergence. It makes it impossible
-	// to have without seeing it, which is the property that actually matters:
-	// "nothing to do" is indistinguishable from "nothing to do HERE" until the
-	// output says where here is.
+	// Both halves name the repository they resolved, because they do not resolve
+	// it the same way — listing may fall back to the working directory, applying
+	// may not — and must not disagree in silence. Splitting prune from
+	// prune-apply is the confirmation step, and that only holds if the second
+	// acts on what the first described.
 	fmt.Fprintf(out, "repository: %s\n", s.root)
 
 	// Listing changes nothing, so it needs no claim on the repository; only the
@@ -303,9 +310,9 @@ func pruneCommand(out io.Writer, apply bool) error {
 	}
 	defer releaseLock(lock, out)
 
-	// Deliberately a single pass, not Repeat: re-running a REMOVAL because more
-	// work was marked would be acting on a trigger someone else observed. The
-	// mark is left for the next reconcile, which is the adopt/staff path.
+	// A single pass, not Repeat: re-running a removal because more work was
+	// marked would act on a trigger someone else observed. The mark is left for
+	// the next reconcile.
 	actions, err := s.plan()
 	if err != nil {
 		return err

@@ -84,8 +84,8 @@ func (c *Collector) Collect() (State, error) {
 			WorkspaceID: deref(w.OpenWorkspaceID),
 		}
 
-		// Only linked worktrees are ever staffed or pruned, so the expensive
-		// per-checkout git and gh work is skipped for the main checkout.
+		// Only linked worktrees are staffed or pruned, so the per-checkout git
+		// and gh work is skipped for the main checkout.
 		if w.IsLinkedWorktree {
 			wt.Dirty = gitx.IsDirty(w.Path)
 			wt.OwnCommits = gitx.OwnCommits(w.Path, base)
@@ -110,10 +110,9 @@ func (c *Collector) Collect() (State, error) {
 		panes, err := c.Client.PaneList(ws.WorkspaceID)
 		if err != nil {
 			// A workspace herdr listed a moment ago can be closed before we ask
-			// for its panes, and losing the whole repository to that is out of
-			// all proportion: a workspace that no longer exists is one there is
-			// nothing left to decide about. Every other failure still means the
-			// repository's state is unknown, so only this code is survivable.
+			// for its panes, and one that no longer exists is one there is
+			// nothing to decide about. Every other failure leaves the
+			// repository's state unknown, so only this code is survivable.
 			var herr *herdrapi.Error
 			if errors.As(err, &herr) && herr.Code == "workspace_not_found" {
 				c.warnf("workspace %s went away while its panes were being read; skipping it\n", ws.WorkspaceID)

@@ -11,27 +11,19 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
 	"github.com/steig/worktender/internal/safetext"
 	"github.com/steig/worktender/internal/wt"
 )
 
 // doctor answers "what is wrong", for the failure modes that do not announce
-// themselves.
+// themselves: an unauthenticated `gh` collapsing to "no pull request", an
+// unrecognised WORKTENDER_EVENTS leaving events off, a stale remote-tracking
+// ref reading as an upstream still present, an install left releases behind.
 //
-// Four of this plugin's documented failures are environmental, silent, and
-// shaped exactly like ordinary operation. An unauthenticated `gh` collapses to
-// "no pull request", so prune keeps everything and every printed reason looks
-// reasonable. An unrecognised WORKTENDER_EVENTS leaves events off, and the
-// notice that would say so is printed by a hook that no longer fires. A stale
-// remote-tracking ref reads as an upstream still present. An install left four
-// releases behind reads as an install. Each was previously diagnosed by
-// remembering it exists.
-//
-// It is read-only and takes no lock, and it must work from outside a
-// repository: someone who cannot tell what is wrong often cannot tell where
-// they are either. So it asks herdr for the repositories rather than asking git
-// where it is standing.
+// It is read-only, takes no lock, and works from outside a repository — so it
+// asks herdr for the repositories rather than asking git where it is standing.
 func doctorCommand(out io.Writer) error {
 	client, clientErr := herdrapi.New()
 	herdr := check{name: "herdr", value: "unreachable", state: stateFail}
@@ -57,6 +49,8 @@ func doctorCommand(out io.Writer) error {
 		fmt.Fprintln(out, strings.TrimRight(line, " "))
 	}
 
+	fmt.Fprint(out, binaryLine())
+
 	// Nothing below this line is answerable without herdr, and saying so once is
 	// better than four repetitions of the same cause.
 	if clientErr != nil {
@@ -66,9 +60,24 @@ func doctorCommand(out io.Writer) error {
 	return reportRepositories(client, out)
 }
 
-// state is a check's verdict. It is deliberately not a boolean: "off" is the
-// documented default for events and is not a problem, while "warn" is a real
-// capability the user has lost without being told.
+// binaryLine is how to reach this binary from a shell, or "" when this process
+// cannot say where it lives. The documented alternative is a jq expression over
+// `herdr plugin list --json`, and this process already knows its own path.
+//
+// It is printed before the herdr check gates the rest: someone whose herdr is
+// not answering still has a binary to run.
+func binaryLine() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("\nrun it from a shell with:\n  worktender=%s\n",
+		safetext.Escape(gitx.Resolve(exe)))
+}
+
+// state is a check's verdict, not a boolean: "off" is the documented default
+// for events and is not a problem, while "warn" is a capability the user has
+// lost without being told.
 type state string
 
 const (
@@ -85,13 +94,9 @@ type check struct {
 	note  string
 }
 
-// versionCheck reports what is installed and whether anything newer exists.
-//
-// This is the fourth silent failure, and the one that hides longest. An install
-// pins a commit and stays on it: herdr has no `plugin update`, so moving forward
-// is something you have to know to do, and nothing in ordinary use ever mentions
-// it. One install sat on 8ef0de9 across four releases while `doctor` itself, the
-// --permission-mode passthrough and the docs split all landed.
+// versionCheck reports what is installed and whether anything newer exists. An
+// install pins a commit and stays on it — herdr has no `plugin update`, so
+// nothing in ordinary use ever mentions moving forward.
 func versionCheck(client *herdrapi.Client) check {
 	root, err := installRoot()
 	if err != nil {
@@ -100,13 +105,10 @@ func versionCheck(client *herdrapi.Client) check {
 	return installCheck(client, root)
 }
 
-// installCheck is versionCheck against an explicit install root.
-//
-// It reports TWO drifts, because they are different and both silent. Behind
-// origin is the ordinary one. herdr recording a commit that is not on disk is
-// the one an update creates: herdr records the commit at install time and never
-// re-reads the checkout, so after any in-place update `plugin list` — the one
-// command that answers "what am I running" — answers with a commit that is gone.
+// installCheck is versionCheck against an explicit install root. It reports two
+// drifts: behind origin, and herdr recording a commit that is not on disk —
+// herdr records the commit at install time and never re-reads the checkout, so
+// after any in-place update `plugin list` names a commit that is gone.
 func installCheck(client *herdrapi.Client, root string) check {
 	version, err := manifestVersion(root)
 	if err != nil {
@@ -144,13 +146,10 @@ func installCheck(client *herdrapi.Client, root string) check {
 	return c
 }
 
-// herdrReachable reports the running herdr's version when it can be had.
-//
-// The version comes from the CLI rather than the socket because the socket does
-// not carry one, and it matters: every measured behaviour behind `report` and
-// `gate` was verified against 0.7.5. A version that cannot be read is reported
-// as unknown rather than assumed current — the manifest's min_herdr_version is
-// what actually enforces the floor, at install time.
+// herdrReachable reports the running herdr's version when it can be had. It
+// comes from the CLI because the socket does not carry one, and a version that
+// cannot be read is reported as unknown rather than assumed current — the
+// manifest's min_herdr_version enforces the floor at install time.
 func herdrReachable(client *herdrapi.Client) check {
 	if _, err := client.WorkspaceList(); err != nil {
 		return check{name: "herdr", value: "not answering", state: stateFail, note: err.Error()}
@@ -175,13 +174,11 @@ func herdrVersion() string {
 	return ""
 }
 
-// ghCheck is the one worth running this command for.
-//
-// Every `gh` failure — missing, or installed but not authenticated — collapses
-// to "this branch has no pull request", which resolves to keep. So a repository
-// that uses pull requests prunes almost nothing while every reason it prints
-// reads as ordinary. This is a warning rather than a failure: a repository that
-// does not use pull requests is entitled to no `gh` at all.
+// ghCheck is the one worth running this command for. Every `gh` failure —
+// missing, or installed but not authenticated — collapses to "this branch has
+// no pull request", which resolves to keep, while every printed reason reads as
+// ordinary. A warning rather than a failure: a repository that does not use
+// pull requests is entitled to no `gh` at all.
 func ghCheck() check {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return check{name: "gh", value: "not installed", state: stateWarn,
@@ -209,9 +206,8 @@ func eventsCheck() check {
 		return check{name: "events", value: "on", state: stateOK,
 			note: "worktrees are adopted and staffed without being asked"}
 	case strings.TrimSpace(raw) == "":
-		// The gate trims before deciding, so a stray `export WORKTENDER_EVENTS=" "`
-		// is off for the same reason unset is. Printing the raw value here would
-		// render as an empty column and read as a bug in this command.
+		// The gate trims before deciding, so whitespace is off for the same
+		// reason unset is; printing the raw value would render as an empty column.
 		return check{name: "events", value: "unset", state: stateOff}
 	default:
 		return check{name: "events", value: raw, state: stateOff}
@@ -219,10 +215,8 @@ func eventsCheck() check {
 }
 
 // reportRepositories lists what herdr currently holds, one line per repository.
-//
 // The scope is herdr's open worktree workspaces rather than the caller's
-// directory, for the same reason startup uses it: this has to answer from
-// anywhere, including from outside any repository at all.
+// directory, because this has to answer from outside any repository at all.
 func reportRepositories(client *herdrapi.Client, out io.Writer) error {
 	roots, err := openRepositories(client)
 	if err != nil {

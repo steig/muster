@@ -203,6 +203,39 @@ func (c *Client) WorktreeOpen(cwd, path, label string, focus bool) error {
 	}, nil)
 }
 
+// WorktreeCreate makes a new checkout and opens it as a workspace in one call,
+// answering with the workspace and its root pane — so a caller that is about to
+// staff the pane does not have to go and look it up.
+//
+// An empty base lets herdr pick; callers that care pass gitx.BaseRef. focus is a
+// parameter for the reason it is on WorktreeOpen: starting work in the
+// background must not yank the user out of what they are doing.
+func (c *Client) WorktreeCreate(cwd, branch, base, label string, focus bool) (*WorkspaceCreatedResponse, error) {
+	params := map[string]any{"cwd": cwd, "branch": branch, "label": label, "focus": focus}
+	if base != "" {
+		params["base"] = base
+	}
+	var out WorkspaceCreatedResponse
+	if err := c.call("worktree.create", params, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PaneSendText types text into a pane, newline included to submit it.
+//
+// This rather than agent.prompt, which blocks against an agent herdr still has
+// as launch_pending — a state a live agent can sit in indefinitely, so the
+// prompt never lands. Typing at the pane does not consult agent state at all.
+//
+// The consequence is that text must be ONE line: a newline inside it submits
+// early and the remainder lands as a second message.
+func (c *Client) PaneSendText(paneID, text string) error {
+	return c.call("pane.send_text", map[string]any{
+		"pane_id": paneID, "text": text,
+	}, nil)
+}
+
 // WorktreeRemove removes the worktree held open by a workspace, closing the
 // workspace with it.
 //
@@ -257,23 +290,17 @@ func (c *Client) PaneGet(paneID string) (*PaneInfoResponse, error) {
 // PaneReportMetadata attaches metadata tokens to a pane. A nil value clears its
 // key; any other value must be a string.
 //
-// Everything below was measured against a running herdr 0.7.5, because the
-// schema states none of it and getting it wrong loses data quietly:
+// Measured against herdr 0.7.5, because the schema states none of it:
 //
-//   - There is ONE token map per pane, shared by every writer. `source` is
-//     provenance, not a namespace — a token written under one source is read,
-//     and overwritten, by a write under another. Callers namespace their own
-//     keys or they collide.
-//   - A write MERGES. Keys the request does not name keep whatever they held,
-//     so the only way to retire a key is to send it explicitly as null.
-//   - A value longer than 80 RUNES is cut to 80, and control characters are
-//     stripped out of one. Both happen silently: the call still returns ok.
-//   - `seq` rejects a write carrying a lower sequence than the stored one, and
-//     also returns ok when it does. It is not sent for that reason.
+//   - One token map per pane, shared by every writer. `source` is provenance,
+//     not a namespace, so callers namespace their own keys or they collide.
+//   - A write merges; the only way to retire a key is to send it as null.
+//   - A value over 80 runes is cut, and control characters are stripped, both
+//     silently — the call still returns ok.
+//   - `seq` rejects an out-of-order write and also returns ok. Not sent.
 //
-// The first three mean a caller who needs delivery guaranteed has to read the
-// tokens back and compare them; the last means an ordering guard here would be
-// one more way to be told a report landed when it did not.
+// So a caller needing guaranteed delivery has to read the tokens back and
+// compare them.
 func (c *Client) PaneReportMetadata(paneID, source string, tokens map[string]any) error {
 	return c.call("pane.report_metadata", map[string]any{
 		"pane_id": paneID, "source": source, "tokens": tokens,

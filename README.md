@@ -9,8 +9,10 @@ worktrees pointing at the same reality.
 
 ## The problem
 
-Running several coding agents at once means running several worktrees. Creating
-them is the easy half, and every tool does it.
+Running several coding agents at once means running several worktrees. Making
+the directory is the easy half, and every tool does it — what nothing does is
+the round trip: an issue, a checkout named for it, an agent briefed on it, and a
+way to know when it is finished. `start` and `gate` are that half.
 
 The other end is where it goes wrong. A few weeks in there are eleven checkouts
 on disk, some have a herdr workspace and some do not, some still have an agent
@@ -19,23 +21,34 @@ the one you least want to delete. So nobody deletes anything — and the honest
 reason is that no cleanup script has ever been trustworthy enough to run without
 reading its output line by line first.
 
-worktender is built for that end of the job. It reconciles `git worktree list`
-against herdr's workspaces and agents, adopts what herdr does not know about,
-staffs empty workspaces with an agent, and removes finished checkouts — **on the
-rule that ambiguity always keeps the worktree.**
+worktender covers both ends. It starts an agent on an issue in a worktree of its
+own, and it reconciles `git worktree list` against herdr's workspaces and agents
+— adopting what herdr does not know about, staffing empty workspaces, and
+removing finished checkouts **on the rule that ambiguity always keeps the
+worktree.**
 
 ```sh
 $ worktender ls
-* main                      w21  idle     worktender
-  feat/1-reconcile-execute  w22  working  1-reconcile-execute
-  fix/257-erasure-comments  w1K  idle     257-erasure-comments
-  worktree/brave-valley     -    -        brave-valley-66f8
+* main                      w21  w21:p1  idle     worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     257-erasure-comments
+  worktree/brave-valley     -    -       -        brave-valley-66f8
 ```
 
-Columns are branch, herdr workspace, agent status, and directory. `*` marks the
-repository's main checkout; `-` means herdr has nothing for that worktree — the
-last row is a checkout with no workspace and no agent, which is exactly what
-`sync` picks up.
+Columns are branch, herdr workspace, pane, agent status, and directory. `*`
+marks the repository's main checkout; `-` means herdr has nothing for that
+worktree — the last row is a checkout with no workspace and no agent, which is
+exactly what `sync` picks up.
+
+The pane is the one `dispatch --pane` takes. Add `--pr` for a pull request
+column, which is off by default because it costs one `gh` call per branch:
+
+```sh
+$ worktender ls --pr
+* main                      w21  w21:p1  idle     -       worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  OPEN    1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     MERGED  257-erasure-comments
+```
 
 Everything is a subcommand of one binary, which herdr installs rather than
 putting on `PATH`. Resolve it once:
@@ -51,6 +64,32 @@ and this is what newcomers trip on first: **`invoke` returns an invocation
 record, not the action's output.** What the action printed is in the plugin log.
 Call the binary and the output is just on stdout.
 
+## Starting work on an issue
+
+```sh
+$ worktender start 42
+repository: /Users/you/code/thing
+worktree: 42-fix-the-thing on origin/main (workspace w9, pane w9:p1)
+done  staff  42-fix-the-thing  started claude as 42-fix-the-thing in w9:p1
+
+briefed 42-fix-the-thing on #42; wait for it with:
+  worktender gate --target 42-fix-the-thing --until done --require-pr
+```
+
+One command from an issue number to an agent working on it: it reads the issue
+with `gh`, creates a worktree named for it, starts an agent in the new pane, and
+types a brief covering the whole round — read the issue, explore, change, test,
+self-review, open a PR, then `report`.
+
+Start several, then wait on them one at a time. `start` deliberately does not
+wait; `gate` is the other half.
+
+**The issue body reaches the agent as framed, untrusted data.** Anyone who can
+file an issue writes it, so it is announced as data and delimited before it
+arrives, flattened onto one line, and never presented as an instruction. Nothing
+about the agent's autonomy is defaulted: without `--permission-mode`, `start`
+changes nothing about what it may do.
+
 ## Quickstart
 
 ```sh
@@ -61,7 +100,8 @@ herdr plugin install steig/worktender
 worktender=$(herdr plugin list --json \
   | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
 
-# 3. see where you stand — and, if anything looks wrong, why
+# 3. see where you stand — and, if anything looks wrong, why.
+#    doctor also prints the line above, so you only need the jq once.
 "$worktender" ls
 "$worktender" doctor
 

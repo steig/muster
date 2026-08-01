@@ -2,17 +2,12 @@
 // function over already-collected state.
 //
 // Nothing here runs git, herdr or gh: Reconcile takes facts and returns
-// intentions. Collecting the facts is Collect's job and carrying out the
-// intentions is the executor's, which is what makes the interesting logic —
-// especially the prune guards — testable without a live herdr.
+// intentions, which is what makes the prune guards testable without a live
+// herdr. The one filesystem read is path normalisation, because herdr does not
+// promise one spelling of a directory and a join that misses disarms a guard.
 //
-// The one filesystem read is path normalisation. Worktrees and workspaces are
-// joined by checkout path, herdr does not promise one spelling of a directory,
-// and a guard that misses because two paths name the same place differently is
-// a guard that does not run at all.
-//
-// Reconcile is idempotent and converges over passes. A worktree adopted in this
-// pass has no workspace yet, so it cannot also be staffed until the next one.
+// Reconcile is idempotent and converges over passes: a worktree adopted in this
+// pass has no workspace yet, so it cannot be staffed until the next one.
 package reconcile
 
 import (
@@ -48,14 +43,11 @@ type Worktree struct {
 	// OwnCommits is the number of commits base does not already have.
 	OwnCommits int
 	// MergedIntoBase reports that base absorbed the branch through a merge
-	// commit. It is ADVISORY ONLY — see verdict for why topology never
-	// removes anything — and is used to explain a keep, not to justify a
-	// prune.
+	// commit. Advisory only: it explains a keep, never justifies a prune.
 	MergedIntoBase bool
 	// UpstreamGone reports that the branch was published and its remote
-	// counterpart has since been deleted. Unlike every other field here it
-	// records a human action rather than a graph shape, which is what lets
-	// verdict use it to resolve an ambiguity topology alone cannot.
+	// counterpart has since been deleted. It records a human action rather
+	// than a graph shape, which is why verdict may act on it.
 	UpstreamGone bool
 	// HasTranscript reports a prior Claude conversation for this checkout,
 	// which makes the difference between resuming and starting cold.
@@ -97,9 +89,8 @@ const (
 	KindStaff Kind = "staff"
 	// KindPrune removes a finished worktree.
 	KindPrune Kind = "prune"
-	// KindKeep is explanatory and is never executed. It records why a
-	// worktree that looked prunable was spared, so the UI can say "keep X —
-	// agent running" instead of silently omitting it.
+	// KindKeep is explanatory and never executed: it records why a worktree
+	// that looked prunable was spared, rather than silently omitting it.
 	KindKeep Kind = "keep"
 )
 
@@ -117,13 +108,8 @@ type Action struct {
 	// than start a fresh conversation. Set on KindStaff.
 	Resume bool
 	// AgentArgs are extra arguments passed through to the agent binary, after
-	// any the executor adds itself.
-	//
-	// ALWAYS EMPTY ON AN ACTION THE RECONCILER PRODUCED. `sync` runs from a
-	// keybinding and from event hooks, where no role exists to route on, so an
-	// unattended reconciler is deliberately given no opinion about which model
-	// to spend or how much autonomy to grant. Only a deliberate `dispatch`
-	// sets these.
+	// any the executor adds itself. Always empty on an action the reconciler
+	// produced: only a deliberate `dispatch` has a role to route on.
 	AgentArgs []string
 	Reason    string
 }
@@ -138,9 +124,8 @@ func Reconcile(state State) []Action {
 	return actions
 }
 
-// Only keeps the actions of the given kinds, preserving order. Commands use it
-// to act on part of a plan: `prune` must not quietly adopt and staff on the way
-// past.
+// Only keeps the actions of the given kinds, preserving order, so `prune` does
+// not quietly adopt and staff on the way past.
 func Only(actions []Action, kinds ...Kind) []Action {
 	wanted := make(map[Kind]bool, len(kinds))
 	for _, k := range kinds {
@@ -175,10 +160,9 @@ func adopt(state State) []Action {
 }
 
 // staff starts an agent in every linked worktree's workspace that has none.
-//
 // This covers more than freshly adopted worktrees: a workspace can exist and
-// still sit there as a bare shell, which is what happens when an agent start
-// loses the race with direnv. Those are exactly the ones worth rescuing.
+// still sit there as a bare shell, which is what an agent start losing the race
+// with direnv leaves behind.
 func staff(state State) []Action {
 	byPath := worktreesByPath(state)
 
@@ -188,9 +172,8 @@ func staff(state State) []Action {
 			continue
 		}
 
-		// Resume onto an existing transcript when there is one; otherwise a
-		// cold start, because an unstaffed worktree is doing no work either
-		// way.
+		// Resume onto an existing transcript when there is one, otherwise a
+		// cold start.
 		resume := byPath[pathKey(ws.CheckoutPath)].HasTranscript
 		reason := "no agent, no prior session"
 		if resume {
@@ -260,24 +243,14 @@ func prune(state State) []Action {
 // verdict decides whether a branch's work has landed, and always explains
 // itself.
 //
-// The governing principle: "has this work landed" is NOT decidable from git
-// topology. Across fast-forward, squash, rebase and merge-commit workflows the
-// graph shapes overlap, and every attempt to separate them with one more
-// topological test has produced another case that test gets wrong:
-//
-//   - A fast-forward merge moves base onto the branch tip, so the tip is a
-//     first-parent trunk commit — identical to a branch that never committed.
-//   - A branch forked off already-merged work inherits a tip that sits off
-//     trunk, so it looks merged while having done nothing. It is literally the
-//     same commit as the branch that did land; no graph query separates them.
-//   - Squash and rebase rewrite commits entirely, so a fully landed branch is
-//     not an ancestor of base at all.
-//
-// So topology is not used to remove anything. PR state is authoritative
-// wherever it exists; where it does not, ambiguity resolves to keeping, and the
-// ambiguity is stated rather than dressed up as a verdict. An un-pruned
-// worktree costs disk. A wrongly pruned one costs work that exists nowhere
-// else. Those are not comparable, so the tie never goes to deletion.
+// "Has this work landed" is not decidable from git topology: a fast-forward
+// merge leaves a tip identical to a branch that never committed, a branch
+// forked off merged work is literally the same commit as one that landed, and
+// squash and rebase rewrite commits so a landed branch is not an ancestor at
+// all. So topology removes nothing. PR state is authoritative wherever it
+// exists; elsewhere ambiguity resolves to keeping, because an un-pruned
+// worktree costs disk and a wrongly pruned one costs work that exists nowhere
+// else.
 func verdict(w Worktree, base string) (landed bool, reason string) {
 	switch w.PR {
 	case PRMerged:
@@ -292,33 +265,16 @@ func verdict(w Worktree, base string) (landed bool, reason string) {
 		return false, "still open"
 	}
 
-	// No PR to appeal to. Everything below is a shape git cannot disambiguate
-	// on its own — except where a deleted upstream supplies the fact that is
-	// missing.
+	// No PR to appeal to. A deleted upstream is admissible here because it is a
+	// human action rather than a graph shape: a branch forked off merged work
+	// and never pushed has no upstream to delete, while a branch that landed was
+	// pushed and had its remote ref removed.
 	//
-	// A DELETED UPSTREAM IS A HUMAN ACTION, NOT A GRAPH SHAPE, and that is the
-	// whole reason it is admissible here. The ambiguity in the merged-looking
-	// case is "did this branch land, or was it forked off work that had already
-	// landed?" Those are indistinguishable by topology — they can be the very
-	// same commit. They are not indistinguishable by publication history: a
-	// branch forked off merged work and never pushed has no upstream to delete,
-	// while a branch that landed was pushed and had its remote ref removed,
-	// which is what a merge button does by default.
-	//
-	// Both halves are required, and neither is sufficient:
-	//
-	//   - Gone upstream ALONE means only that someone deleted a remote branch,
-	//     which is equally what abandoning work looks like. Acting on it would
-	//     delete commits that exist nowhere else.
-	//   - Merged-into-base ALONE is the ambiguity described above.
-	//
-	// Together they are still not proof, and this is a deliberate widening of
-	// what gets removed without a merged pull request. It is bounded to the case
-	// where the branch has no commits base lacks: if the work were unmerged, its
-	// commits would not be in base, so the worst case is deleting a checkout
-	// whose commits are all reachable from base anyway. Squash and rebase
-	// workflows are NOT covered — they rewrite commits, so the branch is not an
-	// ancestor at all — and those keep needing a pull request.
+	// Both halves are required. A gone upstream alone is equally what abandoning
+	// work looks like; merged-into-base alone is the ambiguity above. Together
+	// they are still not proof, but the case is bounded to a branch with no
+	// commits base lacks, so the worst case is deleting a checkout whose commits
+	// are all reachable from base anyway. Squash and rebase are not covered.
 	if w.MergedIntoBase && w.UpstreamGone {
 		return true, fmt.Sprintf("merged into %s and its upstream was deleted", base)
 	}
@@ -347,16 +303,13 @@ func hasAgent(state State, ws Workspace) bool {
 	return false
 }
 
-// pathKey is how a checkout is identified when joining worktrees to
-// workspaces.
+// pathKey is how a checkout is identified when joining worktrees to workspaces.
 //
-// Raw string equality is not enough, and this is guard b's whole failure mode.
-// herdr answers worktree.list and workspace.list from different sources, so one
-// checkout can arrive resolved in one and symlinked in the other — on macOS
-// that is the ordinary case, since anything under /var is really /private/var.
-// A join that misses does not fail loudly: the worktree simply appears to have
-// no workspace, the agent check has nothing to look at, and a checkout with a
-// live agent in it is planned for removal.
+// Raw string equality is not enough: herdr answers worktree.list and
+// workspace.list from different sources, so one checkout can arrive resolved in
+// one and symlinked in the other. A join that misses does not fail loudly — the
+// worktree appears to have no workspace, and a checkout with a live agent in it
+// is planned for removal.
 func pathKey(path string) string { return gitx.Resolve(path) }
 
 func worktreesByPath(state State) map[string]Worktree {

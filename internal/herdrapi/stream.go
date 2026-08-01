@@ -12,21 +12,13 @@ import (
 
 // A subscription is the only edge-triggered signal herdr offers.
 //
-// The two obvious alternatives are both LEVEL-triggered, which was measured
-// against a running herdr 0.7.5 rather than assumed: `agent.wait --until idle`
-// and `events.wait` with a pane_agent_status_changed match BOTH return
-// immediately when the agent is already in the requested state. A "wait, then
-// re-read" loop built on either spins at full speed for as long as the agent
-// sits idle without reporting — a busy-wait, which is the poll loop this plugin
-// deleted wearing a costume that hides the sleep.
+// Measured against herdr 0.7.5: `agent.wait --until idle` and `events.wait` are
+// both level-triggered and return immediately when the agent is already in the
+// requested state, so a "wait, then re-read" loop on either busy-waits.
+// events.subscribe says nothing until something happens.
 //
-// events.subscribe answers `subscription_started` and then says nothing until
-// something actually happens. That is the difference the gate needs.
-//
-// The other reason is that one subscription carries SEVERAL event types at
-// once. events.wait takes a single match and requires the exact agent_status to
-// wait for, so watching "the agent changed state, or its pane died" would take
-// one blocked connection per outcome. A subscription takes the whole list.
+// One subscription also carries several event types at once, where events.wait
+// takes a single match and would need one blocked connection per outcome.
 
 // Subscription is one server-side filter. Pane-scoped kinds require PaneID;
 // herdr rejects the subscription outright without it, which is worth having —
@@ -66,33 +58,17 @@ const (
 	StreamEventWorkspaceClosed        = "workspace_closed"
 )
 
-// pane.updated is neither server-filtered nor edge-triggered, measured the same
-// way workspace.closed was.
+// pane.updated and workspace.closed are neither server-filtered nor
+// edge-triggered, measured against herdr 0.7.5 rather than read off the schema.
 //
-// The subscription takes no pane_id at all — herdr's schema has no field for one
-// — so every pane in the session is delivered, and a fresh subscriber is handed
-// the session's BACKLOG before it sees anything live. The backlog frames carry
-// the pane state as it was AT THE TIME, tokens included, so a reader that took a
-// frame's payload as current would act on metadata that was replaced a quarter
-// of an hour ago.
+// pane.updated takes no pane_id at all, and workspace.closed accepts a
+// workspace_id and delivers every workspace's close regardless. Both hand a
+// fresh subscriber the session's backlog first, carrying state as it was at the
+// time — tokens included — so a reader taking a frame's payload as current would
+// act on metadata replaced a quarter of an hour ago.
 //
-// A subscriber therefore filters on the pane id itself and treats a frame as
-// nothing more than "go and look".
-
-// workspace.closed is NOT server-filtered, and it is not edge-triggered either.
-//
-// Both were measured against herdr 0.7.5 rather than read off the schema, which
-// documents neither. The subscription accepts a workspace_id and delivers every
-// workspace's close regardless of it, and a fresh subscriber is handed the
-// session's BACKLOG of closes before it sees a live one. A reader that treats
-// each frame as news about its own workspace therefore learns, at the instant it
-// subscribes, that something closed a quarter of an hour ago.
-//
-// So a caller has to filter on the id itself, and can only act on a close of a
-// workspace it has just seen open. That is safe in the one direction that
-// matters: a stale frame naming some other workspace is dropped, and a stale
-// frame could only name this one if herdr reused the id, which would cost a
-// spurious failure rather than a spurious release.
+// So a subscriber filters on the id itself and treats a frame as nothing more
+// than "go and look".
 
 // StreamEvent is one frame pushed down a subscription. Data is left raw because
 // each kind carries a different payload and a reader wants one of them.

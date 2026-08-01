@@ -45,18 +45,14 @@ func RepoRoot(dir string) (string, error) {
 // Resolve normalises a path for comparison: absolute, cleaned, and with every
 // symlink expanded.
 //
-// This is not cosmetic. git reports resolved paths, so a caller directory that
-// still contains a symlink compares unequal to the same directory as git names
-// it — and on macOS that is the normal case, since TMPDIR lives under /var,
-// which is a symlink to /private/var. Comparing unresolved paths silently
-// disarms the guard that refuses to delete the directory you are standing in.
+// git reports resolved paths, so an unresolved caller directory compares unequal
+// to the same directory as git names it — the normal case on macOS, where TMPDIR
+// lives under the /var symlink — which silently disarms the guard refusing to
+// delete the directory you are standing in.
 //
-// Paths that do not exist still resolve. EvalSymlinks fails outright on a
-// missing path, and missing paths are routine here — a caller's directory may
-// have been deleted, and a prune target is about to be — so the longest
-// existing ancestor is resolved and the remainder re-appended. Without that,
-// a path whose leaf is absent stays unresolved and compares unequal to the very
-// directory it names.
+// Paths that do not exist still resolve: EvalSymlinks fails outright on a
+// missing path, and missing paths are routine here, so the longest existing
+// ancestor is resolved and the remainder re-appended.
 func Resolve(path string) string {
 	if path == "" {
 		return ""
@@ -123,27 +119,19 @@ func OwnCommits(checkout, base string) int {
 }
 
 // UpstreamGone reports that a branch was published and its remote counterpart
-// has since been deleted.
+// has since been deleted. It is the one fact in this file that is not a graph
+// shape: it records that a person deleted a remote branch.
 //
-// This is the one fact in this file that is not a graph shape. Every other
-// signal here describes where commits sit; this one records that a person
-// deleted a remote branch, which is what almost every branch-cleanup script
-// actually keys on and what a merge button does by default.
+// The distinction is never-published versus published-then-deleted. A branch
+// with no configured upstream was never pushed; one whose `branch.<name>.merge`
+// is still configured but whose remote-tracking ref has gone was pushed and had
+// that ref removed. Only the second returns true — `git branch -vv` renders it
+// as "[origin/foo: gone]".
 //
-// The distinction that makes it worth having is NEVER-PUBLISHED versus
-// PUBLISHED-THEN-DELETED, and git keeps them apart. A branch with no configured
-// upstream was never pushed anywhere; a branch whose `branch.<name>.merge` is
-// still configured but whose remote-tracking ref has gone was pushed and then
-// had that ref removed. Only the second returns true here. `git branch -vv`
-// renders the same state as "[origin/foo: gone]".
-//
-// It establishes nothing on its own — a remote branch can be deleted without
-// merging, which is abandonment rather than completion — so verdict pairs it
-// with ancestry rather than acting on it alone.
-//
-// Requires the remote-tracking refs to be current. A stale ref that fetch has
-// not pruned reads as still present, which keeps the worktree, so being out of
-// date fails in the safe direction.
+// It establishes nothing on its own, because a remote branch can be deleted
+// without merging, so verdict pairs it with ancestry. It also requires current
+// remote-tracking refs: a stale ref reads as still present, which keeps the
+// worktree, so being out of date fails safe.
 func UpstreamGone(root, branch string) bool {
 	if branch == "" {
 		return false
@@ -170,16 +158,13 @@ func UpstreamGone(root, branch string) bool {
 
 // IsMergedInto reports that base absorbed the branch through a merge.
 //
-// "Ancestor of base" alone is not enough, and this is the subtle one. A branch
-// created moments ago and never committed to is also an ancestor of base — it
-// points straight at a commit on base's trunk. Both cases have zero commits
-// base lacks, so counting commits cannot separate them either.
+// "Ancestor of base" alone is not enough: a branch never committed to is also an
+// ancestor, pointing straight at a trunk commit, and both cases have zero
+// commits base lacks. What separates them is that a merged branch's tip is the
+// second parent of a merge commit, so it sits off base's first-parent trunk.
 //
-// What does separate them: a merged branch's tip is pulled in as the second
-// parent of a merge commit, so it sits OFF base's first-parent trunk. An
-// unstarted branch's tip is a trunk commit itself. Squash and rebase merges
-// rewrite the commits, so the branch is not an ancestor at all and the PR state
-// is the only signal — which is why callers check the PR first.
+// Squash and rebase rewrite the commits, so the branch is not an ancestor at all
+// and PR state is the only signal — which is why callers check the PR first.
 func IsMergedInto(root, branch, base string) bool {
 	if !isAncestor(root, branch, base) {
 		return false

@@ -34,8 +34,11 @@ func TestRowsJoinsWorkspaceAgentStatus(t *testing.T) {
 		t.Errorf("unopened worktree should have no workspace/status, got %+v", rows[0])
 	}
 
-	want := wt.Row{Main: false, Branch: "fix-auth", WorkspaceID: "w2",
-		AgentStatus: "working", Dir: "fix-auth"}
+	// Rows joins two herdr calls and no more: the pane and pull request columns
+	// each cost their own lookup, so they are left as "-" for WithPanes and
+	// WithPRs to fill.
+	want := wt.Row{Main: false, Branch: "fix-auth", WorkspaceID: "w2", PaneID: "-",
+		AgentStatus: "working", PR: "-", Dir: "fix-auth"}
 	if rows[1] != want {
 		t.Errorf("row 1:\n got %+v\nwant %+v", rows[1], want)
 	}
@@ -73,9 +76,9 @@ func TestRowsDetachedHeadHasNoBranch(t *testing.T) {
 func TestRenderAlignsColumns(t *testing.T) {
 	var buf bytes.Buffer
 	err := wt.Render(&buf, []wt.Row{
-		{Main: true, Branch: "main", WorkspaceID: "-", AgentStatus: "-", Dir: "repo"},
-		{Branch: "a-much-longer-branch", WorkspaceID: "w2", AgentStatus: "idle", Dir: "wt"},
-	})
+		{Main: true, Branch: "main", WorkspaceID: "-", PaneID: "-", AgentStatus: "-", Dir: "repo"},
+		{Branch: "a-much-longer-branch", WorkspaceID: "w2", PaneID: "p1", AgentStatus: "idle", Dir: "wt"},
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +115,8 @@ func TestRenderEscapesABranchNameThatDrawsAsAnother(t *testing.T) {
 
 	var buf bytes.Buffer
 	if err := wt.Render(&buf, []wt.Row{
-		{Branch: branch, WorkspaceID: "-", AgentStatus: "-", Dir: "wt"},
-	}); err != nil {
+		{Branch: branch, WorkspaceID: "-", PaneID: "-", AgentStatus: "-", Dir: "wt"},
+	}, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,26 +155,41 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 		},
 	})
 
+	server.HandleResult("pane.list", map[string]any{
+		"type": "pane_list",
+		"panes": []map[string]any{
+			{"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "t1", "index": 0},
+		},
+	})
+
 	var buf bytes.Buffer
 	client := herdrapi.NewWithSocket(server.SocketPath)
 	// Called from inside the linked worktree: the listing must still cover the
 	// whole repository, which is what RepoRoot's --git-common-dir is for.
-	if err := wt.Ls(client, "", checkout, &buf); err != nil {
+	if err := wt.Ls(client, "", checkout, nil, &buf); err != nil {
 		t.Fatalf("Ls: %v", err)
 	}
 
 	out := buf.String()
-	for _, want := range []string{"main", "fix-auth", "w2", "working"} {
+	// The pane is here because it is what `dispatch --pane` takes; a listing
+	// that stops at the workspace leaves that step with nowhere to get it.
+	for _, want := range []string{"main", "fix-auth", "w2", "w2:p1", "working"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
+	// No lookup was passed, so gh was not consulted and the column is absent
+	// rather than dashed — a "-" there reads as "no pull request".
+	if strings.Contains(out, "OPEN") || strings.Contains(out, "MERGED") {
+		t.Errorf("pull request state must not appear unless asked for:\n%s", out)
+	}
 
 	calls := server.Calls()
-	if len(calls) != 2 {
-		t.Fatalf("want 2 calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 3 {
+		t.Fatalf("want 3 calls, got %d: %+v", len(calls), calls)
 	}
-	if calls[0].Method != "worktree.list" || calls[1].Method != "workspace.list" {
+	if calls[0].Method != "worktree.list" || calls[1].Method != "workspace.list" ||
+		calls[2].Method != "pane.list" {
 		t.Errorf("unexpected methods: %+v", calls)
 	}
 	// The cwd must be the MAIN checkout, not the linked worktree we ran from.
@@ -199,7 +217,7 @@ func TestLsFailsWhenWorkspaceListFails(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := herdrapi.NewWithSocket(server.SocketPath)
-	if err := wt.Ls(client, "", repo.Root, &buf); err == nil {
+	if err := wt.Ls(client, "", repo.Root, nil, &buf); err == nil {
 		t.Fatal("Ls should fail when the workspace list fails")
 	}
 	if buf.Len() != 0 {
