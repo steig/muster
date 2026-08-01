@@ -8,11 +8,10 @@ name = "worktender"
 version = "0.6.0"
 min_herdr_version = "0.7.5"
 # This is the marketplace listing copy, and for most people the only sentence
-# they will read. It says "adopt" rather than "create" because this plugin does
-# not create worktrees and never has — herdr creates them, and `sync` adopts
-# whatever it finds. Advertising the one capability the tool deliberately
-# declines is how a first run turns into a bug report.
-description = "Drive git worktrees as herdr workspaces: list, adopt, staff and tear down worktrees with their workspace and agent state in one view."
+# they will read. `start` creates a worktree, and it is the only thing here that
+# does: the reconcile commands still adopt what they find rather than making
+# any, so "start work on an issue" and "adopt" are named separately.
+description = "Drive git worktrees as herdr workspaces: start an agent on a GitHub issue, then list, adopt, staff and tear down worktrees with their workspace and agent state in one view."
 platforms = ["linux", "macos", "windows"]
 
 # Build the binary at install time. herdr runs this once, after the install is

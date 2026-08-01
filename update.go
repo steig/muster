@@ -18,23 +18,16 @@ import (
 	"github.com/steig/worktender/internal/safetext"
 )
 
-// update moves an install forward, because nothing else can.
+// update moves an install forward, because nothing else can: herdr has no
+// `plugin update`, so an install pins a commit and sits on it silently.
 //
-// herdr has no `plugin update`: its plugin subcommands are install, uninstall,
-// link, unlink, enable, disable, list, config-dir, action, log and pane. So an
-// install pins a commit and then sits on it silently — one sat on 8ef0de9
-// across four releases while `doctor`, the --permission-mode passthrough and the
-// docs split all landed, and nothing in ordinary use said so.
+// The install is a shallow, detached clone with no local branch, so `git pull`
+// cannot work in it. Fetching one commit deep and resetting onto FETCH_HEAD is
+// the shape that does.
 //
-// The install is a SHALLOW, DETACHED clone with no local branch, so `git pull`
-// cannot work in it: there is no upstream configured for a branch that does not
-// exist. Fetching one commit deep and resetting onto FETCH_HEAD is the shape
-// that does, and it is what herdr's own installer leaves behind.
-//
-// This is a command rather than a herdr action, and deliberately. An action's
-// output lands in the plugin log, which is the wrong place for something you run
-// to read; and herdr running this as an action would be herdr executing the very
-// binary the rebuild replaces.
+// It is a command rather than a herdr action: an action's output lands in the
+// plugin log, and herdr running this as an action would be herdr executing the
+// very binary the rebuild replaces.
 
 // manifestName identifies a directory as a plugin install. It is also what
 // scripts/build.sh reads its version pin out of.
@@ -189,23 +182,16 @@ func recordedCommitVia(client *herdrapi.Client, root string) string {
 	return ""
 }
 
-// rebuild builds the new binary beside the live one and renames it into place.
+// rebuild builds the new binary beside the live one and renames it into place,
+// never over it: `update` is normally run by the binary it replaces, and writing
+// over an executing image fails or corrupts the running process. A rename within
+// the directory is atomic and leaves anything running holding the old inode.
 //
-// Never over it. `update` is normally run BY the binary it replaces, and herdr
-// may be running an action through the same file at the same time; writing over
-// an executing image either fails outright or corrupts the running process,
-// depending on the platform. A rename within the same directory is atomic and
-// leaves anything already running holding the old inode until it exits.
-//
-// The build itself is the manifest's, so an install without Go still resolves
-// through the release download the same way it did at install time.
-//
-// The staging is a REQUEST, though, and the script that receives it comes from
-// the checkout that was just fetched. A build.sh that ignores WORKTENDER_BUILD_OUT
-// writes the live path anyway — every release before this one did — so the live
-// binary is stamped before the build and compared after. Without that, the one
-// failure worth reporting is the one that gets reported wrongly: nothing staged
-// reads as nothing built, when the binary has in fact already been replaced.
+// The staging is only a request, and the script receiving it comes from the
+// checkout just fetched — a build.sh that ignores WORKTENDER_BUILD_OUT writes
+// the live path anyway. So the live binary is stamped before the build and
+// compared after, or "nothing staged" reads as "nothing built" when the binary
+// has already been replaced.
 func rebuild(root string, out io.Writer) error {
 	staged := filepath.Join("bin", binaryName()+".new")
 	live := filepath.Join(root, "bin", binaryName())

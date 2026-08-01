@@ -8,7 +8,70 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Added
+
+- **`worktender start <issue>` — an issue number in, an agent working on it
+  out.** It reads the issue with `gh`, creates a worktree on
+  `<number>-<title-slug>`, starts an agent in the new pane, and types a brief
+  covering the whole round: read the issue, explore, change, test, self-review,
+  open a pull request, then `report`.
+
+  This is the half that was missing. The documented loop was `herdr worktree
+  create`, then `dispatch --pane <pane>`, then `herdr agent prompt`, then
+  `gate` — three tools, one of which was not this one, and **a pane id that came
+  from nowhere**, because `ls` did not print one. The `<pane>` in the coordinator
+  skill was a placeholder with no command behind it.
+
+  Staffing goes through the same `KindStaff` action `sync` and `dispatch` build,
+  so the occupied-pane re-check in `execute.staff()` covers this path by
+  construction rather than by a rule someone has to remember.
+
+  **The issue body reaches the agent as framed, untrusted data**: announced as
+  such before it arrives, delimited, flattened onto one line, and never
+  presented as an instruction. Anyone who can file an issue writes it, and
+  escaping solves nothing — a perfectly escaped instruction is still an
+  instruction where instructions go. Truncation past 4000 runes is *announced*,
+  on the same rule the report note follows by refusing to truncate at all.
+
+  It briefs with `pane.send_text` rather than `agent.prompt`, which blocks
+  against an agent herdr still holds as `launch_pending` — a state a live agent
+  can sit in indefinitely. A newline submits, which is why the brief is one line
+  and why flattening is a correctness property rather than tidiness.
+
+  `start` deliberately does **not** wait. Start every slice, then `gate` them one
+  at a time; a start that gated would serialise the fleet. It prints the exact
+  `gate` line for what it just started, agent name included.
+
+  This is the only thing here that creates a worktree — the reconcile commands
+  still adopt what they find. The manifest description and the `worktrees` skill
+  both said the plugin does not create worktrees, and now say what it does.
+
+- **`ls` prints the pane, and `ls --pr` the pull request state.** The pane is
+  what `dispatch --pane` takes and the listing previously had no way to produce
+  it. The pull request column is opt-in because it costs one `gh` invocation per
+  branch, in series — and it is *absent* rather than dashed when it was not
+  asked for, since a `-` is the same cell a branch with no pull request prints.
+
+- **`doctor` prints the path to the binary.** The documented alternative is a
+  `jq` expression over `herdr plugin list --json`, carried in the README, both
+  skills and the dispatch page; the process already knows where it lives.
+
 ### Fixed
+
+- **`sync` now names the repository it resolved.** `prune` has printed its root
+  since the divergence was seen live, because the two halves resolve it
+  differently and "nothing to do" is indistinguishable from "nothing to do
+  *here*" until the output says where here is. `sync` resolves through the same
+  `newSession` call — herdr's invocation context first, the working directory
+  only as a fallback — so it could act somewhere other than where the caller
+  believed they were standing, with none of the disclosure.
+
+- **`sync` no longer asks `gh` about every worktree and discards the answers.**
+  It built the collector with the `gh`-backed pull request lookup and then
+  filtered prunes out — and pull request state only ever authorises a prune. So
+  every branch cost a network round trip, in series, while the repository lock
+  was held, to decide nothing. The event and startup paths already dropped the
+  lookup for exactly this reason; `sync` was the third path and missed it.
 
 - **One vanished workspace no longer fails a whole repository** (#66). herdr
   lists workspaces and is then asked for each one's panes, and a workspace closed
@@ -26,6 +89,20 @@ install` tracks branch HEAD rather than a tag — the version in
   `internal/herdrtest` grew a `CodedError` for this. Its fake herdr reported
   every handler failure as `handler_error`, so a test could not previously
   express *which* failure it was — and this fix branches on exactly that.
+
+### Changed
+
+- **Comments cut from 40% of source to 22%**, across every non-test file. The
+  reasoning that earns its place is still here — why topology never authorises a
+  removal, why the note is unreachable from the gate's predicate, why the lock
+  fails open. What went was the litigation: issue numbers a reader cannot look
+  up, paragraphs recounting approaches that were tried and removed, and three
+  headers of 47, 40 and 35 lines that were doc pages sitting in front of the
+  code. Blocks of twelve lines or more went from 22 to 7. No behaviour changed;
+  the diff was checked line by line for it.
+
+- **`ls` gained a column**, so anything parsing its output by position will need
+  adjusting: the pane now sits between the workspace and the agent status.
 
 ## [0.6.0] — 2026-08-01
 

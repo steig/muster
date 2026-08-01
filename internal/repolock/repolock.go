@@ -4,22 +4,16 @@
 // collect/reconcile/execute pipeline, so the only concurrency question left is
 // two of them running over one repository at once. This is what answers it.
 //
-// The lock is BEST-EFFORT BY DESIGN, and that is a decision rather than a
-// shortcut. Reconcile is idempotent and monotone: adopt fires only where there
-// is no workspace, staff only where there is no agent, so each pass strictly
-// shrinks the action set. A lock that occasionally fails to exclude therefore
-// costs duplicated work, while a lock that fails CLOSED costs a silent outage —
-// a handler that never runs looks exactly like an event that never fired. Those
-// are not comparable, so every unreadable, corrupt, expired or abandoned state
-// resolves to "take the lock and get on with it".
+// The lock is best-effort by design. Reconcile is idempotent and monotone, so a
+// lock that fails to exclude costs duplicated work, while one that fails closed
+// costs a silent outage — a handler that never runs looks exactly like an event
+// that never fired. So every unreadable, corrupt, expired or abandoned state
+// resolves to taking the lock.
 //
-// Staleness has two independent stories because one is not enough. A crashed
-// holder leaves a lock file behind — unlinking a plugin does not even remove its
-// state directory — so a dead PID must not wedge the path. But a holder can also
-// be alive and wedged, which no liveness check catches, so a lock older than
-// maxHold is taken regardless. Liveness is the optimisation; the timestamp is
-// the guarantee, and it is the one that holds on platforms where signalling a
-// process to test it is unreliable.
+// Staleness has two independent stories. A crashed holder leaves a lock file
+// behind, so a dead PID must not wedge the path; a holder can also be alive and
+// wedged, which no liveness check catches, so a lock older than MaxHold is taken
+// regardless. Liveness is the optimisation, the timestamp is the guarantee.
 package repolock
 
 import (
@@ -35,20 +29,15 @@ import (
 
 // MaxHold is how long a lock is honoured before it is treated as abandoned.
 //
-// It must exceed the longest LEGITIMATE hold, not the typical one, and the
-// difference is a trap. Staffing blocks for up to execute.AgentStartTimeout —
-// currently 60s — while herdr waits for a pane still running direnv or nix, and
-// a handler sitting there is healthy. Size this below that and the failure is
-// not a stale lock being cleared, it is a live one being stolen: the second
-// holder reconciles, sees the workspace still has no agent because the first is
-// mid-start, and issues a second agent start against the same pane.
-// Idempotence does not help, because the state the first holder is about to
-// create does not exist yet at the moment the second one looks.
+// It must exceed the longest legitimate hold: staffing blocks for up to
+// execute.AgentStartTimeout while herdr waits for a pane still running direnv,
+// and a handler sitting there is healthy. Size this below that and a live lock
+// is stolen rather than a stale one cleared — the second holder sees a workspace
+// with no agent because the first is mid-start, and starts a second one.
 //
-// So this is five times that bound, which leaves room for several sequential
-// staffings in one pass. It is not imported from execute — infrastructure
-// should not depend on policy — so TestMaxHoldExceedsTheLongestLegitimateHold
-// pins the relationship instead, and fails if either side moves.
+// Five times that bound leaves room for several sequential staffings in one
+// pass. It is not imported from execute; a test pins the relationship instead
+// and fails if either side moves.
 const MaxHold = 5 * time.Minute
 
 // holder is what a lock file contains. The PID and time are the staleness
@@ -175,23 +164,17 @@ func (l *Lock) Repeat(maxPasses int, body func() error) error {
 }
 
 // claim writes the holder record into a temporary file and links it into place,
-// so the lock file carries its evidence from the instant it exists.
+// so the lock file carries its evidence from the instant it exists. A claim made
+// first and filled in afterwards is readable in between, and an unreadable lock
+// file is treated as abandoned by every reader — a live lock stolen rather than
+// a stale one cleared.
 //
-// The order is the whole point. A claim made first and filled in afterwards is
-// readable in between, and an unreadable lock file is treated as abandoned by
-// every reader — which is a LIVE lock being stolen, not a stale one being
-// cleared. A dropped write error makes that state permanent: a zero-byte file
-// nobody will ever respect again. So a record that cannot be written is a
-// failed claim, and the file at l.path is only ever complete.
-//
-// link rather than rename: rename REPLACES an existing target, which would take
-// a lock somebody else holds. link refuses, and that refusal is the mutual
-// exclusion O_EXCL used to provide.
+// link rather than rename: rename replaces an existing target, which would take
+// a lock somebody else holds. link refuses, which is the mutual exclusion.
 //
 // acquired reports the claim; usable reports whether the state directory can
-// carry a claim at all. A directory that cannot is degraded to unserialised
-// rather than treated as busy — this lock fails open by design, and a caller
-// that can never claim would be an outage, not a queue.
+// carry one at all. A directory that cannot is degraded to unserialised rather
+// than treated as busy, because this lock fails open by design.
 func (l *Lock) claim(repository string) (acquired, usable bool) {
 	record, err := json.Marshal(holder{
 		PID:        os.Getpid(),

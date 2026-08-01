@@ -16,33 +16,17 @@ import (
 // eventsEnv opts a session in to the event fast path. Unset means events do
 // nothing at all.
 //
-// Off by default, deliberately, for two reasons. The weaker one is that this
-// plugin is developed while linked live into a real herdr session, so an
-// [[events]] block is armed the moment the manifest is saved. The stronger one
-// is that this is the right shipping default: an event hook here starts coding
-// agents without being asked, and a plugin that does that on install is handing
-// its user an autonomous trigger they never requested. Opting in is one
-// exported variable; opting out after a surprise is not.
+// Off by default because an event hook here starts coding agents without being
+// asked, and a plugin that does that on install has handed its user an
+// autonomous trigger they never requested.
 const eventsEnv = "WORKTENDER_EVENTS"
 
 // legacyEventsEnvs are what eventsEnv was called before each rename, newest
-// first. They enable nothing. They exist so the gate can SAY so.
+// first. They enable nothing; they exist so the gate can say so.
 //
-// A silent rename is the bad case here, and it is bad in a quiet direction: a
-// set variable becomes an unset one, which fails safe — events go off — but
-// gives no one a reason to look. Someone who opted in months ago would find
-// their hooks inert with nothing anywhere saying why.
-//
-// Honouring one as an alias was the alternative and it is worse. This variable
-// arms an autonomous trigger that starts coding agents, so keeping it live
-// under a name the plugin no longer documents means the loudest thing here
-// answers to a spelling that appears in no current README. Detect, refuse, and
-// name the replacement.
-//
-// There are two because there have been two renames, and a list is what keeps
-// the older one from being dropped as the newer one becomes the familiar case:
-// whoever opted in under HERDR_WT_EVENTS never saw the MUSTER_EVENTS era at
-// all, and is the person most likely to still be carrying a dead export.
+// Honouring one as an alias would keep an autonomous trigger live under a name
+// that appears in no current README, and a silent rename would leave someone's
+// hooks inert with nothing saying why. Detect, refuse, and name the replacement.
 var legacyEventsEnvs = []string{"MUSTER_EVENTS", "HERDR_WT_EVENTS"}
 
 // eventsEnabled reports whether the fast path is opted in to.
@@ -54,24 +38,15 @@ func eventsEnabled() bool {
 // parseEventsValue reads the gate, reporting whether it is on and whether the
 // value is one this gate has a rule for.
 //
-// Two asymmetries, both deliberate, both because of what this variable arms.
-//
-// Falsey spellings are accepted, case-insensitively and whitespace-trimmed,
-// rather than only "0" and "false". `WORKTENDER_EVENTS=off` is what someone reaches
-// for when they want this to stop, and a switch that reads "off" as ON is worse
-// than no switch: it starts coding agents in response to being told not to.
-//
-// An UNRECOGNISED value reads as OFF. The counter-argument is real — a typo'd
-// opt-in gets nothing — but the two failure modes are not the same size. Falling
-// open means a mistyped opt-OUT silently arms an autonomous trigger; falling
-// closed means a mistyped opt-IN does nothing, and unrecognisedEventsNotice
-// makes even that loud. Nobody types a value nobody wrote a rule for and means
-// "start agents".
+// Falsey spellings are accepted case-insensitively and trimmed, because a
+// switch that reads "off" as on starts coding agents in response to being told
+// not to. An unrecognised value reads as off: a mistyped opt-out that fell open
+// would arm an autonomous trigger, while a mistyped opt-in costs nothing and
+// unrecognisedEventsNotice makes it loud.
 func parseEventsValue(raw string) (on, recognised bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":
-		// Unset, and a value that is nothing but whitespace, which is what a
-		// stray `export WORKTENDER_EVENTS=" "` leaves behind.
+		// Unset, or nothing but whitespace.
 		return false, true
 	case "1", "true", "yes", "y", "on", "enabled":
 		return true, true
@@ -83,10 +58,8 @@ func parseEventsValue(raw string) (on, recognised bool) {
 }
 
 // unrecognisedEventsNotice is the line owed to a session whose gate holds a
-// value no rule covers, or "" when nothing is owed.
-//
-// This is the whole price of failing closed, paid in full: someone who meant to
-// opt in and mistyped it gets a printed cause instead of silence.
+// value no rule covers, or "" when nothing is owed. It is what someone who
+// mistyped an opt-in gets instead of silence.
 func unrecognisedEventsNotice() string {
 	raw := os.Getenv(eventsEnv)
 	if _, recognised := parseEventsValue(raw); recognised {
@@ -116,23 +89,14 @@ func renamedEnvNotice() string {
 
 // onEventCommand is the whole event fast path.
 //
-// The governing rule: an event is a TRIGGER, never a FACT. Nothing here acts on
-// the payload's contents. The payload is read for exactly one thing — which
-// repository — and then the same collect/reconcile/execute pipeline `sync` runs
-// runs again, over the whole repository, reading live state.
-//
-// That is the same reasoning execute.prune already applies one level down: a
-// snapshot goes stale, so guards are re-read at the moment of acting. An event
-// payload is herdr's snapshot from before this process existed, so it is stale
-// on arrival by construction.
-//
-// It buys the consistency story too. Because the event path and the reconciler
-// are the same code, "event versus reconciler" is not a category of bug that
-// can exist; what remains is two reconcilers running at once, which is a much
-// smaller problem.
+// An event is a trigger, never a fact. The payload is read for exactly one
+// thing — which repository — and then the same collect/reconcile/execute
+// pipeline `sync` runs runs again over the whole repository, reading live
+// state. An event payload is herdr's snapshot from before this process existed,
+// so it is stale on arrival by construction.
 func onEventCommand(out io.Writer) error {
-	// Checked before anything else is even parsed, so a plugin that has not
-	// been opted in does nothing whatsoever.
+	// Checked before anything else is parsed, so a plugin that has not been
+	// opted in does nothing whatsoever.
 	if !eventsEnabled() {
 		fmt.Fprintf(out, "events are off; export %s=1 to enable the worktree fast path\n", eventsEnv)
 		fmt.Fprint(out, unrecognisedEventsNotice())
@@ -163,9 +127,8 @@ func onEventCommand(out io.Writer) error {
 
 	root := scope.RepoRoot
 	if root == "" {
-		// herdr omitted the repository root, so derive it from the checkout the
-		// event named. Note this never falls back to the process cwd: unlike an
-		// action, an event names its own subject, so there is nothing to guess.
+		// Derived from the checkout the event named, never from the process
+		// cwd: an event names its own subject, so there is nothing to guess.
 		if root, err = gitx.RepoRoot(scope.Checkout); err != nil {
 			return fmt.Errorf("%s: %w", envelope.Event, err)
 		}
@@ -176,17 +139,13 @@ func onEventCommand(out io.Writer) error {
 	s := &session{client: client, root: gitx.Resolve(root)}
 
 	collector := reconcile.NewCollector(s.client, s.root)
-	// Prune actions are filtered out below, so the PR lookup that would
-	// authorise one decides nothing — and it costs a gh invocation per worktree
-	// per event, which is a network round trip on a path that fires whenever the
-	// user touches a worktree.
+	// Prunes are filtered out below, so the PR lookup that would authorise one
+	// decides nothing — at a gh invocation per worktree per event.
 	collector.LookupPR = nil
 
-	// Claim the repository, or leave a mark and stand down. Standing down is
-	// not a dropped event: the holder is running the same whole-repository
-	// reconcile this would have run, and the mark stops it finishing on a
-	// snapshot older than this event. Queueing instead would turn a batch of
-	// worktree events into a batch of identical full reconciles.
+	// Claim the repository, or leave a mark and stand down. Standing down is not
+	// a dropped event: the holder runs the same whole-repository reconcile, and
+	// the mark stops it finishing on a snapshot older than this event.
 	lock, err := repolock.AcquireOrMark(stateDir(), s.root)
 	if err != nil {
 		return err

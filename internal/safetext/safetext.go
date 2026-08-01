@@ -2,14 +2,11 @@
 // reach a human's terminal as themselves.
 //
 // The class is the same wherever it appears — control, format, line and
-// paragraph separators — but the policy is not. A note is REJECTED, because the
-// worker still holds the information and can report again. A branch name is
-// ESCAPED, because nobody can retry a name that already exists in the
-// repository, and refusing to render the row would remove the worktree from the
-// listing entirely — which is the hiding the escaping exists to prevent.
+// paragraph separators — but the policy is not. A note is rejected, because the
+// worker can report again; a branch name is escaped, because nobody can retry a
+// name that already exists and dropping the row would hide the worktree.
 //
-// One predicate, two policies. Two spellings of the predicate is how one of
-// them rots.
+// One predicate, two policies.
 package safetext
 
 import (

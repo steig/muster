@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,7 +89,7 @@ func TestEveryCommandRejectsAMalformedContext(t *testing.T) {
 		name string
 		run  func(io.Writer) error
 	}{
-		{"ls", lsCommand},
+		{"ls", func(w io.Writer) error { return lsCommand(nil, w) }},
 		{"sync", syncCommand},
 		{"prune", func(w io.Writer) error { return pruneCommand(w, false) }},
 		{"prune-apply", func(w io.Writer) error { return pruneCommand(w, true) }},
@@ -252,6 +253,55 @@ func TestPruneDoesNotAdoptOrStaff(t *testing.T) {
 		case "worktree.open", "agent.start":
 			t.Errorf("prune performed %s as a side effect", call.Method)
 		}
+	}
+}
+
+// sync resolves its repository from herdr's invocation context, not from the
+// process working directory, so it can act somewhere other than where the caller
+// believes they are standing. `prune` prints the root it resolved for exactly
+// that reason; sync had the same divergence and none of the disclosure.
+func TestSyncNamesTheRepositoryItResolved(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("feature", "feature")
+
+	server := fakeSession(t, repo)
+	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "feature", ""))
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
+
+	var out strings.Builder
+	if err := syncCommand(&out); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !strings.Contains(out.String(), "repository: "+repo.RealRoot) {
+		t.Errorf("sync must name the repository it resolved, got:\n%s", out.String())
+	}
+}
+
+// sync executes adoptions and staffing only — prunes are filtered out — so a
+// pull request state can authorise nothing it does. Asking anyway is a `gh`
+// invocation per worktree per pass, in series, while the repository lock is
+// held. The event and startup paths already drop the lookup for this reason.
+func TestSyncAsksGhNothing(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("feature", "feature")
+
+	called := filepath.Join(t.TempDir(), "gh-was-called")
+	herdrtest.FakeGh(t, "echo called >> "+called)
+
+	server := fakeSession(t, repo)
+	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "feature", ""))
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
+
+	var out strings.Builder
+	if err := syncCommand(&out); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if _, err := os.Stat(called); err == nil {
+		t.Error("sync invoked gh; its answer could only ever authorise a prune, which sync does not perform")
 	}
 }
 

@@ -6,10 +6,15 @@ done — without reading everything that agent did to get there.
 
 ```sh
 # Resolve the binary once. It is not on PATH; herdr owns the install.
+# `worktender doctor` prints this line, so you need the jq only once.
 worktender=$(herdr plugin list --json \
   | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
 
-# COORDINATOR — dispatch first, then wait. Order matters.
+# COORDINATOR — when the slice is a GitHub issue, one command does all of it.
+"$worktender" start 42 --model sonnet
+"$worktender" gate --target 42-fix-the-thing --until done --require-pr --timeout 20m
+
+# ...and when it is not, the pieces are still separate. Dispatch, then wait.
 "$worktender" dispatch --pane w22:p1 --name reconcile-split --model sonnet
 "$worktender" gate --target reconcile-split --until done --require-pr --timeout 20m
 
@@ -17,11 +22,21 @@ worktender=$(herdr plugin list --json \
 "$worktender" report --status done --pr 42 --note "landed the reconcile split"
 ```
 
+`start` is `worktree.create` + `dispatch` + a briefing, in that order, against
+one issue. It exists because the pane id the middle step needs came from
+nowhere: `ls` did not print one, so the documented loop had a `<pane>` in it and
+no command that produced it. `ls` prints panes now, and `start` does not need
+you to look.
+
+**`start` does not wait.** Starting five issues and then waiting on them one at
+a time is the point; a start that gated would serialise the fleet.
+
 The gate prints the report and exits 0 when the predicate holds. It exits
 non-zero when the worker reports `blocked`, when the worker dies before
 reporting, and when it times out.
 
 ```sh
+worktender start <issue> [--model <model>] [--permission-mode <mode>] [--base <ref>] [--focus]
 worktender dispatch --pane <id> --name <agent> [--model <model>] [--permission-mode <mode>] [--resume]
 worktender report --status planned|blocked|done [--pr N] --note <text>
 worktender gate --target <agent|pane> [--until done] [--require-pr] [--timeout 15m]
