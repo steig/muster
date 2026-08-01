@@ -73,6 +73,9 @@ worktender=$(herdr plugin list --json \
 
 # 6. only once you have read step 5's reasons
 "$worktender" prune-apply
+
+# 7. when doctor's version line says origin has moved past you
+"$worktender" update
 ```
 
 Each of those four is also a herdr action — `Worktender: list worktrees` and
@@ -96,6 +99,12 @@ Three things worth knowing before step 5 surprises you:
 - **`sync` converges over two passes, not one.** A checkout adopted this pass has
   no workspace yet, so it cannot be staffed until the next. Running `sync` twice
   against a brand-new orphan is expected, not a bug.
+- **An install stays where it was installed.** herdr has no `plugin update`, so
+  nothing moves it forward on its own — one install sat four releases behind
+  without a word. `doctor`'s `version` line says when origin has moved past you
+  and `update` fetches and rebuilds; the one thing neither can fix is that
+  `herdr plugin list` keeps reporting the commit it recorded at install time.
+  See [Staying current](docs/reference.md#staying-current).
 
 ## Requirements
 

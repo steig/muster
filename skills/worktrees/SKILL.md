@@ -28,6 +28,7 @@ worktender=$(herdr plugin list --json \
 "$worktender" doctor  # what is wrong: herdr, gh auth, the events gate, every open repo
 "$worktender" sync    # adopt orphans, staff empty workspaces
 "$worktender" prune   # DRY RUN — lists candidates, removes nothing
+"$worktender" update  # fetch and rebuild this plugin's own install
 ```
 
 **Run `doctor` before reporting that something is broken.** Several of this
@@ -39,6 +40,13 @@ takes no lock, and works from outside a repository.
 A `warn` line is a capability the user has lost, not a bug to fix on their
 behalf: surface it and let them decide. In particular **an unrecognised events
 value is still not yours to correct** — rewriting it to `1` is enabling events.
+
+**A `version` line saying origin has moved on is not yours to act on either.**
+`update` rebuilds a binary herdr may be mid-execution on, so running it unasked
+swaps the tool out from under the user's session. Report the drift and let them
+run it. Afterwards `herdr plugin list` reports the *pre-update* commit — herdr
+records it at install time and never re-reads the checkout — so do not use that
+command to confirm an update landed; `doctor` reads the checkout itself.
 
 Output lands on your own stdout and the exit code is real.
 

@@ -6,16 +6,17 @@ Exit codes, errors, keybindings, and the behaviours that do not belong anywhere 
 
 ```sh
 $ worktender doctor
-herdr   0.7.5          ok
-gh      authenticated  ok
-events  unset          off
+version  0.5.0 @f074c65  warn  origin/main is at @a1b2c3d; run `worktender update`
+herdr    0.7.5          ok
+gh       authenticated  ok
+events   unset          off
 
 repos
   worktender    3 worktrees  1 working
   house         7 worktrees  1 idle, 1 working
 ```
 
-Three of this plugin's failures are environmental, silent, and shaped exactly
+Four of this plugin's failures are environmental, silent, and shaped exactly
 like ordinary operation, so `doctor` exists to name them without being asked the
 right question first:
 
@@ -28,6 +29,13 @@ right question first:
   as the gate *parses* it, not as it is spelled.
 - **A herdr that cannot be reached**, which makes every other answer here
   meaningless — so it is said once and the command stops.
+- **An install left behind**, which is the one that hides longest. herdr has no
+  `plugin update`, so an install pins a commit and stays on it — one sat on
+  `8ef0de9` across four releases. The `version` line names what is installed and
+  says when origin has moved past it. It is the one check that asks the network —
+  `git ls-remote`, bounded at ten seconds, writing nothing into the checkout —
+  and an origin that cannot be reached leaves drift reported as unknown rather
+  than as fine.
 
 It is read-only, takes no lock, and works from outside a repository: someone who
 cannot tell what is wrong often cannot tell where they are either. The
@@ -37,6 +45,55 @@ caller is standing.
 `doctor` is a command rather than an action, and deliberately: an action's
 output lands in the plugin log, which is exactly the indirection a diagnostic
 should not have.
+
+## Staying current
+
+```sh
+$ worktender update
+install: /Users/you/.config/herdr/plugins/github/steig.worktender-3ebd1704d63b
+origin/main is at @a1b2c3d; fetching
+0.5.0 @f074c65 -> 0.6.0 @a1b2c3d
+
+herdr still records @f074c65 for this plugin, so `herdr plugin list` will keep
+naming a commit that is no longer installed.
+nothing here can correct that record; a reinstall re-clones and re-records it:
+  herdr plugin install steig/worktender
+```
+
+herdr has no `plugin update` — its plugin subcommands are `install`,
+`uninstall`, `link`, `unlink`, `enable`, `disable`, `list`, `config-dir`,
+`action`, `log` and `pane` — so this command exists because nothing else can
+move an install forward.
+
+Three things worth knowing:
+
+- **An install is a shallow, detached clone with no local branch**, so `git pull`
+  cannot work in one. `update` fetches the origin default branch one commit deep
+  and resets onto `FETCH_HEAD`, which is the same shape herdr's installer left.
+- **The rebuild never writes over the live binary.** An update is normally run
+  *by* the binary it replaces, and herdr may be running an action through the
+  same file, so the build is staged beside it and renamed into place. Anything
+  already running keeps the old image until it exits.
+
+  The staging is a *request*, though: `update` runs the build script from the
+  checkout it just fetched, and every release before this one writes
+  `bin/worktender` regardless. That cannot be prevented from here, so the live
+  binary is compared before and after and the failure says which happened —
+  replaced in place, or never built at all. The two look identical from the
+  staged file alone, and calling the first the second would assert a state
+  nobody checked.
+- **`herdr plugin list` will report the pre-update commit afterwards.** herdr
+  records the commit at install time and never re-reads the checkout — the
+  manifest *version* it re-reads, so the two disagree. Nothing in this plugin can
+  correct that record; `update` says so, and `doctor` repeats it on every run.
+
+It refuses two checkouts: one on a **branch** — that is what `herdr plugin link`
+leaves, and it is yours to move with git — and one with **uncommitted changes**,
+which a hard reset would destroy.
+
+Like `doctor`, it is a command rather than an action. An action's output lands in
+the plugin log, and herdr running it as an action would be herdr executing the
+binary the rebuild replaces.
 
 ## Exit codes and errors
 
@@ -57,6 +114,8 @@ Errors you are most likely to meet:
 | `WORKTENDER_EVENTS="ture" is not a value this gate recognises` | Events stay **off**. Fix the value yourself; nothing here rewrites it. |
 | `MUSTER_EVENTS is set, but it was renamed` | A superseded opt-in enabling nothing. So is `HERDR_WT_EVENTS`. |
 | `--note is N characters; the limit is 200` | Refused, never truncated. Shorten and report again. |
+| `this checkout is on branch X rather than the detached HEAD herdr installs` | `update` was pointed at a linked development checkout. Move that one with git. |
+| `no herdr-plugin.toml beside X; update only works from an installed plugin binary` | The binary is not sitting in an install's `bin/`. |
 | `the worker reported blocked after Ns` | The gate failed fast rather than waiting out its clock. |
 | `no new report reached status done within Ns` | Timed out. The message quotes what the pane already held when the gate opened, which it ignored as a previous task's answer. |
 
