@@ -165,6 +165,11 @@ immediately.
 
 ## Documentation
 
+Rendered at **<https://steig.github.io/worktender/>**, which carries two pages
+that exist nowhere else: an overview, and *Patterns* — delegating to agents
+without losing the thread, with five worked examples. The markdown below stays
+canonical, so an agent that clones this repository reads the same words.
+
 | | |
 | --- | --- |
 | [Dispatching a worker](docs/dispatch.md) | `dispatch`, `report` and `gate` — handing a slice to another agent and waiting for it, and why the report has fixed slots. |
@@ -223,6 +228,14 @@ silently-nil lookup:
 ```sh
 herdr api schema --json > internal/herdrapi/schema.json
 go generate ./...
+```
+
+The docs site builds from `docs/*.md` plus the hand-written pages in
+`site/pages/`, into `_site/`:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r site/requirements.txt
+.venv/bin/python site/build.py && python3 -m http.server -d _site 8765
 ```
 
 ## License

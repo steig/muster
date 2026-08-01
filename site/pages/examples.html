@@ -1,0 +1,133 @@
+<h1>Worked examples</h1>
+
+<p class="lede">
+  Five fan-outs. Each adds a rule the others do not — and the last one is where
+  you should not fan out at all.
+</p>
+
+<p>
+  These assume the principles in <a href="patterns.html">delegating to
+  agents</a>: verify by running, keep cross-slice work yourself, treat a
+  <code>done</code> as a claim.
+</p>
+
+<h2 id="sentry">1. Triaging a Sentry backlog</h2>
+
+<p><em>Adds: the grouping is yours, and “diagnose it” is not a done condition.</em></p>
+
+<ul class="asks">
+  <li>Group the unresolved Sentry issues by root cause and put a worker on each group.</li>
+</ul>
+
+<ul>
+  <li>
+    <strong>Group inline, always.</strong> A worker sees one slice and cannot
+    tell that its stack trace and someone else's are the same bug. Sentry's
+    fingerprinting is a starting point — it splits one root cause across several
+    issues routinely.
+  </li>
+  <li>
+    <strong>Convert each group into a finish line.</strong> A failing test named
+    for the issue, plus a patch that turns it green. An explanation of what is
+    probably wrong is not a done condition.
+  </li>
+  <li><strong>Check file overlap first.</strong> Two groups fixing the same file are one worker's job.</li>
+  <li><strong>Brief inline:</strong> issue text, why you grouped them, the done condition, the command that proves it.</li>
+  <li><strong>The merge back is yours.</strong> Six branches that each pass alone can still fail together.</li>
+</ul>
+
+<p>When a gate releases, run the test rather than reading the diff:</p>
+
+<pre><code>git fetch &amp;&amp; git checkout &lt;branch&gt;
+go test -run TestIssue4412 -count=1 ./...      # green
+git stash &amp;&amp; go test -run TestIssue4412 ./...  # red without the patch</code></pre>
+
+<p>
+  Red without the fix, green with it — or it is a test that passes for unrelated
+  reasons, which is how this slice usually fails.
+</p>
+
+<div class="callout">
+  <span class="label">Easy to miss</span>
+  <p>
+    A Sentry issue title contains whatever a user typed into your application.
+    You are pasting untrusted strings into an agent's prompt, which is why the
+    report coming back has fixed slots.
+  </p>
+</div>
+
+<h2 id="backlog">2. Burning down an issue backlog</h2>
+
+<p><em>Adds: the slices already exist, so the work is grooming and order.</em></p>
+
+<ul>
+  <li><strong>Groom before dispatch.</strong> An issue with no stated done condition is not a slice. Rewrite it or keep it.</li>
+  <li><strong>Order by dependency, not issue number.</strong> If #14 builds on #12's refactor, that is two waves — never two concurrent workers.</li>
+  <li><strong>Waves of three to five.</strong> Workers are parallel; your gate-and-verify cycle is not, and it is the bottleneck.</li>
+  <li><strong>One pull request per issue.</strong> A worker landing two on one branch has removed your ability to revert one.</li>
+  <li><strong>Verify against the issue's own condition</strong>, not “the suite is green” — a green suite is compatible with the issue being untouched.</li>
+</ul>
+
+<div class="callout">
+  <span class="label">This repository, actually</span>
+  <p>
+    worktender's own backlog was burned down this way — dispatched workers in
+    their own worktrees, with every claim checked by execution rather than
+    read.
+  </p>
+</div>
+
+<h2 id="migration">3. A wide mechanical change</h2>
+
+<p><em>Adds: this is where isolation actually earns its cost.</em></p>
+
+<p>
+  Renaming an API across forty call sites. Bumping a dependency across every
+  package. Shallow, wide, and genuinely conflict-prone — the writers overlap by
+  nature.
+</p>
+
+<ul>
+  <li><strong>Batch by module, never by call site.</strong> Forty workers is forty briefs and forty gates for work one pass would finish.</li>
+  <li><strong>Then count.</strong> A passing build is compatible with a worker having <em>deleted</em> the call site rather than updated it.</li>
+  <li><strong>Keep the last sweep.</strong> The final few sites are generated code, string literals and docs — judgement, not a slice.</li>
+</ul>
+
+<pre><code>go build ./... &amp;&amp; go test -count=1 ./...
+grep -rn "oldName" --include="*.go" . | wc -l   # expect 0
+grep -rn "newName" --include="*.go" . | wc -l   # expect ~40</code></pre>
+
+<h2 id="flakes">4. Hunting a flaky test</h2>
+
+<p><em>Adds: some done conditions need repetition, or they prove nothing.</em></p>
+
+<ul>
+  <li><strong>Require a deterministic reproduction first.</strong> A worker that cannot make the test fail on demand has not found the flake, however good the theory sounds.</li>
+  <li><strong>Put repetition in the done condition</strong> — <code>go test -run TestThing -count=200 ./...</code> — and run it yourself after the gate. Your two hundred passes and the worker's are different evidence.</li>
+  <li><strong>One worker per flake, not per file.</strong> Two flakes in one file are usually one race.</li>
+</ul>
+
+<div class="callout">
+  <span class="label">Where the usual rule bends</span>
+  <p>
+    A retry, a longer timeout or a sleep turns the test green and leaves the
+    race in the product — and you cannot catch that by running the test, because
+    it now passes. Gate on the reproduction existing, not on the suite.
+  </p>
+</div>
+
+<h2 id="dont">5. When not to fan out at all</h2>
+
+<p><em>Adds: the cost is real, and three common jobs do not repay it.</em></p>
+
+<ul class="qualify">
+  <li class="no"><strong>Read-only sweeps.</strong> An audit, a dependency review, “where is this used”. Nothing will be written, so there is nothing to isolate.</li>
+  <li class="no"><strong>Work whose output is a judgement.</strong> No command settles “is this architecture right?”, so verification collapses and you are back to reading everything.</li>
+  <li class="no"><strong>Anything one writer can finish.</strong> Isolation exists to stop concurrent writers colliding.</li>
+</ul>
+
+<p>
+  The test: <strong>can you name the command that proves it is done, and will
+  more than one agent write files at the same time?</strong> Two yeses is a
+  fan-out. Anything less is a subagent, or just you.
+</p>
