@@ -29,6 +29,13 @@ install` tracks branch HEAD rather than a tag — the version in
   may be running an action through the same file. `scripts/build.sh` takes
   `WORKTENDER_BUILD_OUT` for that.
 
+  That staging is a request to a script that comes from the checkout being
+  fetched, and every earlier release writes `bin/worktender` regardless — so the
+  live binary is stamped before the build and compared after. "Nothing was
+  staged" and "the binary was replaced in place" are indistinguishable from the
+  staged file alone, and reporting the second as the first would assert a state
+  nothing had checked.
+
   Both halves say the one thing neither can fix. **herdr records the installed
   commit at install time and never re-reads the checkout**, so after any in-place
   update `herdr plugin list` — the one command that answers "what am I running" —

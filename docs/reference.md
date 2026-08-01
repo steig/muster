@@ -74,6 +74,14 @@ Three things worth knowing:
   *by* the binary it replaces, and herdr may be running an action through the
   same file, so the build is staged beside it and renamed into place. Anything
   already running keeps the old image until it exits.
+
+  The staging is a *request*, though: `update` runs the build script from the
+  checkout it just fetched, and every release before this one writes
+  `bin/worktender` regardless. That cannot be prevented from here, so the live
+  binary is compared before and after and the failure says which happened —
+  replaced in place, or never built at all. The two look identical from the
+  staged file alone, and calling the first the second would assert a state
+  nobody checked.
 - **`herdr plugin list` will report the pre-update commit afterwards.** herdr
   records the commit at install time and never re-reads the checkout — the
   manifest *version* it re-reads, so the two disagree. Nothing in this plugin can

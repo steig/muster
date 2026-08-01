@@ -48,12 +48,20 @@ func newInstall(t *testing.T) (*herdrtest.Repo, string) {
 // and the build script it runs.
 func publish(t *testing.T, origin *herdrtest.Repo, version string) {
 	t.Helper()
+	publishBuild(t, origin, version, fakeBuild)
+}
+
+// publishBuild is publish with the build script named, because the script comes
+// from the checkout being fetched and update does not get to assume anything
+// about it.
+func publishBuild(t *testing.T, origin *herdrtest.Repo, version, script string) {
+	t.Helper()
 
 	// bin/ is ignored in the real repository, which is what keeps an install
 	// with a built binary in it clean enough to reset over.
 	origin.Write(".gitignore", "bin/\n")
 	origin.Write(manifestName, "id = \"steig.worktender\"\nversion = \""+version+"\"\n")
-	origin.Write("scripts/build.sh", fakeBuild)
+	origin.Write("scripts/build.sh", script)
 	origin.Git("add", ".")
 	origin.Git("commit", "-m", "release "+version)
 }
@@ -109,6 +117,69 @@ func TestUpdateNeverBuildsOverTheRunningBinary(t *testing.T) {
 		t.Errorf("the build was pointed at %s, the file it is replacing", asked)
 	}
 }
+
+// A build script that ignores WORKTENDER_BUILD_OUT writes the live path anyway —
+// every release before this one does, and update fetches its build script from
+// the checkout it just pulled. The staging guarantee is lost when that happens
+// and cannot be recovered; what must not also be lost is an accurate account,
+// because "nothing was staged" reads as "nothing was built" while the running
+// binary has in fact already been replaced.
+func TestUpdateReportsWhatTheBuildDidToTheLiveBinary(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+		says   string
+		binary string
+	}{
+		{"one that ignores the staging path", ignoringBuild, "ignored " + buildOutEnv, "0.2.0"},
+		{"one that builds nothing at all", silentBuild, "left", "0.1.0"},
+		{"one that fails without touching it", failingBuild, "untouched", "0.1.0"},
+		{"one that fails after writing it", clobberingBuild, "written over anyway", "half"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origin, root := newInstall(t)
+			publishBuild(t, origin, "0.2.0", tc.script)
+
+			var out strings.Builder
+			err := update(root, &out)
+			if err == nil {
+				t.Fatalf("a rebuild that staged nothing must fail; output was:\n%s", out.String())
+			}
+			if !strings.Contains(err.Error(), tc.says) {
+				t.Errorf("the failure should say %q, got %v", tc.says, err)
+			}
+			// The claim under test is the one about the binary on disk, so it is
+			// checked against the binary on disk.
+			if got := readFile(t, filepath.Join(root, "bin", binaryName())); got != tc.binary {
+				t.Errorf("the live binary is %q, and the failure describes it as %q", got, tc.binary)
+			}
+		})
+	}
+}
+
+// The build script as it was before WORKTENDER_BUILD_OUT existed.
+const ignoringBuild = `#!/bin/sh
+set -eu
+awk -F'"' '/^version/ {print $2}' herdr-plugin.toml > bin/worktender
+chmod +x bin/worktender
+`
+
+const silentBuild = `#!/bin/sh
+exit 0
+`
+
+const failingBuild = `#!/bin/sh
+echo "no toolchain" >&2
+exit 1
+`
+
+// The worst shape: it writes the live binary and then fails, so what is on disk
+// is neither the old build nor a finished one.
+const clobberingBuild = `#!/bin/sh
+set -eu
+printf 'half\n' > bin/worktender
+exit 1
+`
 
 // The other half nothing can fix: herdr records the installed commit once and
 // never re-reads the checkout, so `plugin list` keeps naming a commit that an

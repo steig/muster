@@ -129,9 +129,9 @@ func update(root string, out io.Writer) error {
 		return err
 	}
 	if err := rebuild(root, out); err != nil {
-		// The checkout moved and the binary did not, which is the one state
-		// worth spelling out: the source on disk is no longer what is running.
-		return fmt.Errorf("%w; the checkout is now at @%s but bin/%s is still the %s build — fix the build and run update again", err, short(commit), binaryName(), wasVersion)
+		// Only the checkout is added here. What became of the binary is rebuild's
+		// to say, because rebuild is what looked.
+		return fmt.Errorf("%w; the checkout is now at %s @%s", err, version, short(commit))
 	}
 
 	fmt.Fprintf(out, "%s @%s -> %s @%s\n", wasVersion, short(wasCommit), version, short(commit))
@@ -199,8 +199,17 @@ func recordedCommitVia(client *herdrapi.Client, root string) string {
 //
 // The build itself is the manifest's, so an install without Go still resolves
 // through the release download the same way it did at install time.
+//
+// The staging is a REQUEST, though, and the script that receives it comes from
+// the checkout that was just fetched. A build.sh that ignores WORKTENDER_BUILD_OUT
+// writes the live path anyway — every release before this one did — so the live
+// binary is stamped before the build and compared after. Without that, the one
+// failure worth reporting is the one that gets reported wrongly: nothing staged
+// reads as nothing built, when the binary has in fact already been replaced.
 func rebuild(root string, out io.Writer) error {
 	staged := filepath.Join("bin", binaryName()+".new")
+	live := filepath.Join(root, "bin", binaryName())
+	before := stampOf(live)
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -212,14 +221,36 @@ func rebuild(root string, out io.Writer) error {
 	cmd.Dir = root
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rebuild: %w", err)
+		return fmt.Errorf("rebuild: %w; %s", err, binaryFate(live, before))
 	}
 
 	built := filepath.Join(root, staged)
 	if _, err := os.Stat(built); err != nil {
-		return fmt.Errorf("the build produced no %s, so there is nothing to move into place", staged)
+		if stampOf(live) != before {
+			return fmt.Errorf("the build ignored %s and wrote %s itself, so the binary was replaced in place rather than renamed over — anything executing it could have been swapped mid-run; it is now the build just fetched and does not need running again", buildOutEnv, live)
+		}
+		return fmt.Errorf("the build produced no %s and left %s untouched, so nothing was rebuilt", staged, live)
 	}
 	return replaceBinary(root, built)
+}
+
+// stampOf identifies a file closely enough to tell "the build wrote this" from
+// "the build left it alone". Empty when there is nothing there.
+func stampOf(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d@%d", info.Size(), info.ModTime().UnixNano())
+}
+
+// binaryFate reports what became of the live binary, which is the half of a
+// failed rebuild the caller cannot see for itself.
+func binaryFate(live, before string) string {
+	if stampOf(live) != before {
+		return live + " was written over anyway, so it is neither the build that was running nor a build that succeeded"
+	}
+	return live + " is untouched and still the build that was running"
 }
 
 func binaryName() string {
