@@ -63,8 +63,12 @@ This plugin deliberately ships **no** `[[keys.command]]` entries of its own. An
 install that silently claims `prefix+alt+s` is the same class of surprise as one
 that edits your agent's configuration — and you may already have that key.
 
-That is the whole of the herdr *action* surface, and not the whole of the plugin:
-`report` and `gate` are commands rather than actions, for reasons covered below.
+That is the whole of the herdr *action* surface, and it is a subset of the
+binary's: every action runs `./bin/worktender <id>`, so `ls`, `sync`, `prune`
+and `prune-apply` are subcommands you can call directly — and should, since the
+action path returns an invocation record rather than the output. `report` and
+`gate` have no action equivalent at all: they take arguments and `gate` blocks,
+neither of which an action can do.
 
 
 ---

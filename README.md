@@ -25,8 +25,7 @@ staffs empty workspaces with an agent, and removes finished checkouts — **on t
 rule that ambiguity always keeps the worktree.**
 
 ```sh
-$ herdr plugin action invoke ls --plugin steig.worktender
-$ herdr plugin log list --plugin steig.worktender | jq -r '.result.logs[-1].stdout'
+$ worktender ls
 * main                      w21  idle     worktender
   feat/1-reconcile-execute  w22  working  1-reconcile-execute
   fix/257-erasure-comments  w1K  idle     257-erasure-comments
@@ -38,9 +37,19 @@ repository's main checkout; `-` means herdr has nothing for that worktree — th
 last row is a checkout with no workspace and no agent, which is exactly what
 `sync` picks up.
 
-Those two commands are not a typo, and this is what newcomers trip on first:
-**`invoke` returns an invocation record, not the action's output.** What the
-action printed is in the plugin log.
+Everything is a subcommand of one binary, which herdr installs rather than
+putting on `PATH`. Resolve it once:
+
+```sh
+worktender=$(herdr plugin list --json \
+  | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
+```
+
+The same four reconcile commands are *also* registered as herdr actions, so a
+keybinding or menu can reach them — but that path is worse to script against,
+and this is what newcomers trip on first: **`invoke` returns an invocation
+record, not the action's output.** What the action printed is in the plugin log.
+Call the binary and the output is just on stdout.
 
 ## Quickstart
 
@@ -48,20 +57,25 @@ action printed is in the plugin log.
 # 1. install — read Trust below first; this runs unsandboxed
 herdr plugin install steig/worktender
 
-# 2. see where you stand
-herdr plugin action invoke ls --plugin steig.worktender
-herdr plugin log list --plugin steig.worktender | jq -r '.result.logs[-1].stdout'
+# 2. resolve the binary; herdr owns the install, so it is not on PATH
+worktender=$(herdr plugin list --json \
+  | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
 
-# 3. adopt every orphan checkout, staff every idle workspace
-herdr plugin action invoke sync --plugin steig.worktender
+# 3. see where you stand
+"$worktender" ls
 
-# 4. ask what looks finished — a DRY RUN, it removes nothing
-herdr plugin action invoke prune --plugin steig.worktender
-herdr plugin log list --plugin steig.worktender | jq -r '.result.logs[-1].stdout'
+# 4. adopt every orphan checkout, staff every idle workspace
+"$worktender" sync
 
-# 5. only once you have read step 4's reasons
-herdr plugin action invoke prune-apply --plugin steig.worktender
+# 5. ask what looks finished — a DRY RUN, it removes nothing
+"$worktender" prune
+
+# 6. only once you have read step 5's reasons
+"$worktender" prune-apply
 ```
+
+Each of those four is also a herdr action — `Worktender: list worktrees` and
+friends — for reaching them from a keybinding or the plugin menu.
 
 Three things worth knowing before step 5 surprises you:
 
