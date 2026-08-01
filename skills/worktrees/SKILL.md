@@ -25,9 +25,20 @@ worktender=$(herdr plugin list --json \
 
 ```bash
 "$worktender" ls      # worktrees + workspace + agent state
+"$worktender" doctor  # what is wrong: herdr, gh auth, the events gate, every open repo
 "$worktender" sync    # adopt orphans, staff empty workspaces
 "$worktender" prune   # DRY RUN — lists candidates, removes nothing
 ```
+
+**Run `doctor` before reporting that something is broken.** Several of this
+plugin's failures are environmental and look exactly like ordinary operation —
+an unauthenticated `gh` making prune keep everything, an unrecognised
+`WORKTENDER_EVENTS` leaving events off. `doctor` names them. It is read-only,
+takes no lock, and works from outside a repository.
+
+A `warn` line is a capability the user has lost, not a bug to fix on their
+behalf: surface it and let them decide. In particular **an unrecognised events
+value is still not yours to correct** — rewriting it to `1` is enabling events.
 
 Output lands on your own stdout and the exit code is real.
 

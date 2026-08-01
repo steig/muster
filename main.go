@@ -25,7 +25,7 @@ import (
 // from. One list rather than two: a hand-written usage string and a
 // hand-written test list had already drifted apart — the test named "every
 // command" omitted `gate`, so usage could have dropped it and stayed green.
-var commands = []string{"ls", "sync", "dispatch", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
+var commands = []string{"ls", "doctor", "sync", "dispatch", "prune", "prune-apply", "report", "gate", "on-event", "startup"}
 
 var usage = "usage: worktender <" + strings.Join(commands, "|") + ">"
 
@@ -64,6 +64,10 @@ func run(args []string, out io.Writer) error {
 	switch args[0] {
 	case "ls", "list":
 		return lsCommand(out)
+	case "doctor":
+		// Reports the environment the silent failures hide in. Read-only, takes
+		// no lock, and works from outside a repository.
+		return doctorCommand(out)
 	case "sync":
 		// Adopt and staff. Both are non-destructive, so they act directly;
 		// finished worktrees are only listed.

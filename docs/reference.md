@@ -2,6 +2,42 @@
 
 Exit codes, errors, keybindings, and the behaviours that do not belong anywhere else.
 
+## Finding out what is wrong
+
+```sh
+$ worktender doctor
+herdr   0.7.5          ok
+gh      authenticated  ok
+events  unset          off
+
+repos
+  worktender    3 worktrees  1 working
+  house         7 worktrees  1 idle, 1 working
+```
+
+Three of this plugin's failures are environmental, silent, and shaped exactly
+like ordinary operation, so `doctor` exists to name them without being asked the
+right question first:
+
+- **`gh` missing or unauthenticated** collapses to "this branch has no pull
+  request", so prune keeps almost everything while every reason it prints reads
+  as reasonable. Reported as `warn` rather than `fail` — a repository that does
+  not use pull requests is entitled to no `gh` at all.
+- **An unrecognised `WORKTENDER_EVENTS`** leaves events off, and the notice
+  saying so is printed by a hook that will not fire. `doctor` reports the value
+  as the gate *parses* it, not as it is spelled.
+- **A herdr that cannot be reached**, which makes every other answer here
+  meaningless — so it is said once and the command stops.
+
+It is read-only, takes no lock, and works from outside a repository: someone who
+cannot tell what is wrong often cannot tell where they are either. The
+repository list is herdr's open worktree workspaces rather than wherever the
+caller is standing.
+
+`doctor` is a command rather than an action, and deliberately: an action's
+output lands in the plugin log, which is exactly the indirection a diagnostic
+should not have.
+
 ## Exit codes and errors
 
 There are exactly two exit codes: **0**, or **1** with `worktender: <error>` on
