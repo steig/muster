@@ -428,3 +428,107 @@ func TestCollectIgnoresOtherRepositoriesWorkspaces(t *testing.T) {
 		t.Errorf("another repository's workspace leaked in: %+v", state.Workspaces)
 	}
 }
+
+// A workspace herdr has just listed can be closed before its panes are read.
+// Failing the whole repository over that meant one vanished workspace hid every
+// other worktree's verdict — seen live as `prune` exiting 1 having printed
+// nothing but its header, immediately after a `sync` that opened the workspace.
+func TestCollectSkipsAWorkspaceThatDisappears(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	survivor := repo.AddWorktree("survivor", "survivor")
+
+	workspace := func(id, checkout string) map[string]any {
+		return map[string]any{
+			"workspace_id": id, "number": 1, "label": id, "focused": false,
+			"pane_count": 1, "tab_count": 1, "active_tab_id": id + ":t1", "agent_status": "idle",
+			"worktree": map[string]any{"repo_key": "k", "repo_name": "repo",
+				"repo_root": repo.Root, "checkout_path": checkout,
+				"is_linked_worktree": true},
+		}
+	}
+
+	server := herdrtest.NewServer(t)
+	server.HandleResult("worktree.list", map[string]any{
+		"type": "worktree_list",
+		"source": map[string]any{"repo_key": "k", "repo_name": "repo",
+			"repo_root": repo.Root, "source_checkout_path": repo.Root},
+		"worktrees": []map[string]any{
+			worktreeJSON(repo.Root, "main", false, "w1"),
+			worktreeJSON(survivor, "survivor", true, "w2"),
+		},
+	})
+	server.HandleResult("workspace.list", map[string]any{
+		"type": "workspace_list",
+		"workspaces": []map[string]any{
+			workspace("w20", filepath.Join(repo.Root, "gone")),
+			workspace("w2", survivor),
+		},
+	})
+	server.HandleResult("agent.list", map[string]any{
+		"type": "agent_list", "agents": []map[string]any{},
+	})
+	server.Handle("pane.list", func(params map[string]any) (any, error) {
+		if params["workspace_id"] == "w20" {
+			return nil, &herdrtest.CodedError{
+				Code: "workspace_not_found", Message: "workspace w20 not found",
+			}
+		}
+		return map[string]any{"type": "pane_list",
+			"panes": []map[string]any{{"pane_id": "w2:p1"}}}, nil
+	})
+
+	var warnings strings.Builder
+	collector := reconcile.NewCollector(herdrapi.NewWithSocket(server.SocketPath), repo.Root)
+	collector.ProjectsDir = t.TempDir()
+	collector.LookupPR = func(string) reconcile.PRState { return reconcile.PRNone }
+	collector.Warn = &warnings
+
+	state, err := collector.Collect()
+	if err != nil {
+		t.Fatalf("one vanished workspace must not fail the repository: %v", err)
+	}
+	if len(state.Workspaces) != 1 || state.Workspaces[0].ID != "w2" {
+		t.Fatalf("the surviving workspace should still be collected, got %+v", state.Workspaces)
+	}
+	if !strings.Contains(warnings.String(), "w20") {
+		t.Errorf("a skipped workspace must be named, got %q", warnings.String())
+	}
+}
+
+// Every other herdr failure still means the repository's state is unknown, so
+// the skip must not have widened into a blanket ignore-on-error.
+func TestCollectStillFailsOnOtherPaneErrors(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	server := herdrtest.NewServer(t)
+	server.HandleResult("worktree.list", map[string]any{
+		"type": "worktree_list",
+		"source": map[string]any{"repo_key": "k", "repo_name": "repo",
+			"repo_root": repo.Root, "source_checkout_path": repo.Root},
+		"worktrees": []map[string]any{worktreeJSON(repo.Root, "main", false, "w1")},
+	})
+	server.HandleResult("workspace.list", map[string]any{
+		"type": "workspace_list",
+		"workspaces": []map[string]any{{
+			"workspace_id": "w1", "number": 1, "label": "main", "focused": false,
+			"pane_count": 1, "tab_count": 1, "active_tab_id": "w1:t1", "agent_status": "idle",
+			"worktree": map[string]any{"repo_key": "k", "repo_name": "repo",
+				"repo_root": repo.Root, "checkout_path": repo.Root,
+				"is_linked_worktree": false},
+		}},
+	})
+	server.HandleResult("agent.list", map[string]any{
+		"type": "agent_list", "agents": []map[string]any{},
+	})
+	server.Handle("pane.list", func(map[string]any) (any, error) {
+		return nil, &herdrtest.CodedError{Code: "internal", Message: "herdr fell over"}
+	})
+
+	collector := reconcile.NewCollector(herdrapi.NewWithSocket(server.SocketPath), repo.Root)
+	collector.ProjectsDir = t.TempDir()
+	collector.LookupPR = func(string) reconcile.PRState { return reconcile.PRNone }
+
+	if _, err := collector.Collect(); err == nil {
+		t.Fatal("an unrecognised pane.list failure must still fail the collection")
+	}
+}

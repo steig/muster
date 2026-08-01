@@ -2,6 +2,9 @@ package reconcile
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +25,9 @@ type Collector struct {
 	// LookupPR resolves a branch's pull request state. Nil disables PR
 	// lookups, which makes every verdict fall back to git.
 	LookupPR func(branch string) PRState
+	// Warn receives notices about facts that could not be read. Nil discards
+	// them; it is never the channel an answer arrives on.
+	Warn io.Writer
 }
 
 // NewCollector builds a Collector with the default gh-backed PR lookup.
@@ -30,6 +36,7 @@ func NewCollector(client *herdrapi.Client, root string) *Collector {
 		Client:      client,
 		Root:        root,
 		ProjectsDir: DefaultProjectsDir(),
+		Warn:        os.Stderr,
 	}
 	c.LookupPR = func(branch string) PRState { return GhPRState(root, branch) }
 	return c
@@ -102,6 +109,16 @@ func (c *Collector) Collect() (State, error) {
 		}
 		panes, err := c.Client.PaneList(ws.WorkspaceID)
 		if err != nil {
+			// A workspace herdr listed a moment ago can be closed before we ask
+			// for its panes, and losing the whole repository to that is out of
+			// all proportion: a workspace that no longer exists is one there is
+			// nothing left to decide about. Every other failure still means the
+			// repository's state is unknown, so only this code is survivable.
+			var herr *herdrapi.Error
+			if errors.As(err, &herr) && herr.Code == "workspace_not_found" {
+				c.warnf("workspace %s went away while its panes were being read; skipping it\n", ws.WorkspaceID)
+				continue
+			}
 			return State{}, err
 		}
 
@@ -118,6 +135,14 @@ func (c *Collector) Collect() (State, error) {
 	}
 
 	return state, nil
+}
+
+// warnf says what could not be read, on the channel results never travel on.
+func (c *Collector) warnf(format string, a ...any) {
+	if c.Warn == nil {
+		return
+	}
+	fmt.Fprintf(c.Warn, "worktender: "+format, a...)
 }
 
 // hasTranscript reports whether Claude Code has a stored conversation for the
