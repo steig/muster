@@ -8,6 +8,26 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Changed
+
+- **The docs now point at the binary instead of `plugin action invoke`.** `ls`,
+  `sync`, `prune` and `prune-apply` have always been subcommands — every action
+  is defined as `./bin/worktender <id>` — but the skill asserted the opposite
+  ("there is no `worktender ls` on your PATH"), so every documented path went
+  through `invoke` and then a second call to fish the output out of the plugin
+  log.
+
+  That indirection is the single most-documented agent mistake in this
+  repository, and it was self-inflicted. Resolve the binary once and the output
+  is on stdout with a real exit code. The actions remain, because a keybinding
+  or menu has no other way in.
+
+- **`min_herdr_version` is 0.7.5, up from 0.7.0.** Every measured behaviour
+  behind `report` and `gate` was tested against 0.7.5 and nothing at runtime
+  checks the version, so the floor now matches what was actually verified.
+  herdr enforces the field, which turns a silent incompatibility into a refused
+  install.
+
 ### Removed
 
 - **`WORKTENDER_UNSANDBOXED_OK` is gone, and `--permission-mode` no longer
