@@ -84,6 +84,15 @@ The agent name is not the branch name: herdr's agent namespace spans every
 repository at once, so the name carries a digest of the repository. Copy the
 line `start` prints rather than retyping it.
 
+With several running, wait on all of them at once — the first to report releases
+the gate and it says which one:
+
+```sh
+$ worktender gate --any wt-42-fix-the-thing-016aab,wt-43-other-9c21f4 --until done
+gate: waiting on wt-42-fix-the-thing-016aab (pane w9:p1), wt-43-other-9c21f4 (pane w10:p1) for status done, up to 15m
+gate: wt-43-other-9c21f4 released after 4m12s
+```
+
 One command from an issue number to an agent working on it: it reads the issue
 with `gh`, creates a worktree named for it, starts an agent in the new pane, and
 types a brief covering the whole round — read the issue, explore, change, test,
@@ -99,8 +108,8 @@ key event and `start` then waits for herdr to report the agent working, because
 herdr answering ok means it delivered keystrokes and not that an agent received
 a prompt. An agent still `idle` when that wait runs out fails the command.
 
-Start several, then wait on them one at a time. `start` deliberately does not
-wait; `gate` is the other half.
+Start several, then wait on the lot of them. `start` deliberately does not wait;
+`gate` is the other half.
 
 **The issue body reaches the agent as framed, untrusted data.** Anyone who can
 file an issue writes it, so it is announced as data and delimited before it

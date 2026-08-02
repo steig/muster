@@ -146,7 +146,7 @@ command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\
 # The completion gate was expected to want it and turned out not to. A hook is
 # fire-and-forget — herdr starts a process, the process exits, and nobody is
 # waiting on its exit code — while a gate is a caller BLOCKING until a condition
-# holds. The gate therefore subscribes over the socket, for the pane it was
+# holds. The gate therefore subscribes over the socket, for the panes it was
 # given, for as long as it waits, and this file needs no entry for it.
 #
 # `gate`, `report` and `start` are not registered as actions, and cannot be. A

@@ -18,6 +18,10 @@ worktender=$(herdr plugin list --json \
 # because herdr's agent namespace is global. `start` prints this exact line.
 "$worktender" gate --target wt-42-fix-the-thing-016aab --until done --require-pr --timeout 20m
 
+# ...and with several running, wait on all of them at once. The first to report
+# releases, and the gate says which one it was.
+"$worktender" gate --any 42-fix-the-thing,43-other,44-third --until done --timeout 20m
+
 # ...and when it is not, the pieces are still separate. Dispatch, then wait.
 "$worktender" dispatch --pane w22:p1 --name reconcile-split --model sonnet
 "$worktender" gate --target reconcile-split --until done --require-pr --timeout 20m
@@ -36,8 +40,8 @@ nowhere: `ls` did not print one, so the documented loop had a `<pane>` in it and
 no command that produced it. `ls` prints panes now, and `start` does not need
 you to look.
 
-**`start` does not wait.** Starting five issues and then waiting on them one at
-a time is the point; a start that gated would serialise the fleet.
+**`start` does not wait.** Starting five issues and then waiting on all five is
+the point; a start that gated would serialise the fleet.
 
 The gate prints the report and exits 0 when the predicate holds. It exits
 non-zero when the worker reports `blocked`, when the worker dies before
@@ -47,8 +51,51 @@ reporting, and when it times out.
 worktender start <issue> [--model <model>] [--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus]
 worktender dispatch --pane <id> --name <agent> [--model <model>] [--permission-mode <mode>] [--resume]
 worktender report --status planned|blocked|done [--pr N] --note <text>
-worktender gate --target <agent|pane> [--until done] [--require-pr] [--timeout 15m]
+worktender gate --target <agent|pane> | --any <a,b,c> [--until done] [--require-pr] [--timeout 15m]
 ```
+
+## Waiting on a fleet
+
+`--any` takes several workers and releases on the **first** of them to satisfy
+the predicate, naming it. Drop that one and gate again on the rest:
+
+```sh
+"$worktender" gate --any 12-thing,13-other,14-third --until done --timeout 20m
+# gate: waiting on 12-thing (pane w1:p1), 13-other (pane w2:p1), 14-third (pane w3:p1) for status done, up to 20m
+# gate: 13-other released after 4m12s
+"$worktender" gate --any 12-thing,14-third --until done --timeout 20m
+```
+
+Waiting on one worker at a time is what this replaces, and the reason is that
+nothing tells them apart in advance: `start` returns as soon as the brief is
+typed, so a coordinator picking one to block on has no basis for the choice.
+Pick the slow one and the workers that finished sit idle with their reports
+unread, and five sequential 15 minute gates are a 75 minute worst case for work
+that all landed in the first ten.
+
+`blocked` is the sharper half. It is the one status only the coordinator can
+clear, and it used to be heard only while the coordinator happened to be gated
+on *that* worker.
+
+Three things follow from `--any` and are worth knowing before you build a loop
+on it:
+
+- **The timeout is for the wait, not for each worker.** It is how long you are
+  prepared to sit there, and that does not multiply by the number of workers you
+  are sitting there for.
+- **A worker that dies ends the wait, and the failure names it.** So does a
+  `blocked`. Both are yours to act on, and the name is what you drop before
+  gating on the rest — waiting on in silence would leave a death unmentioned
+  until the deadline.
+- **There is no `--all`.** It is a loop over `--any` in the caller, dropping each
+  worker as it releases, and the caller has to be able to write that loop
+  anyway: `--all` would still have to say what it did when one of the fleet
+  reported `blocked` halfway through.
+
+Every target is resolved before the wait opens, so one mistyped name out of five
+fails immediately rather than at the deadline. Naming one worker twice — its
+agent name and its pane id are both accepted, and both resolve — is refused
+rather than watched twice.
 
 ## Why dispatch is separate from `sync`
 
@@ -108,7 +155,7 @@ Details that bite:
 - **Outside herdr, `report` prints the envelope, warns on stderr, and exits 0.** A
   caller checking only the exit code sees success where nothing was delivered.
 - **`--until` is repeatable** — pass it more than once to release on any of
-  several statuses.
+  several statuses. So is `--target`, which is `--any` spelled one at a time.
 - **`--timeout` defaults to 15 minutes, and there is no wait-forever option.** A
   gate that cannot expire wedges a coordinator with no diagnosis, which is worse
   than no gate.

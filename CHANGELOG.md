@@ -32,11 +32,44 @@ install` tracks branch HEAD rather than a tag — the version in
   everything while every printed reason reads as ordinary. `pr` is now an object
   carrying `state` or `error`, and `null` when nothing was asked at all.
 
+- **`gate --any a,b,c` — one wait over a whole fleet.** It releases on the
+  first worker to satisfy the predicate and names which one, so the caller drops
+  that target and gates again on the rest.
+
+  Waiting on one worker at a time is what this replaces. `start` returns as soon
+  as the brief is typed, so a coordinator picking one worker to block on has no
+  basis for the choice: wait on the slow one and the four that finished sit idle
+  with their reports unread. Five sequential gates at the 15 minute default is a
+  75 minute worst case for work that all landed in the first ten. `blocked` is
+  the sharper half — the one status only the coordinator can clear was heard
+  only while the coordinator happened to be gated on that worker.
+
+  `--target` is now repeatable and fills the same list, so it is `--any` spelled
+  one at a time; flag's own last-one-wins would have dropped a target silently.
+  There is no `--all`: it is a loop over `--any` in the caller, which has to be
+  able to write that loop anyway.
+
+  The timeout is for the wait rather than for each worker — "how long am I
+  prepared to sit here" does not multiply by the number of workers sat on. A
+  worker that dies, like one that reports `blocked`, ends the wait with a
+  failure **naming it**, because the caller's remedy is to drop that one and
+  gate on the rest. Every target is resolved before the wait opens, so one
+  mistyped name out of five fails immediately rather than at the deadline, and
+  naming one worker twice — an agent name and its own pane id both resolve — is
+  refused rather than watched twice.
+
 ### Changed
 
 - **A `wt.Row` now holds an empty string where a fact is absent, not `"-"`.** The
   dash is a rendering choice and lives in the renderer; a struct that stored it
   could only hand the ambiguity on. The table's output is unchanged.
+
+- **The gate's release line now names the worker, on `--target` too.** It was
+  `gate: released after 4s` and is now `gate: worker released after 4s`. With
+  `--any` the name is the answer — it is what the caller drops before gating on
+  the rest — and a line that carried it only sometimes would be worse to script
+  against than one that always does. A caller matching the old prefix exactly
+  breaks; the report envelope printed under it is unchanged.
 
 ### Fixed
 
@@ -104,6 +137,13 @@ install` tracks branch HEAD rather than a tag — the version in
   when its pane goes away, so the only names that exist are the ones running
   agents hold, and `sync` re-derives on the next pass either way. Copy the
   `gate` line `start` prints rather than retyping the branch.
+
+- **A pane event ended a gate without the pane being checked.** `pane.exited`,
+  `pane.closed` and `pane.agent_status_changed` were trusted to the subscription
+  that asked for them, which held while a gate had exactly one pane's
+  subscriptions on its stream. Every pane-scoped frame is now matched on its own
+  `pane_id`, as `pane.updated` and `workspace.closed` already were.
+
 
 ## [0.7.0] — 2026-08-01
 
