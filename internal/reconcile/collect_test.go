@@ -112,7 +112,7 @@ func TestCollectPrunesOnlyWithAPRVerdict(t *testing.T) {
 	repo.CommitIn(done, "shipped.txt", "work")
 	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
 
-	herdrtest.FakeGh(t, `echo '[{"state":"MERGED"}]'`)
+	herdrtest.FakeGhPRState(t, "MERGED")
 
 	collector := collectFixture(t, repo,
 		[]map[string]any{worktreeJSON(done, "done", true, "")}, nil, nil, nil)
@@ -257,7 +257,7 @@ func TestCollectUsesGhForSquashMergedBranch(t *testing.T) {
 	repo.Git("merge", "--squash", "squashed")
 	repo.Git("commit", "-m", "squashed work")
 
-	herdrtest.FakeGh(t, `echo '[{"state":"MERGED"}]'`)
+	herdrtest.FakeGhPRState(t, "MERGED")
 
 	collector := collectFixture(t, repo,
 		[]map[string]any{worktreeJSON(checkout, "squashed", true, "")}, nil, nil, nil)
@@ -282,7 +282,7 @@ func TestCollectUsesGhForSquashMergedBranch(t *testing.T) {
 // gh missing or failing must not invent a verdict.
 func TestGhPRStateToleratesFailure(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
-	herdrtest.FakeGh(t, `exit 1`)
+	herdrtest.FakeGhUnavailable(t)
 
 	if got := reconcile.GhPRState(repo.Root, "anything"); got != reconcile.PRNone {
 		t.Errorf("a failing gh should yield PRNone, got %q", got)
@@ -300,7 +300,7 @@ func TestGhPRLookupTellsNoPullRequestFromNoAnswer(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 
 	t.Run("no pull request", func(t *testing.T) {
-		herdrtest.FakeGh(t, `echo '[]'`)
+		herdrtest.FakeGhNoPR(t)
 
 		state, err := reconcile.GhPRLookup(repo.Root, "wip")
 		if err != nil {
@@ -344,7 +344,7 @@ func TestGhPRLookupTellsNoPullRequestFromNoAnswer(t *testing.T) {
 // prunes a worktree that is still being worked in.
 func TestGhPRLookupPrefersTheOpenPullRequest(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
-	herdrtest.FakeGh(t, `echo '[{"state":"CLOSED"},{"state":"OPEN"}]'`)
+	herdrtest.FakeGhPRStates(t, "CLOSED", "OPEN")
 
 	state, err := reconcile.GhPRLookup(repo.Root, "wip")
 	if err != nil {
@@ -478,7 +478,7 @@ func TestCollectKeepsReusedBranchClosedUnmerged(t *testing.T) {
 func TestGhPRLookupAsksAboutEveryState(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 	argv := filepath.Join(t.TempDir(), "argv")
-	herdrtest.FakeGh(t, `echo "$@" > `+argv+`; echo '[]'`)
+	herdrtest.FakeGh(t, `echo "$@" > `+argv+`; `+herdrtest.GhPRScript())
 
 	if _, err := reconcile.GhPRLookup(repo.Root, "wip"); err != nil {
 		t.Fatalf("GhPRLookup: %v", err)
@@ -552,7 +552,7 @@ func TestCollectKeepsWorktreeWithOpenPR(t *testing.T) {
 	checkout := repo.AddWorktree("wip", "wip")
 	repo.CommitIn(checkout, "wip.txt", "work")
 
-	herdrtest.FakeGh(t, `echo '[{"state":"OPEN"}]'`)
+	herdrtest.FakeGhPRState(t, "OPEN")
 
 	collector := collectFixture(t, repo,
 		[]map[string]any{worktreeJSON(checkout, "wip", true, "")}, nil, nil, nil)
