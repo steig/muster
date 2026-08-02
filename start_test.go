@@ -375,6 +375,13 @@ func TestStartSaysHowToRepairAStackedBranch(t *testing.T) {
 	if !strings.Contains(printed, "git rebase --onto origin/main "+tip) {
 		t.Errorf("the repair must name the commit, not the ref:\n%s", printed)
 	}
+	// Before the base merges the target is the base's branch, not the trunk:
+	// rebasing a stacked child onto the trunk replays the base's commits under
+	// the child's name (#109). The line has to say which target, or it reads as
+	// "any rebase will do".
+	if !strings.Contains(printed, "--onto feat/76-machine-readable") {
+		t.Errorf("the repair before the base merges must name the base as the target:\n%s", printed)
+	}
 }
 
 // A ref git cannot resolve is the worktree create's failure to report, not this

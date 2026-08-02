@@ -130,9 +130,12 @@ a start that gated would serialise the fleet.
 pull request is still open.** That is allowed and often right. What it costs is this:
 a squash merge puts *one new commit* on the trunk and none of the base branch's own,
 so once the base lands the stacked branch sits on commits the trunk has never had, and
-its pull request shows the base's whole diff as its own. Rebase the child before the
-parent merges where you can; afterwards it takes
-`git rebase --onto origin/main <fork-point>`, which replays only the child's commits.
+its pull request shows the base's whole diff as its own. The repair is
+`git rebase --onto <target> <fork-point>` either side of that merge, and naming the fork
+point is what keeps it to the child's own commits: `--onto origin/main` once the base has
+landed, and before that `--onto` the base's branch, having rebased that branch onto the
+trunk first. A plain `git rebase origin/main` on the child is not a lighter version of it
+— while the base is unmerged it replays the base's commits too.
 
 **`start` prints that fork point** — `fork point: <ref> is <sha>` — and adds the
 `stacked:` and `repair:` lines when the fork is not something the base already has.
