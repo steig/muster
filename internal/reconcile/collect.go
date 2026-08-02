@@ -247,6 +247,12 @@ type prRecord struct {
 // field — the tie goes to the state that keeps the worktree, rather than back
 // to the array order this exists to stop trusting. Keeping costs disk; the
 // other direction costs a checkout whose work was never merged.
+//
+// One usable timestamp folds into that same rule rather than comparing a real
+// date against a zero one, so a dated MERGED can lose to an undated CLOSED.
+// That is the direction the tie-break already leans, and gh sends createdAt
+// for every row of a --json call or for none of them, which makes the
+// asymmetric case a guard rather than a path.
 func (pr prRecord) supersedes(other prRecord) bool {
 	mine, ok := pr.created()
 	theirs, otherOK := other.created()
