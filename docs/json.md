@@ -137,6 +137,20 @@ $ worktender doctor --json
   standing, so `doctor` answers from outside any repository at all. `ls --json`
   is the per-worktree view, and needs a repository to run in.
 
+## Call the binary, not the action
+
+A herdr action is a fixed command array with no argument surface, so
+`Worktender: list worktrees` cannot be asked for `--json` — and its output lands
+in the plugin log rather than on your stdout anyway. Resolve the binary once and
+run it directly:
+
+```sh
+worktender=$(herdr plugin list --json \
+  | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
+
+"$worktender" ls --pr --json | jq '.worktrees[] | select(.agent_status == "working")'
+```
+
 ## Two things it deliberately does not do
 
 **It does not escape.** The table replaces a bidi override in a branch name with
