@@ -222,17 +222,37 @@ func (c *Client) WorktreeCreate(cwd, branch, base, label string, focus bool) (*W
 	return &out, nil
 }
 
-// PaneSendText types text into a pane, newline included to submit it.
+// PaneSendText types text into a pane. It does NOT submit it — see PaneSendKeys.
 //
 // This rather than agent.prompt, which blocks against an agent herdr still has
 // as launch_pending — a state a live agent can sit in indefinitely, so the
 // prompt never lands. Typing at the pane does not consult agent state at all.
 //
-// The consequence is that text must be ONE line: a newline inside it submits
-// early and the remainder lands as a second message.
+// A trailing newline is not a submit and cannot be relied on as one. Measured
+// against herdr 0.7.5 and Claude Code: a payload of any size arrives at the TUI
+// as one burst, the TUI reads a burst as a paste, and a newline inside a paste
+// is inserted in the composer as a literal line break. The text sits there
+// unsent while this call returns ok — ok for the bytes herdr delivered, not for
+// a prompt the agent received.
+//
+// Text should still be ONE line, because that is the property the caller
+// controls: whether a newline submits depends on how the TUI classified the
+// burst, and untrusted text does not get to make that choice either way.
 func (c *Client) PaneSendText(paneID, text string) error {
 	return c.call("pane.send_text", map[string]any{
 		"pane_id": paneID, "text": text,
+	}, nil)
+}
+
+// PaneSendKeys delivers key events to a pane — "enter" being the one that
+// submits what PaneSendText typed.
+//
+// A key is not text. It arrives outside whatever burst the TUI was reading, so
+// it is acted on rather than inserted, which is the entire difference between
+// this and ending the text with a newline.
+func (c *Client) PaneSendKeys(paneID string, keys []string) error {
+	return c.call("pane.send_keys", map[string]any{
+		"pane_id": paneID, "keys": keys,
 	}, nil)
 }
 

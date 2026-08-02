@@ -67,7 +67,7 @@ Call the binary and the output is just on stdout.
 ## Starting work on an issue
 
 ```sh
-$ worktender start 42
+$ worktender start 42 --repo .
 repository: /Users/you/code/thing
 worktree: 42-fix-the-thing on origin/main (workspace w9, pane w9:p1)
 done  staff  42-fix-the-thing  started claude as 42-fix-the-thing in w9:p1
@@ -80,6 +80,16 @@ One command from an issue number to an agent working on it: it reads the issue
 with `gh`, creates a worktree named for it, starts an agent in the new pane, and
 types a brief covering the whole round — read the issue, explore, change, test,
 self-review, open a PR, then `report`.
+
+`--repo` because `start` creates a checkout, so it refuses to guess which
+repository — and unlike the reconcile commands it has no herdr action to be
+invoked through, because an action carries no arguments and `start` is nothing
+without its issue number. Flags may be written on either side of the number.
+
+**The brief is confirmed, not claimed.** It is submitted with a separate Enter
+key event and `start` then waits for herdr to report the agent working, because
+herdr answering ok means it delivered keystrokes and not that an agent received
+a prompt. An agent still `idle` when that wait runs out fails the command.
 
 Start several, then wait on them one at a time. `start` deliberately does not
 wait; `gate` is the other half.

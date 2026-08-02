@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,10 +10,12 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/steig/worktender/internal/execute"
 	"github.com/steig/worktender/internal/gitx"
+	"github.com/steig/worktender/internal/herdrapi"
 	"github.com/steig/worktender/internal/reconcile"
 	"github.com/steig/worktender/internal/safetext"
 )
@@ -35,21 +38,40 @@ func startCommand(args []string, out io.Writer) error {
 	model := fs.String("model", "", "model to pass to the agent")
 	permissionMode := fs.String("permission-mode", "", "agent permission mode")
 	base := fs.String("base", "", "ref to fork from; defaults to the repository's origin/HEAD")
+	repo := fs.String("repo", "", "repository to act on, instead of the one herdr is currently in")
 	focus := fs.Bool("focus", false, "switch to the new workspace")
 
-	if err := fs.Parse(args); err != nil {
+	issues, err := parseAround(fs, args)
+	if err != nil {
 		return fmt.Errorf("%v; %s", err, startUsage)
 	}
-	if fs.NArg() != 1 {
+	if len(issues) != 1 {
 		return fmt.Errorf("want exactly one issue number; %s", startUsage)
 	}
-	number, err := strconv.Atoi(strings.TrimPrefix(fs.Arg(0), "#"))
+	number, err := strconv.Atoi(strings.TrimPrefix(issues[0], "#"))
 	if err != nil || number <= 0 {
-		return fmt.Errorf("%q is not an issue number; want a positive integer like 42", fs.Arg(0))
+		return fmt.Errorf("%q is not an issue number; want a positive integer like 42", issues[0])
 	}
 
-	// Creates a checkout and starts an agent, so it must be told where.
-	s, err := newSession(false)
+	// Creates a checkout and starts an agent, so it must be told where — by
+	// --repo, or by the context herdr supplies when it is the one invoking.
+	//
+	// A named repository wins outright, for the reason it does on prune: herdr's
+	// context names its current workspace, which on a machine with several
+	// repositories open is routinely not the one the caller means.
+	var s *session
+	if *repo != "" {
+		s, err = newSessionIn(*repo)
+	} else {
+		s, err = newSession(false)
+		// The context is injected only when herdr invokes a plugin action, and
+		// `start` cannot be one — it is nothing without its issue number. So a
+		// shell reaching this has no way forward that the error does not name.
+		// Only this failure: --repo answers a missing context and nothing else.
+		if errors.Is(err, herdrapi.ErrNoContext) {
+			err = fmt.Errorf("%w; name it with --repo <path>", err)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -90,8 +112,8 @@ func startCommand(args []string, out io.Writer) error {
 		return fmt.Errorf("started no agent for #%d; the worktree at %s is yours to keep or remove", number, branch)
 	}
 
-	if err := s.client.PaneSendText(pane, brief(issue, branch)+"\n"); err != nil {
-		return fmt.Errorf("brief the agent in %s: %w", pane, err)
+	if err := deliverBrief(s.client, pane, brief(issue, branch)); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(out, "\nbriefed %s on #%d; wait for it with:\n  %s gate --target %s --until done --require-pr\n",
@@ -100,7 +122,104 @@ func startCommand(args []string, out io.Writer) error {
 }
 
 const startUsage = "usage: worktender start <issue> [--model <model>] " +
-	"[--permission-mode <mode>] [--base <ref>] [--focus]"
+	"[--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus]"
+
+// parseAround parses flags written on either side of the positional arguments,
+// returning the positionals.
+//
+// Go's flag package stops at the first non-flag argument, so `start 42 --model
+// sonnet` leaves the flags unparsed and counts them as positionals — the order
+// this command's usage string, its README example and the worktrees skill all
+// document, and the one a person types. Reparsing what remains after each
+// positional accepts both orders, rather than documenting whichever one the
+// parser happens to allow.
+func parseAround(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
+// briefSubmitKey is the key event that submits what was typed.
+const briefSubmitKey = "enter"
+
+// briefConfirmWait bounds the wait for the agent to react to its brief. A var
+// rather than a const so the suite can prove the unconfirmed path without
+// sitting through it.
+var briefConfirmWait = 15 * time.Second
+
+const briefConfirmPoll = 250 * time.Millisecond
+
+// deliverBrief types the brief into the pane, submits it, and confirms it took.
+//
+// The submit is a separate key event because a trailing newline is not one. A
+// brief is kilobytes arriving in a single burst, the TUI reads a burst as a
+// paste, and a newline inside a paste is inserted in the composer as a line
+// break — so the brief sat there unsent while herdr answered ok for having
+// typed it, and `start` reported "briefed" over an agent that had received
+// nothing. See PaneSendText, whose doc comment used to describe the opposite.
+func deliverBrief(client *herdrapi.Client, pane, text string) error {
+	if err := client.PaneSendText(pane, text); err != nil {
+		return fmt.Errorf("type the brief into %s: %w", pane, err)
+	}
+	if err := client.PaneSendKeys(pane, []string{briefSubmitKey}); err != nil {
+		return fmt.Errorf("submit the brief in %s: %w", pane, err)
+	}
+	return confirmBriefed(client, pane)
+}
+
+// confirmBriefed waits for herdr to report the agent doing something.
+//
+// ok from send_keys says herdr delivered a key, not that an agent received a
+// prompt — the same distance between accepted and delivered that writeReport
+// closes by reading its tokens back. The brief is the entire content of the
+// work and deserves at least what a 200-character note gets.
+//
+// The pane's own text cannot close it: a TUI wraps, boxes and reflows a payload
+// this size, so no substring of the brief survives to be compared against. The
+// agent's status can, and it is the observable that lied — a worker handed a
+// task starts working on it, and the three that were handed nothing sat at
+// `idle`, which `ls` faithfully reported as though they were waiting for work.
+//
+// Anything that is not idle counts, `blocked` included: an agent that came back
+// asking permission for its first tool call has plainly read its brief.
+func confirmBriefed(client *herdrapi.Client, pane string) error {
+	deadline := time.Now().Add(briefConfirmWait)
+	for {
+		info, err := client.AgentGet(pane)
+		if err != nil {
+			return fmt.Errorf("confirm the agent in %s received the brief: %w", pane, err)
+		}
+
+		status := info.Agent.AgentStatus
+		// `unknown` is waited through here, where gate reads the same value as
+		// the agent having gone away and stops. The difference is when each one
+		// looks. gate looks at an agent it already resolved, so unknown there is
+		// a state herdr had and lost. This looks seconds after agent.start, when
+		// unknown is routinely what herdr reports about a pane whose agent it has
+		// not finished detecting — failing on it would fail every start that
+		// briefed faster than herdr could classify the screen. Nothing is given
+		// away by waiting: an agent that is genuinely gone fails the AgentGet
+		// above, and one that never reacts fails at the deadline below.
+		if status != herdrapi.AgentStatusIdle && status != herdrapi.AgentStatusUnknown {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf(
+				"the brief was typed into %s and %s was pressed, but herdr still reports that agent as %s %s later — "+
+					"it is most likely sitting unsubmitted in the input box; press it yourself with `herdr pane send-keys %s %s`",
+				pane, briefSubmitKey, status, briefConfirmWait, pane, briefSubmitKey)
+		}
+		time.Sleep(briefConfirmPoll)
+	}
+}
 
 // issue is the part of a GitHub issue a brief is built from.
 type issue struct {
@@ -169,9 +288,12 @@ const briefIssueLimit = 4000
 // text is announced as data and delimited before it arrives, the same way
 // report.go frames a worker's note.
 //
-// ONE LINE, because PaneSendText types it and a newline submits. Flattening is
-// what makes that true regardless of what the issue body contains: a body that
-// could open a line of its own could write the sentence that follows it.
+// ONE LINE, because what a newline does on the way in is not one thing: typed
+// it submits, pasted it is inserted as a line break, and the TUI decides which
+// by how the text arrived. Neither outcome is the issue body's to choose — a
+// body that could open a line of its own could write the sentence that follows
+// it, and one that could submit early could cut the framing off the text it is
+// framing. Flattening removes the choice; deliverBrief supplies the submit.
 func brief(i issue, branch string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are working GitHub issue #%d on branch %s. ", i.Number, branch)

@@ -149,10 +149,17 @@ command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "& .\\bin\
 # holds. The gate therefore subscribes over the socket, for the pane it was
 # given, for as long as it waits, and this file needs no entry for it.
 #
-# `gate` is not registered as an action either, for the same two reasons `report`
-# is not. A herdr action is a fixed command array with no argument surface, and a
-# gate is nothing without its arguments: an action could only ever wait on one
-# hard-coded target. The second reason is worse. An action's output lands in
+# `gate`, `report` and `start` are not registered as actions, and cannot be. A
+# herdr action is a fixed command array with no argument surface, and each of the
+# three is nothing without its arguments: an action could only ever wait on one
+# hard-coded target, file one hard-coded status, or start one hard-coded issue.
+#
+# The consequence for `start` is that it never receives HERDR_PLUGIN_CONTEXT_JSON,
+# which herdr injects only when it is the one invoking — so the repository it
+# creates a checkout in has to come from `--repo`, the way it does on `prune`.
+# There is no path by which the context arrives, so there is no fallback to add.
+#
+# For `gate` there is a second reason, and it is worse. An action's output lands in
 # `herdr plugin log list` after it finishes, so a registered gate would block for
 # up to fifteen minutes and then deliver its answer somewhere its caller is not
 # looking, having never returned an exit code to anyone. `gate` is a command a
