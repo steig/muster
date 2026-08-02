@@ -8,6 +8,36 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Added
+
+- **`--json` on `ls`, `doctor`, `sync`, `prune` and `prune-apply`.** Every output
+  path went through `text/tabwriter` and nothing else, so anything that wanted to
+  *consume* worktender — a status line, a TUI, a fleet view, a coordinating agent
+  asking about its own workers — had to parse a column layout whose widths are
+  computed from the data. The flag replaces the table rather than joining it: one
+  shape or the other on stdout, because an action's output is read back out of
+  the plugin log and parsed. See [docs/json.md](docs/json.md).
+
+  The document is a projection of the same `[]Row` and `[]Result` the table
+  renders, not a second collection path, so the two cannot drift apart and leave
+  the table the liar.
+
+  **The shape may move before 1.0**, deliberately: the first consumer should not
+  also be a compatibility constraint.
+
+- **`ls --json` tells "this branch has no pull request" from "`gh` could not be
+  asked".** The table has one `-` for both, and that is the ambiguity that costs
+  the most: an unauthenticated `gh` fails exactly like a branch nobody opened a
+  pull request for, the verdict that follows is *keep*, and prune keeps
+  everything while every printed reason reads as ordinary. `pr` is now an object
+  carrying `state` or `error`, and `null` when nothing was asked at all.
+
+### Changed
+
+- **A `wt.Row` now holds an empty string where a fact is absent, not `"-"`.** The
+  dash is a rendering choice and lives in the renderer; a struct that stored it
+  could only hand the ambiguity on. The table's output is unchanged.
+
 ### Fixed
 
 - **`start` submits the brief, and confirms it was taken up.** It typed the

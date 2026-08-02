@@ -124,7 +124,6 @@ func TestDoctorSummarisesAgentsBusiestFirst(t *testing.T) {
 		{AgentStatus: "idle"},
 		{AgentStatus: "working"},
 		{AgentStatus: "working"},
-		{AgentStatus: "-"},
 		{AgentStatus: ""},
 	}
 
@@ -134,9 +133,9 @@ func TestDoctorSummarisesAgentsBusiestFirst(t *testing.T) {
 }
 
 // A worktree with no agent must not be counted as one with an unnamed status:
-// "-" is what the listing prints for a workspace herdr has nothing for.
+// an empty status is what a workspace herdr has nothing for carries.
 func TestDoctorCountsNoAgentsRatherThanBlankOnes(t *testing.T) {
-	rows := []wt.Row{{AgentStatus: "-"}, {AgentStatus: ""}}
+	rows := []wt.Row{{AgentStatus: ""}, {AgentStatus: ""}}
 
 	if got, want := summariseAgents(rows), "no agents"; got != want {
 		t.Errorf("summariseAgents = %q, want %q", got, want)

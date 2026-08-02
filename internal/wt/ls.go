@@ -9,13 +9,20 @@ import (
 
 	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/jsonout"
 	"github.com/steig/worktender/internal/safetext"
 )
 
 // missing is printed for a column with nothing to show.
+//
+// It lives in the renderer and nowhere else. Inside a Row an absent fact is the
+// empty string, because one "-" stands for four different absences — no
+// workspace, no pane, no agent, no pull request — and a consumer needs them
+// apart. A Row that stored the dash could only hand the ambiguity on.
 const missing = "-"
 
-// Row is one worktree joined with the herdr workspace that has it open.
+// Row is one worktree joined with the herdr workspace that has it open. Every
+// string field is empty when the fact is absent.
 type Row struct {
 	// Main is the repository's primary checkout rather than a linked worktree.
 	Main        bool
@@ -25,10 +32,22 @@ type Row struct {
 	// agent in and therefore the one `dispatch --pane` wants.
 	PaneID      string
 	AgentStatus string
-	// PR is the branch's pull request state, and is only ever filled when the
-	// caller asked for it — see WithPRs.
-	PR  string
+	// PR is nil unless a pull request lookup ran for this row — see WithPRs.
+	PR  *PR
 	Dir string
+}
+
+// PR is what a pull request lookup established about a branch.
+//
+// A nil *PR is not an empty one: nobody asked, versus asked and told there is
+// none. Err set means gh could not be asked at all — the fact the table's "-"
+// cannot carry, since an unauthenticated gh reads there as "no pull request",
+// and that is what makes prune keep everything.
+type PR struct {
+	// State is gh's own spelling — OPEN, MERGED, CLOSED — and empty when the
+	// branch has no pull request. Meaningless when Err is set.
+	State string
+	Err   error
 }
 
 // Rows joins herdr's worktree list against its workspace list. A worktree
@@ -46,11 +65,8 @@ func Rows(worktrees *herdrapi.WorktreeListResponse, workspaces *herdrapi.Workspa
 	for _, w := range worktrees.Worktrees {
 		row := Row{
 			Main:        !w.IsLinkedWorktree,
-			Branch:      derefOr(w.Branch, missing),
-			WorkspaceID: derefOr(w.OpenWorkspaceID, missing),
-			PaneID:      missing,
-			AgentStatus: missing,
-			PR:          missing,
+			Branch:      deref(w.Branch),
+			WorkspaceID: deref(w.OpenWorkspaceID),
 			Dir:         filepath.Base(w.Path),
 		}
 		// A worktree can name a workspace herdr has since closed, so only
@@ -66,13 +82,13 @@ func Rows(worktrees *herdrapi.WorktreeListResponse, workspaces *herdrapi.Workspa
 }
 
 // WithPanes fills the pane column, which is what a dispatch needs. A workspace
-// whose panes cannot be read keeps its "-": a failed lookup is not the same
-// fact as a workspace holding no panes.
+// whose panes cannot be read keeps its empty pane: a failed lookup is not the
+// same fact as a workspace holding no panes.
 func WithPanes(client *herdrapi.Client, rows []Row) {
 	// Several worktrees can name one workspace, so ask once per workspace.
 	first := map[string]string{}
 	for i, row := range rows {
-		if row.WorkspaceID == missing {
+		if row.WorkspaceID == "" {
 			continue
 		}
 		pane, asked := first[row.WorkspaceID]
@@ -80,9 +96,7 @@ func WithPanes(client *herdrapi.Client, rows []Row) {
 			pane = firstPane(client, row.WorkspaceID)
 			first[row.WorkspaceID] = pane
 		}
-		if pane != "" {
-			rows[i].PaneID = pane
-		}
+		rows[i].PaneID = pane
 	}
 }
 
@@ -97,16 +111,18 @@ func firstPane(client *herdrapi.Client, workspaceID string) string {
 
 // WithPRs fills the pull request column from the supplied lookup. The main
 // checkout is skipped: trunk has no pull request, and every lookup is a network
-// round trip. A lookup with no answer leaves the "-" alone, so "gh could not
-// say" and "no pull request" read alike — which is why doctor reports gh.
-func WithPRs(rows []Row, lookup func(branch string) string) {
+// round trip — which is why its PR stays nil rather than becoming an answer.
+//
+// A lookup that failed is recorded as a failure rather than discarded. The
+// table still prints "-" for it, having one column and no room to say more, but
+// the JSON says which of the two it was.
+func WithPRs(rows []Row, lookup func(branch string) (string, error)) {
 	for i, row := range rows {
-		if row.Main || row.Branch == missing {
+		if row.Main || row.Branch == "" {
 			continue
 		}
-		if state := lookup(row.Branch); state != "" {
-			rows[i].PR = state
-		}
+		state, err := lookup(row.Branch)
+		rows[i].PR = &PR{State: state, Err: err}
 	}
 }
 
@@ -127,16 +143,101 @@ func Render(w io.Writer, rows []Row, withPR bool) error {
 		if row.Main {
 			marker = "*"
 		}
-		cells := []string{marker, safetext.Escape(row.Branch),
-			safetext.Escape(row.WorkspaceID), safetext.Escape(row.PaneID),
-			safetext.Escape(row.AgentStatus)}
+		cells := []string{marker, cell(row.Branch), cell(row.WorkspaceID),
+			cell(row.PaneID), cell(row.AgentStatus)}
 		if withPR {
-			cells = append(cells, safetext.Escape(row.PR))
+			cells = append(cells, cell(prCell(row.PR)))
 		}
-		cells = append(cells, safetext.Escape(row.Dir))
+		cells = append(cells, cell(row.Dir))
 		fmt.Fprintln(tw, strings.Join(cells, "\t"))
 	}
 	return tw.Flush()
+}
+
+// cell is one column's text: escaped, and a dash when there is nothing to show.
+func cell(s string) string {
+	if s == "" {
+		return missing
+	}
+	return safetext.Escape(s)
+}
+
+// prCell is the pull request column, empty for every case the table has no room
+// to distinguish — not asked, asked and told none, and gh unable to answer.
+func prCell(pr *PR) string {
+	if pr == nil || pr.Err != nil {
+		return ""
+	}
+	return pr.State
+}
+
+// ListJSON is what `ls --json` writes. An object rather than a bare array, so a
+// later field has somewhere to go that does not change the type of the document.
+type ListJSON struct {
+	Worktrees []RowJSON `json:"worktrees"`
+}
+
+// RowJSON is Row as a consumer reads it. Absence is null rather than "-",
+// because the dash means four different things and JSON has a word for none of
+// them.
+//
+// Values are raw, not terminal-escaped: this is data. A branch name with the
+// escaping applied is no longer a branch name that can be handed back to git,
+// and rendering a string a stranger chose is the consumer's job — the same job
+// Render does for the table.
+//
+// The shape may move before 1.0.
+type RowJSON struct {
+	Main        bool    `json:"main"`
+	Branch      *string `json:"branch"`
+	WorkspaceID *string `json:"workspace_id"`
+	PaneID      *string `json:"pane_id"`
+	AgentStatus *string `json:"agent_status"`
+	// PR is null when no lookup ran for this row: --pr was not passed, or this
+	// is the main checkout, which is never asked about.
+	PR  *PRJSON `json:"pr"`
+	Dir string  `json:"dir"`
+}
+
+// PRJSON is a pull request lookup's answer.
+type PRJSON struct {
+	// State is null when the branch has no pull request, and meaningless when
+	// Error is set.
+	State *string `json:"state"`
+	// Error is why gh could not be asked. This is the distinction the table
+	// loses: a gh that is missing or unauthenticated reads there as "no pull
+	// request", and that is the reading that makes prune keep everything.
+	Error *string `json:"error"`
+}
+
+// JSON projects rows for a machine.
+//
+// It is a view of exactly the []Row the table renders, built after the same
+// lookups, so the two cannot disagree about what herdr said.
+func JSON(rows []Row) []RowJSON {
+	out := make([]RowJSON, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, RowJSON{
+			Main:        row.Main,
+			Branch:      jsonout.String(row.Branch),
+			WorkspaceID: jsonout.String(row.WorkspaceID),
+			PaneID:      jsonout.String(row.PaneID),
+			AgentStatus: jsonout.String(row.AgentStatus),
+			PR:          prJSON(row.PR),
+			Dir:         row.Dir,
+		})
+	}
+	return out
+}
+
+func prJSON(pr *PR) *PRJSON {
+	if pr == nil {
+		return nil
+	}
+	if pr.Err != nil {
+		return &PRJSON{Error: jsonout.String(pr.Err.Error())}
+	}
+	return &PRJSON{State: jsonout.String(pr.State)}
 }
 
 // Ls lists every worktree of the repository containing dir, with the workspace,
@@ -148,7 +249,7 @@ func Render(w io.Writer, rows []Row, withPR bool) error {
 //
 // lookupPR is nil unless the caller asked for pull request state, which costs a
 // round trip per branch and is therefore never the default.
-func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) string, out io.Writer) error {
+func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) (string, error), asJSON bool, out io.Writer) error {
 	if root == "" {
 		var err error
 		if root, err = gitx.RepoRoot(dir); err != nil {
@@ -161,9 +262,9 @@ func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) 
 		return fmt.Errorf("list worktrees: %w", err)
 	}
 
-	// Not degraded to a "-" status column: that is the same row a worktree with
-	// no workspace prints, so a herdr that failed to answer would read as a
-	// session with nothing open.
+	// Not degraded to an empty status column: that is the same row a worktree
+	// with no workspace prints, so a herdr that failed to answer would read as
+	// a session with nothing open.
 	workspaces, err := client.WorkspaceList()
 	if err != nil {
 		return fmt.Errorf("list workspaces: %w", err)
@@ -174,12 +275,15 @@ func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) 
 	if lookupPR != nil {
 		WithPRs(rows, lookupPR)
 	}
+	if asJSON {
+		return jsonout.Write(out, ListJSON{Worktrees: JSON(rows)})
+	}
 	return Render(out, rows, lookupPR != nil)
 }
 
-func derefOr(s *string, fallback string) string {
+func deref(s *string) string {
 	if s == nil || strings.TrimSpace(*s) == "" {
-		return fallback
+		return ""
 	}
 	return *s
 }

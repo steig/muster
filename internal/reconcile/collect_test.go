@@ -286,6 +286,53 @@ func TestGhPRStateToleratesFailure(t *testing.T) {
 	}
 }
 
+// The distinction GhPRState folds away and GhPRLookup keeps. gh exits 1 for
+// both, so a consumer told only "PRNone" cannot tell a branch that was never
+// opened as a pull request from a gh that is not logged in — and it is the
+// second that makes prune keep everything.
+func TestGhPRLookupTellsNoPullRequestFromNoAnswer(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	t.Run("no pull request", func(t *testing.T) {
+		herdrtest.FakeGh(t, `echo 'no pull requests found for branch "wip"' >&2; exit 1`)
+
+		state, err := reconcile.GhPRLookup(repo.Root, "wip")
+		if err != nil {
+			t.Errorf("a branch with no pull request is an answer, not a failure: %v", err)
+		}
+		if state != reconcile.PRNone {
+			t.Errorf("state = %q, want PRNone", state)
+		}
+	})
+
+	t.Run("gh could not be asked", func(t *testing.T) {
+		herdrtest.FakeGh(t, `echo 'gh: To get started with GitHub CLI, please run: gh auth login' >&2; exit 4`)
+
+		state, err := reconcile.GhPRLookup(repo.Root, "wip")
+		if err == nil {
+			t.Fatal("an unauthenticated gh must not read as no pull request")
+		}
+		// The message has to name what to do; the exit status alone does not.
+		if !strings.Contains(err.Error(), "gh auth login") {
+			t.Errorf("the error must quote what gh said, got %v", err)
+		}
+		// Still PRNone, because the reconciler's safe direction is to keep.
+		if state != reconcile.PRNone {
+			t.Errorf("state = %q, want PRNone", state)
+		}
+	})
+
+	// And the fold itself: the reconciler asks through GhPRState and must see
+	// both cases as the verdict that keeps the worktree.
+	t.Run("GhPRState folds both", func(t *testing.T) {
+		herdrtest.FakeGh(t, `echo 'gh auth login' >&2; exit 4`)
+
+		if got := reconcile.GhPRState(repo.Root, "wip"); got != reconcile.PRNone {
+			t.Errorf("GhPRState = %q, want PRNone", got)
+		}
+	})
+}
+
 // An open PR keeps the worktree even when everything else looks finished.
 func TestCollectKeepsWorktreeWithOpenPR(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
