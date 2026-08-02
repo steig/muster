@@ -23,8 +23,9 @@ worktender=$(herdr plugin list --json \
 # 1. Issue -> worktree -> agent -> brief. Repeat for each slice.
 "$worktender" start 12 --model sonnet
 
-# 2. Wait on the report, not on a clock. One at a time, after starting them all.
-"$worktender" gate --target wt-12-the-thing-3f9a1c --until done --require-pr --timeout 20m
+# 2. Wait on the report, not on a clock. Start them all, then wait on them all.
+"$worktender" gate --any wt-12-the-thing-3f9a1c,wt-13-other-8b40de --until done --timeout 20m
+# gate: wt-13-other-8b40de released after 4m12s   <- drop it and gate on the rest
 ```
 
 `start` prints the exact `gate` line for what it just started, agent name
@@ -103,7 +104,14 @@ appeared in that pane after the gate opened, and nothing about who wrote it.
 Check the pull request it names. `--require-pr` is why that flag exists.
 
 **A `blocked` releases the gate with a failure, and that is correct.** You are
-the only party who can unblock it. Waiting out the clock instead helps nobody.
+the only party who can unblock it. Waiting out the clock instead helps nobody —
+and it is why `--any` covers the whole fleet: gated on one worker, you hear a
+`blocked` from any of the others only once you get to it.
+
+**Never pick a worker to block on.** `start` returns as soon as the brief is
+typed, so nothing tells the four-minute slice from the forty-minute one. Gate on
+all of them with `--any`, act on whichever releases, then gate on the rest. The
+timeout is for the wait, not for each worker.
 
 ## Handoffs
 

@@ -158,7 +158,14 @@
 <pre><code>herdr worktree create --branch feat/12-thing --base main --no-focus --json
 worktender dispatch --pane &lt;pane&gt; --name thing --model sonnet
 herdr agent prompt &lt;pane&gt; "$(cat brief.md)"
-worktender gate --target thing --until done --require-pr --timeout 20m</code></pre>
+worktender gate --any thing,other,third --until done --timeout 20m</code></pre>
+
+<p>
+  <strong>Never pick one worker to block on.</strong> Dispatch returns as soon as
+  the brief is typed, so nothing tells the four-minute slice from the
+  forty-minute one. <code>--any</code> waits on all of them and releases on the
+  first to report, naming it — drop that one and gate again on the rest.
+</p>
 
 <p>
   <strong>Dispatch, then gate — the order matters.</strong> The gate ignores

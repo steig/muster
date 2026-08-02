@@ -143,8 +143,9 @@ Errors you are most likely to meet:
 | `--note is N characters; the limit is 200` | Refused, never truncated. Shorten and report again. |
 | `this checkout is on branch X rather than the detached HEAD herdr installs` | `update` was pointed at a linked development checkout. Move that one with git. |
 | `no herdr-plugin.toml beside X; update only works from an installed plugin binary` | The binary is not sitting in an install's `bin/`. |
-| `the worker reported blocked after Ns` | The gate failed fast rather than waiting out its clock. |
-| `no new report reached status done within Ns` | Timed out. The message quotes what the pane already held when the gate opened, which it ignored as a previous task's answer. |
+| `the worker reported blocked after Ns` | The gate failed fast rather than waiting out its clock. With `--any` it names which worker, and the others are left running. |
+| `no new report reached status done within Ns` | Timed out. The message accounts for every worker waited on, quoting what its pane already held when the gate opened, which it ignored as a previous task's answer. |
+| `b is the same worker (pane w2:p1); name it once` | A gate was given an agent's name and its pane id, which herdr resolves to one worker. Watching it twice would let one report look like two. |
 
 ## Smaller things worth knowing
 

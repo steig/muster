@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"maps"
 	"strings"
 	"sync"
@@ -26,8 +27,12 @@ func TestGateRejectsMalformedInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no arguments at all", nil, "--target is required"},
-		{"a predicate with no target", []string{"--until", "done"}, "--target is required"},
+		{"no arguments at all", nil, "--target or --any is required"},
+		{"a predicate with no target", []string{"--until", "done"}, "--target or --any is required"},
+		{"an empty --any", []string{"--any", ""}, "empty target"},
+		{"a trailing comma leaves an empty target", []string{"--any", "a,b,"}, "empty target"},
+		{"the same worker named twice", []string{"--any", "a,b,a"}, `"a" is named more than once`},
+		{"the same worker over both flags", []string{"--target", "a", "--any", "a"}, `"a" is named more than once`},
 		{"an unknown status", []string{"--target", "w", "--until", "shipped"}, "not one of"},
 		{"a status that is a sentence", []string{"--target", "w", "--until", "done or blocked"}, "not one of"},
 		{"a zero timeout", []string{"--target", "w", "--timeout", "0"}, "must be positive"},
@@ -115,25 +120,44 @@ func TestTheNoteCannotChangeTheVerdict(t *testing.T) {
 	}
 }
 
-// gateWorker is a fake herdr with one pane whose text and agent transitions the
-// test drives. Nothing here touches a live session.
+// gateFleet is a fake herdr hosting one or more worker panes over a single
+// event stream, which is the shape the real one has: several panes, one
+// subscription. Nothing here touches a live session.
+type gateFleet struct {
+	client  *herdrapi.Client
+	workers []*gateWorker
+
+	frames chan any
+	done   chan struct{}
+
+	mu sync.Mutex
+	// opened closes when the gate has taken its baseline snapshot of every pane
+	// it was pointed at. Worker actions wait on it, because a test that raced
+	// the baseline would be exercising the gate's stale-report rule by accident
+	// instead of the behaviour it named.
+	//
+	// It counts the panes the GATE covers rather than the panes the fleet has:
+	// a fleet can hold workers this gate was not pointed at, and waiting for a
+	// pane the gate will never read would hang every worker in the test.
+	opened    chan struct{}
+	openOnce  sync.Once
+	gated     int
+	baselined map[string]bool
+}
+
+// gateWorker is one pane in a fleet: the text and tokens it holds, and the
+// transitions the test drives on it.
 type gateWorker struct {
+	fleet  *gateFleet
 	client *herdrapi.Client
+	spec   workerSpec
 
 	mu     sync.Mutex
 	text   string
 	tokens map[string]string
-
-	frames chan any
-	done   chan struct{}
-	// opened closes when the gate takes its baseline snapshot. Every worker
-	// action waits on it, because a test that raced the baseline would be
-	// exercising the gate's stale-report rule by accident instead of the
-	// behaviour it named.
-	opened   chan struct{}
-	openOnce sync.Once
-	// reads carries one signal per complete look the gate takes at the pane, so
-	// a test can report a second time only once the gate has judged the first.
+	// reads carries one signal per complete look the gate takes at THIS pane,
+	// so a test can report a second time only once the gate has judged the
+	// first.
 	//
 	// It is the TERMINAL read that signals, because the gate reads both channels
 	// on every look and reads that one second: a worker released by the metadata
@@ -145,52 +169,89 @@ type gateWorker struct {
 	reads chan struct{}
 }
 
+// workerSpec is one pane the fleet hosts, as herdr would describe it.
+type workerSpec struct {
+	name        string
+	pane        string
+	workspace   string
+	agentStatus string
+	text        string
+}
+
 const gateTestPane = "w1:p1"
 
+// newGateWorker is the one-worker fleet most of these tests want.
 func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
+	t.Helper()
+	return newGateFleet(t, workerSpec{
+		name: "worker", pane: gateTestPane, workspace: "w1",
+		agentStatus: agentStatus, text: paneText,
+	}).worker("worker")
+}
+
+func newGateFleet(t *testing.T, specs ...workerSpec) *gateFleet {
 	t.Helper()
 
 	server := herdrtest.NewServer(t)
-	w := &gateWorker{
-		client: herdrapi.NewWithSocket(server.SocketPath),
-		text:   paneText,
-		frames: make(chan any, 8),
-		done:   make(chan struct{}),
-		opened: make(chan struct{}),
-		reads:  make(chan struct{}, 32),
+	f := &gateFleet{
+		client:    herdrapi.NewWithSocket(server.SocketPath),
+		frames:    make(chan any, 8),
+		done:      make(chan struct{}),
+		opened:    make(chan struct{}),
+		baselined: map[string]bool{},
 	}
-	t.Cleanup(func() { close(w.done) })
+	t.Cleanup(func() { close(f.done) })
 
-	server.HandleResult("agent.get", map[string]any{
-		"type": "agent_info",
-		"agent": map[string]any{
-			"terminal_id":  "term_1",
-			"agent":        "claude",
-			"agent_status": agentStatus,
-			"workspace_id": "w1",
-			"tab_id":       "w1:t1",
-			"pane_id":      gateTestPane,
-			"focused":      false,
-			"revision":     1,
-		},
+	for _, spec := range specs {
+		f.workers = append(f.workers, &gateWorker{
+			fleet:  f,
+			client: f.client,
+			spec:   spec,
+			text:   spec.text,
+			reads:  make(chan struct{}, 32),
+		})
+	}
+
+	// herdr resolves an agent by name or by pane id, and so does this.
+	server.Handle("agent.get", func(params map[string]any) (any, error) {
+		w := f.byTarget(params["target"].(string))
+		if w == nil {
+			return nil, &herdrtest.CodedError{Code: "agent_not_found", Message: "no such agent"}
+		}
+		return map[string]any{
+			"type": "agent_info",
+			"agent": map[string]any{
+				"terminal_id":  "term_1",
+				"agent":        "claude",
+				"agent_status": w.spec.agentStatus,
+				"workspace_id": w.spec.workspace,
+				"tab_id":       w.spec.workspace + ":t1",
+				"pane_id":      w.spec.pane,
+				"focused":      false,
+				"revision":     1,
+			},
+		}, nil
 	})
 
 	// The metadata channel, which the gate reads before it reads the terminal.
-	server.Handle("pane.get", func(map[string]any) (any, error) {
+	server.Handle("pane.get", func(params map[string]any) (any, error) {
+		w, err := f.byPane(params)
+		if err != nil {
+			return nil, err
+		}
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		tokens := maps.Clone(w.tokens)
 		return map[string]any{
 			"type": "pane_info",
 			"pane": map[string]any{
-				"pane_id":      gateTestPane,
-				"workspace_id": "w1",
-				"tab_id":       "w1:t1",
+				"pane_id":      w.spec.pane,
+				"workspace_id": w.spec.workspace,
+				"tab_id":       w.spec.workspace + ":t1",
 				"terminal_id":  "term_1",
-				"agent_status": agentStatus,
+				"agent_status": w.spec.agentStatus,
 				"focused":      false,
 				"revision":     1,
-				"tokens":       tokens,
+				"tokens":       maps.Clone(w.tokens),
 			},
 		}, nil
 	})
@@ -200,6 +261,10 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 	// write into the pane's existing tokens and drops the keys sent as null,
 	// which is the behaviour the layout depends on.
 	server.Handle("pane.report_metadata", func(params map[string]any) (any, error) {
+		w, err := f.byPane(params)
+		if err != nil {
+			return nil, err
+		}
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		if w.tokens == nil {
@@ -216,8 +281,12 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 	})
 
 	// The terminal channel, which the gate reads second and on every look, so
-	// this is where the baseline snapshot is complete.
-	server.Handle("pane.read", func(map[string]any) (any, error) {
+	// this is where one pane's baseline snapshot is complete.
+	server.Handle("pane.read", func(params map[string]any) (any, error) {
+		w, err := f.byPane(params)
+		if err != nil {
+			return nil, err
+		}
 		w.mu.Lock()
 		// Released only once the snapshot has been taken. Releasing on entry
 		// let a worker append its report while the baseline read was still in
@@ -225,15 +294,15 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 		// nothing new to release on.
 		defer func() {
 			w.mu.Unlock()
-			w.openOnce.Do(func() { close(w.opened) })
+			f.baseline(w.spec.pane)
 			signal(w.reads)
 		}()
 		return map[string]any{
 			"type": "pane_read",
 			"read": map[string]any{
-				"pane_id":      gateTestPane,
-				"workspace_id": "w1",
-				"tab_id":       "w1:t1",
+				"pane_id":      w.spec.pane,
+				"workspace_id": w.spec.workspace,
+				"tab_id":       w.spec.workspace + ":t1",
 				"source":       "recent_unwrapped",
 				"format":       "text",
 				"text":         w.text,
@@ -247,31 +316,74 @@ func newGateWorker(t *testing.T, agentStatus, paneText string) *gateWorker {
 		func(_ map[string]any, push func(any) error) {
 			for {
 				select {
-				case frame := <-w.frames:
+				case frame := <-f.frames:
 					if push(frame) != nil {
 						return
 					}
-				case <-w.done:
+				case <-f.done:
 					return
 				}
 			}
 		})
 
+	return f
+}
+
+// worker returns one member of the fleet by the name the gate would use for it.
+func (f *gateFleet) worker(name string) *gateWorker {
+	w := f.byTarget(name)
+	if w == nil {
+		panic("no worker named " + name)
+	}
 	return w
+}
+
+func (f *gateFleet) byTarget(target string) *gateWorker {
+	for _, w := range f.workers {
+		if w.spec.name == target || w.spec.pane == target {
+			return w
+		}
+	}
+	return nil
+}
+
+// byPane is how every pane call is routed, and an unknown pane is an error
+// rather than a default: a gate reading the wrong pane must fail the test
+// rather than quietly be answered by another worker's buffer.
+func (f *gateFleet) byPane(params map[string]any) (*gateWorker, error) {
+	pane, _ := params["pane_id"].(string)
+	for _, w := range f.workers {
+		if w.spec.pane == pane {
+			return w, nil
+		}
+	}
+	return nil, &herdrtest.CodedError{Code: "pane_not_found", Message: "no such pane " + pane}
+}
+
+// baseline records that a pane has been read, and opens the fleet once every
+// gated pane has: the gate reads them in turn, so the last one is the moment no
+// baseline is still in flight.
+func (f *gateFleet) baseline(pane string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.baselined[pane] = true
+	if f.gated > 0 && len(f.baselined) >= f.gated {
+		f.openOnce.Do(func() { close(f.opened) })
+	}
 }
 
 // prints appends to the pane and then announces the transition, in that order:
 // a real worker's output reaches the terminal before herdr notices its agent
 // went idle, and a gate that read the pane first would find nothing.
 func (w *gateWorker) prints(r report) {
-	<-w.opened
+	<-w.fleet.opened
 	w.forgetLooks()
 
 	w.mu.Lock()
 	w.text += renderReport(r)
 	w.mu.Unlock()
 	w.emit(herdrapi.StreamEventPaneAgentStatusChanged,
-		map[string]any{"pane_id": gateTestPane, "agent_status": "idle", "agent": "claude"})
+		map[string]any{"pane_id": w.spec.pane, "agent_status": "idle", "agent": "claude"})
 
 	w.awaitLook()
 }
@@ -285,11 +397,12 @@ func (w *gateWorker) forgetLooks() {
 	}
 }
 
-// awaitLook waits for the gate to finish one look at both channels.
+// awaitLook waits for the gate to finish one look at both of this pane's
+// channels.
 func (w *gateWorker) awaitLook() {
 	select {
 	case <-w.reads:
-	case <-w.done:
+	case <-w.fleet.done:
 	}
 }
 
@@ -304,15 +417,15 @@ func (w *gateWorker) awaitLook() {
 // metadata is what herdr announces — the worker is still mid-turn and its agent
 // status has not moved.
 func (w *gateWorker) attaches(r report) {
-	<-w.opened
+	<-w.fleet.opened
 	w.forgetLooks()
 
-	if err := writeReport(w.client, gateTestPane, r); err != nil {
+	if err := writeReport(w.client, w.spec.pane, r); err != nil {
 		panic(err)
 	}
 	w.emit(herdrapi.StreamEventPaneUpdated, map[string]any{
 		"type": "pane_updated",
-		"pane": map[string]any{"pane_id": gateTestPane, "workspace_id": "w1"},
+		"pane": map[string]any{"pane_id": w.spec.pane, "workspace_id": w.spec.workspace},
 	})
 
 	w.awaitLook()
@@ -323,10 +436,10 @@ func (w *gateWorker) attaches(r report) {
 // on cannot be allowed to decide the gate, and the only way to prove that is to
 // hand it both at once.
 func (w *gateWorker) attachesAndPrints(attached, printed report) {
-	<-w.opened
+	<-w.fleet.opened
 	w.forgetLooks()
 
-	if err := writeReport(w.client, gateTestPane, attached); err != nil {
+	if err := writeReport(w.client, w.spec.pane, attached); err != nil {
 		panic(err)
 	}
 	w.mu.Lock()
@@ -335,49 +448,74 @@ func (w *gateWorker) attachesAndPrints(attached, printed report) {
 
 	w.emit(herdrapi.StreamEventPaneUpdated, map[string]any{
 		"type": "pane_updated",
-		"pane": map[string]any{"pane_id": gateTestPane, "workspace_id": "w1"},
+		"pane": map[string]any{"pane_id": w.spec.pane, "workspace_id": w.spec.workspace},
 	})
 
 	w.awaitLook()
 }
 
 func (w *gateWorker) becomes(status string) {
-	<-w.opened
+	<-w.fleet.opened
 	w.emit(herdrapi.StreamEventPaneAgentStatusChanged,
-		map[string]any{"pane_id": gateTestPane, "agent_status": status, "agent": "claude"})
+		map[string]any{"pane_id": w.spec.pane, "agent_status": status, "agent": "claude"})
 }
 
 func (w *gateWorker) paneEnds(event string) {
-	<-w.opened
-	w.emit(event, map[string]any{"pane_id": gateTestPane, "workspace_id": "w1"})
+	<-w.fleet.opened
+	w.emit(event, map[string]any{"pane_id": w.spec.pane, "workspace_id": w.spec.workspace})
 }
 
 // workspaceCloses is how a torn-down worker actually announces itself: herdr
 // emits no pane event for the panes inside a closing workspace.
 func (w *gateWorker) workspaceCloses(id string) {
-	<-w.opened
+	<-w.fleet.opened
 	w.emit(herdrapi.StreamEventWorkspaceClosed, map[string]any{"workspace_id": id})
 }
 
 // exitsAfterPrinting is the worker that reports and dies in the same breath.
 func (w *gateWorker) exitsAfterPrinting(r report) {
-	<-w.opened
+	<-w.fleet.opened
 	w.mu.Lock()
 	w.text += renderReport(r)
 	w.mu.Unlock()
-	w.emit(herdrapi.StreamEventPaneExited, map[string]any{"pane_id": gateTestPane, "workspace_id": "w1"})
+	w.emit(herdrapi.StreamEventPaneExited, map[string]any{"pane_id": w.spec.pane, "workspace_id": w.spec.workspace})
 }
 
 func (w *gateWorker) emit(event string, data map[string]any) {
 	select {
-	case w.frames <- map[string]any{"event": event, "data": data}:
-	case <-w.done:
+	case w.fleet.frames <- map[string]any{"event": event, "data": data}:
+	case <-w.fleet.done:
 	}
 }
 
 // gate runs a gate against the fake and returns what it printed, what it
 // returned, and how long it took.
 func (w *gateWorker) gate(t *testing.T, args ...string) (string, error, time.Duration) {
+	t.Helper()
+	if w.fleet != nil {
+		return w.fleet.gate(t, args...)
+	}
+	return runGateFor(t, w.client, args)
+}
+
+// gate on the fleet is the same wait, spelled from the side that has several
+// workers to name.
+func (f *gateFleet) gate(t *testing.T, args ...string) (string, error, time.Duration) {
+	t.Helper()
+
+	// How many panes the baseline covers, so a worker can tell when the gate has
+	// finished opening. Set before the gate runs, because the first read is the
+	// gate's own.
+	opts, err := parseGate(args)
+	if err == nil {
+		f.mu.Lock()
+		f.gated = len(opts.targets)
+		f.mu.Unlock()
+	}
+	return runGateFor(t, f.client, args)
+}
+
+func runGateFor(t *testing.T, client *herdrapi.Client, args []string) (string, error, time.Duration) {
 	t.Helper()
 
 	opts, err := parseGate(args)
@@ -386,7 +524,7 @@ func (w *gateWorker) gate(t *testing.T, args ...string) (string, error, time.Dur
 	}
 	var out strings.Builder
 	started := time.Now()
-	err = runGate(w.client, opts, &out)
+	err = runGate(client, opts, &out)
 	return out.String(), err, time.Since(started)
 }
 
@@ -577,7 +715,7 @@ func TestGateJudgesBothChannelsInTheSameLook(t *testing.T) {
 func TestGateIgnoresOtherPanesUpdating(t *testing.T) {
 	w := newGateWorker(t, "working", "")
 	go func() {
-		<-w.opened
+		<-w.fleet.opened
 		for _, other := range []string{"w7:p1", "w9:p2", "wZ:p1"} {
 			w.emit(herdrapi.StreamEventPaneUpdated, map[string]any{
 				"type": "pane_updated",
@@ -798,10 +936,12 @@ func TestGateRefusesATargetThatCannotReport(t *testing.T) {
 		name        string
 		agentStatus string
 		handle      bool
+		target      string
 		want        string
 	}{
-		{"herdr does not know the target", "", false, "no handler for agent.get"},
-		{"the pane has no agent state", "unknown", true, "nothing to wait on"},
+		{"herdr does not know the target", "", false, "ghost", "no handler for agent.get"},
+		{"herdr knows no agent by that name", "working", true, "ghost", "no such agent"},
+		{"the pane has no agent state", "unknown", true, "worker", "nothing to wait on"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var w *gateWorker
@@ -812,7 +952,7 @@ func TestGateRefusesATargetThatCannotReport(t *testing.T) {
 				w = &gateWorker{client: herdrapi.NewWithSocket(server.SocketPath)}
 			}
 
-			out, err, waited := w.gate(t, "--target", "ghost", "--timeout", "30s")
+			out, err, waited := w.gate(t, "--target", tc.target, "--timeout", "30s")
 			if err == nil {
 				t.Fatalf("the gate waited on a target that cannot report:\n%s", out)
 			}
@@ -823,6 +963,261 @@ func TestGateRefusesATargetThatCannotReport(t *testing.T) {
 				t.Errorf("resolving a dead target took %s; it must fail immediately", waited)
 			}
 		})
+	}
+}
+
+// newGateWorkers is the fleet a coordinator actually has: several workers, one
+// per name, each in its own workspace the way `start` leaves them.
+func newGateWorkers(t *testing.T, names ...string) *gateFleet {
+	t.Helper()
+
+	specs := make([]workerSpec, 0, len(names))
+	for i, name := range names {
+		id := fmt.Sprintf("w%d", i+1)
+		specs = append(specs, workerSpec{
+			name: name, pane: id + ":p1", workspace: id, agentStatus: "working",
+		})
+	}
+	return newGateFleet(t, specs...)
+}
+
+// Both flags fill one list, in the order the caller named them.
+func TestGateCollectsEveryTargetNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"a comma-separated --any", []string{"--any", "a,b,c"}},
+		{"a repeated --any", []string{"--any", "a", "--any", "b,c"}},
+		{"a repeated --target", []string{"--target", "a", "--target", "b", "--target", "c"}},
+		{"the two flags together", []string{"--target", "a", "--any", "b,c"}},
+		{"spaces around the names", []string{"--any", "a , b ,c"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseGate(tc.args)
+			if err != nil {
+				t.Fatalf("parseGate(%q): %v", tc.args, err)
+			}
+			if got := strings.Join(opts.targets, ","); got != "a,b,c" {
+				t.Errorf("parseGate(%q) waits on %q, want a,b,c", tc.args, got)
+			}
+		})
+	}
+}
+
+// The gate the issue asked for: one wait over several workers, released by
+// whichever of them reports first — and it says which one, because that is what
+// the caller drops before waiting on the rest.
+func TestGateReleasesOnWhicheverWorkerReportsFirst(t *testing.T) {
+	f := newGateWorkers(t, "12-thing", "13-other", "14-third")
+	go f.worker("13-other").attaches(report{status: "done", pr: 13, note: "green"})
+
+	out, err, _ := f.gate(t, "--any", "12-thing,13-other,14-third", "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("gate did not release: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "13-other released") {
+		t.Errorf("the gate did not say which worker released it:\n%s", out)
+	}
+	for _, quiet := range []string{"12-thing released", "14-third released"} {
+		if strings.Contains(out, quiet) {
+			t.Errorf("the gate named a worker that never reported (%s):\n%s", quiet, out)
+		}
+	}
+	// The workers that did not report are still running and must be named as
+	// waited on, or the caller has no way to know they were covered.
+	for _, want := range []string{"12-thing (pane w1:p1)", "13-other (pane w2:p1)", "14-third (pane w3:p1)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the gate did not say it was waiting on %s:\n%s", want, out)
+		}
+	}
+}
+
+// One worker's progress is not another's completion. Both are attributed, so a
+// coordinator reading the output knows who said what.
+func TestGateAttributesEveryReportToItsWorker(t *testing.T) {
+	f := newGateWorkers(t, "a", "b")
+	go func() {
+		f.worker("a").prints(report{status: "planned", note: "slice read"})
+		f.worker("b").prints(report{status: "done", pr: 2, note: "green"})
+	}()
+
+	out, err, _ := f.gate(t, "--any", "a,b", "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("gate did not release: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "a reported planned; still waiting") {
+		t.Errorf("the progress report was not attributed to a:\n%s", out)
+	}
+	if !strings.Contains(out, "b released") {
+		t.Errorf("the gate released without naming b:\n%s", out)
+	}
+}
+
+// The status the issue is really about: `blocked` is the one only the
+// coordinator can clear, and it used to be heard only while the coordinator
+// happened to be gated on that worker. Now any of them is heard.
+func TestGateHearsBlockedFromAnyWorker(t *testing.T) {
+	const timeout = 30 * time.Second
+	f := newGateWorkers(t, "a", "b", "c")
+	go f.worker("c").prints(report{status: "blocked", note: "needs a decision"})
+
+	out, err, waited := f.gate(t, "--any", "a,b,c", "--timeout", timeout.String())
+	if err == nil {
+		t.Fatalf("the gate released on a blocked worker:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "gate c: the worker reported blocked") {
+		t.Errorf("error %q should name c as the blocked worker", err)
+	}
+	if waited > timeout/2 {
+		t.Errorf("the gate waited %s of its %s timeout; blocked must fail fast", waited, timeout)
+	}
+}
+
+// A worker that can no longer report ends the wait, and the failure names it:
+// the caller's remedy is to drop that one and gate on the rest, which it cannot
+// do from "a worker died".
+func TestGateNamesTheWorkerThatWentAway(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(*gateFleet)
+		want string
+	}{
+		{"one pane of three exits", func(f *gateFleet) {
+			f.worker("c").paneEnds(herdrapi.StreamEventPaneExited)
+		}, "gate c: the worker's pane ended"},
+
+		{"herdr loses one of the agents", func(f *gateFleet) {
+			f.worker("b").becomes("unknown")
+		}, "gate b: herdr lost track of the agent"},
+
+		{"one worker's workspace is torn down", func(f *gateFleet) {
+			f.worker("a").workspaceCloses("w1")
+		}, "gate a: the worker's workspace was closed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const timeout = 30 * time.Second
+			f := newGateWorkers(t, "a", "b", "c")
+			go tc.act(f)
+
+			out, err, waited := f.gate(t, "--any", "a,b,c", "--timeout", timeout.String())
+			if err == nil {
+				t.Fatalf("the gate released:\n%s", out)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q should explain %q", err, tc.want)
+			}
+			if waited > timeout/2 {
+				t.Errorf("the gate waited %s of its %s timeout; it should have failed on the event", waited, timeout)
+			}
+		})
+	}
+}
+
+// Two workers in one workspace is one subscription, and closing it ends both.
+// The gate names one of them rather than reporting the close in the abstract.
+func TestGateHearsAWorkspaceHoldingTwoWorkersClose(t *testing.T) {
+	const timeout = 30 * time.Second
+	f := newGateFleet(t,
+		workerSpec{name: "a", pane: "w1:p1", workspace: "w1", agentStatus: "working"},
+		workerSpec{name: "b", pane: "w1:p2", workspace: "w1", agentStatus: "working"},
+	)
+	go f.worker("a").workspaceCloses("w1")
+
+	out, err, waited := f.gate(t, "--any", "a,b", "--timeout", timeout.String())
+	if err == nil {
+		t.Fatalf("the gate released:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "the worker's workspace was closed") {
+		t.Errorf("error %q should explain the workspace close", err)
+	}
+	if waited > timeout/2 {
+		t.Errorf("the gate waited %s of its %s timeout; it should have failed on the event", waited, timeout)
+	}
+}
+
+// A gate hears the workers it was pointed at and no others. herdr's pane.updated
+// arrives unfiltered, so an ungated worker reporting `done` reaches the stream —
+// and must change nothing.
+func TestGateIgnoresAWorkerItWasNotPointedAt(t *testing.T) {
+	f := newGateWorkers(t, "a", "b", "ungated")
+	go f.worker("ungated").attaches(report{status: "done", pr: 3, note: "not this gate's business"})
+
+	out, err, _ := f.gate(t, "--any", "a,b", "--timeout", "400ms")
+	if err == nil {
+		t.Fatalf("the gate released on a worker it was not waiting on:\n%s", out)
+	}
+	if strings.Contains(err.Error(), "ungated") {
+		t.Errorf("the timeout accounted for a worker the gate never waited on: %v", err)
+	}
+
+	// Without this the test proves nothing: a report that never landed cannot
+	// have been ignored for the right reason.
+	ungated := f.worker("ungated")
+	ungated.mu.Lock()
+	defer ungated.mu.Unlock()
+	if len(ungated.tokens) == 0 {
+		t.Fatal("the ungated worker never reported, so the gate was never offered anything to ignore")
+	}
+}
+
+// The timeout accounts for every worker separately, because a gate that covered
+// three and released on none of them is three questions and the answers differ.
+func TestGateTimeoutAccountsForEveryWorker(t *testing.T) {
+	f := newGateWorkers(t, "a", "b")
+	f.worker("a").tokens = stored(t, report{status: "done", pr: 4, note: "the previous slice"})
+
+	go func() {
+		f.worker("b").becomes("working")
+		f.worker("b").becomes("idle")
+	}()
+
+	out, err, _ := f.gate(t, "--any", "a,b", "--timeout", "400ms")
+	if err == nil {
+		t.Fatalf("the gate released on a report that predates it:\n%s", out)
+	}
+	for _, want := range []string{
+		"a (pane w1:p1) already held status=done pr=4",
+		"b (pane w2:p1) held no report",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the timeout should explain %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "the previous slice") {
+		t.Errorf("the timeout quoted the untrusted note back: %v", err)
+	}
+}
+
+// Every target is resolved before any of them is waited on: a coordinator that
+// mistyped one name out of three should not find out at the deadline.
+func TestGateRefusesTheWholeWaitWhenOneTargetCannotReport(t *testing.T) {
+	f := newGateWorkers(t, "a", "b")
+
+	out, err, waited := f.gate(t, "--any", "a,ghost,b", "--timeout", "30s")
+	if err == nil {
+		t.Fatalf("the gate waited on a fleet with a target that cannot report:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "gate ghost:") {
+		t.Errorf("error %q should name the target that could not be resolved", err)
+	}
+	if waited > time.Second {
+		t.Errorf("resolving the targets took %s; a dead one must fail immediately", waited)
+	}
+}
+
+// An agent's name and its pane id are two names for one worker, and herdr
+// resolves both. Waiting on both would watch one pane twice, so its single
+// report could release a gate that believed it had heard from two workers.
+func TestGateRefusesTwoNamesForOneWorker(t *testing.T) {
+	f := newGateWorkers(t, "a", "b")
+
+	out, err, _ := f.gate(t, "--any", "a,b,w1:p1", "--timeout", "30s")
+	if err == nil {
+		t.Fatalf("the gate waited on one worker twice:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "same worker (pane w1:p1)") {
+		t.Errorf("error %q should explain that the two names are one worker", err)
 	}
 }
 
