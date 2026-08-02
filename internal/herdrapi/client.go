@@ -247,9 +247,12 @@ func (c *Client) PaneSendText(paneID, text string) error {
 // PaneSendKeys delivers key events to a pane — "enter" being the one that
 // submits what PaneSendText typed.
 //
-// A key is not text. It arrives outside whatever burst the TUI was reading, so
-// it is acted on rather than inserted, which is the entire difference between
-// this and ending the text with a newline.
+// A key is not text: it is acted on rather than inserted, which is the entire
+// difference between this and ending the text with a newline. What it is not is
+// guaranteed to be acted on. A TUI that has not finished starting drops the key
+// outright — measured against Claude Code 2.1.220, which renders a paste into
+// its composer seconds before it will submit one — so a caller that needs the
+// key to have had an effect has to watch for the effect. See submitBrief.
 func (c *Client) PaneSendKeys(paneID string, keys []string) error {
 	return c.call("pane.send_keys", map[string]any{
 		"pane_id": paneID, "keys": keys,

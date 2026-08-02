@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/steig/worktender/internal/execute"
 	"github.com/steig/worktender/internal/gitx"
@@ -194,15 +193,14 @@ var briefConfirmWait = 15 * time.Second
 
 const briefConfirmPoll = 250 * time.Millisecond
 
-// briefEchoWait bounds the wait for the composer to show the brief before it is
-// submitted. Shorter than briefConfirmWait because nothing is riding on it: the
-// submit happens either way.
-var briefEchoWait = 5 * time.Second
+// briefSubmitRetry is how long an unreacting agent is left alone before the
+// submit is offered again. Measured against Claude Code 2.1.220: the press that
+// lands is the third, 4.3-5.7s after the first across three runs, so an
+// interval of seconds converges inside briefConfirmWait while a tighter one
+// would only spend keypresses on a TUI that is not reading them yet.
+var briefSubmitRetry = 2 * time.Second
 
-const briefEchoPoll = 100 * time.Millisecond
-
-// deliverBrief types the brief into the pane, waits for it to appear there, and
-// only then submits it.
+// deliverBrief types the brief into the pane and submits it.
 //
 // The submit is a separate key event because a trailing newline is not one. A
 // brief arrives at the TUI as a paste, and a newline inside a paste is inserted
@@ -211,110 +209,75 @@ const briefEchoPoll = 100 * time.Millisecond
 // that had received nothing. See PaneSendText, whose doc comment used to
 // describe the opposite.
 //
-// The wait between the two is what stops the Enter being read as part of that
-// same paste. Measured against protocol 17: the pane delivers text in reads of
-// at most 1022 bytes and the submit followed the last of them by 10µs, which is
-// no separation at all for a TUI that batches its input. Seeing the text
-// rendered is proof of separation rather than a guess at how much is enough,
-// and it is the read-back discipline writeReport already uses on its tokens.
+// WHAT IS NOT HERE ANY MORE is a wait for the brief to show up in the pane
+// before pressing Enter. That was #105's answer to a submit that did not land,
+// on the theory that the Enter was arriving inside an unfinished paste and
+// being inserted rather than acted on. Measured against Claude Code 2.1.220 in
+// a scratch workspace, the theory is false in both directions:
+//
+//   - Against a composer that has finished starting, an Enter 6.7ms behind the
+//     text submits. There is no burst to stay out of.
+//   - Against one that has not, no delay helps. The Enter is discarded, not
+//     inserted — the composer holds the brief with no stray line break in it —
+//     and the pane is deaf to a press however long the caller waited first.
+//
+// The read-back was worse than useless: it was inverted. A composer still
+// starting up renders the paste as raw text, so the read matched and `echoed`
+// came back true — the state in which the submit is about to be lost. Once
+// Claude Code has started it collapses the paste to `[Pasted text #1]`, which
+// no snapshot source contains, so the read matched nothing and `echoed` came
+// back false — the state in which the submit works. `start` was reading a
+// readiness signal backwards and paying five seconds for it.
 func deliverBrief(client *herdrapi.Client, pane, text string) error {
 	if err := client.PaneSendText(pane, text); err != nil {
 		return fmt.Errorf("type the brief into %s: %w", pane, err)
 	}
-	echoed := waitForEcho(client, pane, text)
-	if err := client.PaneSendKeys(pane, []string{briefSubmitKey}); err != nil {
-		return fmt.Errorf("submit the brief in %s: %w", pane, err)
-	}
-	return confirmBriefed(client, pane, echoed)
+	return submitBrief(client, pane)
 }
 
-// waitForEcho waits for the tail of the brief to show up in the pane, reporting
-// whether it did.
+// submitBrief presses Enter until the agent takes the brief up, and fails if it
+// never does.
 //
-// Best effort by design. A failure to see the text is not evidence it is absent
-// — a TUI is free to collapse a paste into a placeholder, and refusing to
-// submit on that would break `start` against a renderer this cannot predict. So
-// the Enter is pressed regardless, exactly as before, and confirmBriefed stays
-// the judge of whether an agent took the work up. What the answer buys is the
-// diagnosis: a brief that never appeared and one sitting unsubmitted are
-// different failures needing different advice, and the old message assumed the
-// second.
-func waitForEcho(client *herdrapi.Client, pane, text string) bool {
-	needle := signature(text)
-	if needle == "" {
-		return false
-	}
-
-	deadline := time.Now().Add(briefEchoWait)
-	for {
-		// Unwrapped so a composer narrower than the brief does not hide it, and
-		// normalised on top of that because unwrapping undoes the terminal's
-		// wrapping, not a TUI's own reflow inside a bordered box.
-		read, err := client.PaneRead(pane, herdrapi.ReadSourceRecentUnwrapped)
-		if err == nil && strings.Contains(normalise(read.Read.Text), needle) {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(briefEchoPoll)
-	}
-}
-
-// signatureTail is how much of the brief's end is looked for. The end, because
-// it is the part sent last: seeing it means the whole payload landed. And the
-// brief ends on its branch name, so what is looked for identifies this brief
-// rather than any brief — a pane still showing the last one is not evidence.
-const signatureTail = 64
-
-// signature is the tail of the brief, as normalise leaves it.
-func signature(text string) string {
-	out := []rune(normalise(text))
-	if len(out) > signatureTail {
-		out = out[len(out)-signatureTail:]
-	}
-	return string(out)
-}
-
-// normalise reduces text to the letters and digits in it, lowercased.
+// PRESSING ONCE IS THE BUG. herdr's agent.start returns when it recognises the
+// agent's prompt box, which Claude Code draws about three seconds in and some
+// seconds before it will act on a submit. Every key sent in that window is
+// dropped on the floor. Measured: one press lands nothing in five runs out of
+// five; retrying lands on the third press, 4.3-5.7s later, in three out of
+// three. That is the whole of #108, whose reporter had already found the shape
+// of it by hand: the same `herdr pane send-keys <pane> enter` typed a few
+// seconds later started the agent, so the mechanism was right and only the
+// moment was wrong.
 //
-// Wrapping, box borders and padding are all inserted between characters and
-// never reorder them, so a comparison that drops everything but letters and
-// digits survives being rendered into a composer.
-func normalise(text string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(text) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// confirmBriefed waits for herdr to report the agent doing something.
+// Waiting a fixed few seconds before the one press works too, and is rejected:
+// it is a constant fitted to one machine, one agent and one version of it, and
+// nothing would notice when it stopped being enough. This waits on the agent
+// reacting, which is the thing actually being waited for.
+//
+// A press that arrives after the brief has gone is harmless — measured, twice
+// over: Claude Code does not send an empty composer. And the loop stops at the
+// first sign of life anyway.
 //
 // ok from send_keys says herdr delivered a key, not that an agent received a
 // prompt — the same distance between accepted and delivered that writeReport
 // closes by reading its tokens back. The brief is the entire content of the
 // work and deserves at least what a 200-character note gets.
 //
-// The pane's own text cannot close it: a TUI wraps, boxes and reflows a payload
-// this size, so no substring of the brief survives to be compared against. The
-// agent's status can, and it is the observable that lied — a worker handed a
-// task starts working on it, and the three that were handed nothing sat at
-// `idle`, which `ls` faithfully reported as though they were waiting for work.
-//
 // Anything that is not idle counts, `blocked` included: an agent that came back
 // asking permission for its first tool call has plainly read its brief.
-//
-// echoed is whether the brief was seen in the pane before the submit, and it
-// only ever changes the advice. Pressing Enter again fixes a brief that is
-// sitting in the composer and does nothing for one that never arrived, so the
-// old message — which named that keypress unconditionally — was confidently
-// wrong for half the cases it was written for.
-func confirmBriefed(client *herdrapi.Client, pane string, echoed bool) error {
+func submitBrief(client *herdrapi.Client, pane string) error {
 	deadline := time.Now().Add(briefConfirmWait)
+	presses := 0
+	nextPress := time.Now()
+
 	for {
+		if !time.Now().Before(nextPress) {
+			if err := client.PaneSendKeys(pane, []string{briefSubmitKey}); err != nil {
+				return fmt.Errorf("submit the brief in %s: %w", pane, err)
+			}
+			presses++
+			nextPress = time.Now().Add(briefSubmitRetry)
+		}
+
 		info, err := client.AgentGet(pane)
 		if err != nil {
 			return fmt.Errorf("confirm the agent in %s received the brief: %w", pane, err)
@@ -334,22 +297,25 @@ func confirmBriefed(client *herdrapi.Client, pane string, echoed bool) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			var advice string
-			if echoed {
-				advice = fmt.Sprintf(
-					"the brief was showing in the pane, so it is most likely sitting unsubmitted in the input box; "+
-						"press %s yourself with `herdr pane send-keys %s %s`", briefSubmitKey, pane, briefSubmitKey)
-			} else {
-				advice = fmt.Sprintf(
-					"the brief never appeared in that pane, so there is probably nothing there to submit; "+
-						"read it back with `herdr pane read %s --source recent-unwrapped` and brief it by hand", pane)
-			}
 			return fmt.Errorf(
-				"the brief was typed into %s and %s was pressed, but herdr still reports that agent as %s %s later — %s",
-				pane, briefSubmitKey, status, briefConfirmWait, advice)
+				"the brief was typed into %s and %s was pressed %s over %s, but herdr still reports that "+
+					"agent as %s — the brief is most likely still sitting in its input box; press %s "+
+					"yourself with `herdr pane send-keys %s %s`, and if the pane is showing something "+
+					"else read it with `herdr pane read %s --source visible`",
+				pane, briefSubmitKey, times(presses), briefConfirmWait, status,
+				briefSubmitKey, pane, briefSubmitKey, pane)
 		}
 		time.Sleep(briefConfirmPoll)
 	}
+}
+
+// times counts keypresses for the failure message, which is read by someone
+// deciding whether to press Enter a further time themselves.
+func times(n int) string {
+	if n == 1 {
+		return "once"
+	}
+	return fmt.Sprintf("%d times", n)
 }
 
 // issue is the part of a GitHub issue this command needs, which since the brief
@@ -417,10 +383,9 @@ func issueBranch(i issue) string {
 //
 // It also fixes what pasting it cost. Measured against protocol 17: a pane
 // receives text in reads of at most 1022 bytes, so a 4400-byte brief arrived as
-// five bursts and the submit landed 10µs behind the last of them — close enough
-// for a TUI batching its input to fold the two together and take the Enter as
-// part of the paste. A brief this size is one burst, and deliverBrief no longer
-// has to race the tail of it.
+// five bursts where one this size arrives as one. The submit's own trouble
+// turned out to lie elsewhere — see submitBrief — but a payload that fits in a
+// single read is still one fewer thing between the brief and the composer.
 //
 // Still one line, and now trivially so: with the issue gone there is no
 // untrusted text in it at all. Everything here is this package's own prose, a
@@ -429,9 +394,6 @@ func issueBranch(i issue) string {
 // selfPath is named once and referred back to, rather than repeated. It is an
 // absolute plugin install path — around 90 characters — and it was the largest
 // variable-length thing left in a payload that has a budget.
-//
-// The branch is the last thing said, so that waitForEcho's anchor is the one
-// part of the brief that differs between two of them.
 func brief(number int, branch string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are working GitHub issue #%d. ", number)

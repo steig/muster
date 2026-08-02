@@ -31,12 +31,13 @@ worktender=$(herdr plugin list --json \
 ```
 
 `start` is `worktree.create` + `dispatch` + a briefing **it confirms**, in that
-order, against one issue. The briefing is typed, read back out of the pane, and
-only then submitted as a separate Enter key event; `start` waits for herdr to
-report the agent working before it says "briefed". herdr answering ok means it
-delivered keystrokes, not that an agent received a prompt, and a brief left
-sitting in a composer is a worker with nothing to do that a listing reports as
-`idle`. The brief names the issue rather than carrying it — the worker runs `gh
+order, against one issue. The briefing is typed and then submitted as a separate
+Enter key event, offered again every couple of seconds for as long as the agent
+stays idle; `start` waits for herdr to report the agent working before it says
+"briefed". herdr answering ok means it delivered keystrokes, not that an agent
+received a prompt — and an agent herdr calls started is not yet an agent reading
+its keys, so the first Enter is routinely dropped. A brief left sitting in a
+composer is a worker with nothing to do that a listing reports as `idle`. The brief names the issue rather than carrying it — the worker runs `gh
 issue view` itself, which keeps it short enough to arrive in one piece and keeps
 untrusted prose out of the prompt entirely.
 It exists because the pane id the middle step needs came from
