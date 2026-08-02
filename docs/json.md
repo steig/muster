@@ -68,6 +68,58 @@ object exists rather than a string:
 `pane_id` is the pane `dispatch --pane` takes, which is what makes this listing
 something to act on rather than only display.
 
+## `ls --all-repos --json`
+
+Across repositories the answer is **grouped**, and `worktrees` is null:
+
+```sh
+$ worktender ls --all-repos --blocked --json
+{
+  "worktrees": null,
+  "repositories": [
+    {
+      "root": "/Users/you/code/worktender",
+      "name": "worktender",
+      "error": null,
+      "worktrees": [
+        {
+          "main": false,
+          "branch": "77-cross-repo",
+          "workspace_id": "w30",
+          "pane_id": "w30:p1",
+          "agent_status": "blocked",
+          "pr": null,
+          "dir": "77-cross-repo"
+        }
+      ]
+    },
+    { "root": "/Users/you/code/lighthouse", "name": "lighthouse", "error": null, "worktrees": [] },
+    { "root": "/Users/you/code/gone", "name": "gone", "error": "worktree.list: not a git repository", "worktrees": null }
+  ]
+}
+```
+
+Exactly one of `worktrees` and `repositories` is ever non-null, so a consumer
+can tell which question was asked from the document alone.
+
+Grouped rather than a `repository` field on every row, which was the other
+candidate and the cheaper one. Three things decided it:
+
+- **A per-repository failure needs somewhere to live.** `--all-repos` keeps
+  going when one repository cannot be read, and a flat array of worktrees has
+  nowhere to record that except by inventing a row that is not a worktree.
+- **A repository whose rows were all filtered out has to survive as an empty
+  group.** *Asked, and none* versus *not asked* is the distinction this whole
+  format exists to keep, and a flat array erases it by simply having fewer rows.
+  That is `lighthouse` above: read, and nothing blocked.
+- **`doctor --json` already reports per repository**, so the two
+  cross-repository views nest the same way rather than each inventing one.
+
+Within a group, `worktrees` is `null` when the repository could not be read and
+`[]` when it was read and nothing matched. `--pr` is refused with `--all-repos`:
+the lookup runs one `gh` call per branch in series and is scoped to a single
+repository, so across several it would be slow and asking the wrong repository.
+
 ## `sync --json`, `prune --json`, `prune-apply --json`
 
 ```sh
@@ -119,7 +171,16 @@ $ worktender doctor --json
   ],
   "binary": "/Users/you/.config/herdr/plugins/github/steig.worktender-3ebd/bin/worktender",
   "repositories": [
-    { "root": "/Users/you/code/thing", "name": "thing", "error": null, "worktrees": 3, "agents": { "working": 1, "idle": 2 } }
+    {
+      "root": "/Users/you/code/thing",
+      "name": "thing",
+      "error": null,
+      "worktrees": 3,
+      "agents": { "working": 1, "blocked": 1, "idle": 1 },
+      "blocked": [
+        { "main": false, "branch": "79-stuck", "workspace_id": "w7", "pane_id": null, "agent_status": "blocked", "pr": null, "dir": "79-stuck" }
+      ]
+    }
   ],
   "error": null
 }
@@ -133,9 +194,16 @@ $ worktender doctor --json
   fact. The reason is in **`error`**, and the command still exits 1.
 - A repository that could not be read carries its own `error` and null counts,
   and costs the others nothing.
+- **`blocked`** names the worktrees rather than leaving them as one number among
+  `agents`. It is the one status where the session has stopped and only a person
+  can restart it, so which worktree it was is the entire question — a count
+  answers nobody. Empty when none are, null when the repository could not be
+  read. `pane_id` is null throughout: `doctor` does not ask for panes, and
+  `ls --all-repos --blocked --json` is the view that carries the pane a dispatch
+  needs.
 - The scope is herdr's open worktree workspaces rather than wherever you are
-  standing, so `doctor` answers from outside any repository at all. `ls --json`
-  is the per-worktree view, and needs a repository to run in.
+  standing, so `doctor` answers from outside any repository at all — the same
+  scope, and now the same read, that `ls --all-repos` lists in full.
 
 ## Call the binary, not the action
 
@@ -149,6 +217,10 @@ worktender=$(herdr plugin list --json \
   | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
 
 "$worktender" ls --pr --json | jq '.worktrees[] | select(.agent_status == "working")'
+
+# every blocked agent anywhere, as repository + pane, which is what restarts it
+"$worktender" ls --all-repos --blocked --json \
+  | jq -r '.repositories[] | .root as $r | .worktrees[]? | "\($r)\t\(.branch)\t\(.pane_id)"'
 ```
 
 ## Two things it deliberately does not do

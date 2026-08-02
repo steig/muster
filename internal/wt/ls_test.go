@@ -2,6 +2,7 @@ package wt_test
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -166,7 +167,7 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 	client := herdrapi.NewWithSocket(server.SocketPath)
 	// Called from inside the linked worktree: the listing must still cover the
 	// whole repository, which is what RepoRoot's --git-common-dir is for.
-	if err := wt.Ls(client, "", checkout, nil, false, &buf); err != nil {
+	if err := wt.Ls(client, "", checkout, nil, wt.Options{}, &buf); err != nil {
 		t.Fatalf("Ls: %v", err)
 	}
 
@@ -198,6 +199,255 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 	}
 }
 
+// fleet is two repositories herdr has worktree workspaces for, one of which it
+// cannot read. It is the shape `--all-repos` exists for, and the shape that
+// makes the failure rule matter.
+func fleet(t *testing.T) (*herdrtest.Server, *herdrtest.Repo, string) {
+	t.Helper()
+
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("77-cross-repo", "77-cross-repo")
+	const unreadable = "/nowhere/lighthouse"
+
+	server := herdrtest.NewServer(t)
+	server.Handle("worktree.list", func(params map[string]any) (any, error) {
+		if params["cwd"] == unreadable {
+			return nil, errors.New("not a git repository")
+		}
+		return map[string]any{
+			"type":   "worktree_list",
+			"source": map[string]any{"repo_key": "k", "repo_name": "repo", "repo_root": repo.Root, "source_checkout_path": repo.Root},
+			"worktrees": []map[string]any{
+				{"path": repo.Root, "label": "repo", "is_bare": false, "is_detached": false,
+					"is_prunable": false, "is_linked_worktree": false, "branch": "main"},
+				{"path": checkout, "label": "77-cross-repo", "is_bare": false, "is_detached": false,
+					"is_prunable": false, "is_linked_worktree": true, "branch": "77-cross-repo",
+					"open_workspace_id": "w2"},
+			},
+		}, nil
+	})
+	server.HandleResult("workspace.list", map[string]any{
+		"type": "workspace_list",
+		"workspaces": []map[string]any{
+			{"workspace_id": "w2", "number": 2, "label": "77-cross-repo", "focused": false,
+				"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "blocked"},
+		},
+	})
+	server.HandleResult("pane.list", map[string]any{
+		"type":  "pane_list",
+		"panes": []map[string]any{{"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "t1", "index": 0}},
+	})
+	return server, repo, unreadable
+}
+
+// The whole complaint #77 makes: someone with agents in six repositories has to
+// visit six directories to see them. One listing covers all of them — and one
+// repository failing must not cost the others their rows, which is the rule
+// doctor already follows.
+func TestLsAllGroupsEveryRepositoryAndKeepsGoingPastAFailure(t *testing.T) {
+	server, repo, unreadable := fleet(t)
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.LsAll(client, []string{repo.RealRoot, unreadable}, wt.Options{}, &buf); err != nil {
+		t.Fatalf("LsAll: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{repo.RealRoot, "77-cross-repo", "w2:p1", "blocked", unreadable, "not a git repository"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	// The full root rather than the basename: two checkouts on one machine
+	// routinely share one, and this listing is read across all of them.
+	if !strings.Contains(out, repo.RealRoot+"\n") {
+		t.Errorf("the repository heading must be the root on a line of its own:\n%s", out)
+	}
+	// Rows belong to the repository above them, so they are indented under it.
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, "77-cross-repo") && !strings.HasPrefix(line, "  ") {
+			t.Errorf("row is not indented under its repository: %q", line)
+		}
+	}
+}
+
+// `--blocked` across six repositories is a question with a short answer, and
+// five headings with nothing under them bury it. A repository that could not be
+// read is never skipped: that is the row the reader most needs.
+func TestLsAllBlockedSkipsQuietRepositoriesButNeverAFailedOne(t *testing.T) {
+	server, repo, unreadable := fleet(t)
+	// Nothing is blocked now, so the readable repository has nothing to show.
+	server.HandleResult("workspace.list", map[string]any{
+		"type": "workspace_list",
+		"workspaces": []map[string]any{
+			{"workspace_id": "w2", "number": 2, "label": "77-cross-repo", "focused": false,
+				"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "working"},
+		},
+	})
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.LsAll(client, []string{repo.RealRoot, unreadable}, wt.Options{Blocked: true}, &buf); err != nil {
+		t.Fatalf("LsAll: %v", err)
+	}
+
+	out := buf.String()
+	if strings.Contains(out, repo.RealRoot) {
+		t.Errorf("a repository with nothing blocked should not be drawn as an empty heading:\n%s", out)
+	}
+	if !strings.Contains(out, unreadable) || !strings.Contains(out, "not a git repository") {
+		t.Errorf("a repository that could not be read must still be named:\n%s", out)
+	}
+}
+
+// Nothing blocked anywhere has to say so. Silence is the same output as a
+// listing that reached no repositories at all.
+func TestLsAllBlockedSaysNothingIsBlockedRatherThanPrintingNothing(t *testing.T) {
+	server, repo, _ := fleet(t)
+	server.HandleResult("workspace.list", map[string]any{
+		"type": "workspace_list", "workspaces": []map[string]any{},
+	})
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.LsAll(client, []string{repo.RealRoot}, wt.Options{Blocked: true}, &buf); err != nil {
+		t.Fatalf("LsAll: %v", err)
+	}
+
+	if got, want := buf.String(), "no blocked agents in 1 repository\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// herdr having nothing open is a different answer from every repository being
+// quiet, and both are different from a listing that failed.
+func TestLsAllSaysWhenHerdrHasNothingOpen(t *testing.T) {
+	server := herdrtest.NewServer(t)
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.LsAll(client, nil, wt.Options{}, &buf); err != nil {
+		t.Fatalf("LsAll: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "no worktree workspaces open") {
+		t.Errorf("got %q", buf.String())
+	}
+	// Not one call: with no repositories to read there is nothing to ask about.
+	if calls := server.Calls(); len(calls) != 0 {
+		t.Errorf("herdr was asked %d question(s) about no repositories: %+v", len(calls), calls)
+	}
+}
+
+// blockedRows is the fixture both filter tests read: one of each status herdr
+// can report, so a filter that keeps too much is caught by what it kept.
+var blockedRows = []wt.Row{
+	{Branch: "working", AgentStatus: "working"},
+	{Branch: "stuck", AgentStatus: "blocked"},
+	{Branch: "idle", AgentStatus: "idle"},
+	{Branch: "finished", AgentStatus: "done"},
+	{Branch: "no-agent"},
+}
+
+func TestOnlyBlockedKeepsHerdrsBlockedAndNothingElse(t *testing.T) {
+	kept := wt.OnlyBlocked(blockedRows)
+
+	if len(kept) != 1 || kept[0].Branch != "stuck" {
+		t.Fatalf("want only the blocked row, got %+v", kept)
+	}
+}
+
+// The filter has to run before the lookups, not after. A pane is a round trip
+// per workspace, and the whole point of `--blocked` is that it is the question
+// you ask across everything you have open.
+func TestLsBlockedAsksForNoPaneItWillNotPrint(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	working := repo.AddWorktree("working", "working")
+	stuck := repo.AddWorktree("stuck", "stuck")
+
+	server := herdrtest.NewServer(t)
+	server.HandleResult("worktree.list", map[string]any{
+		"type":   "worktree_list",
+		"source": map[string]any{"repo_key": "k", "repo_name": "repo", "repo_root": repo.Root, "source_checkout_path": repo.Root},
+		"worktrees": []map[string]any{
+			{"path": working, "label": "working", "is_bare": false, "is_detached": false,
+				"is_prunable": false, "is_linked_worktree": true, "branch": "working",
+				"open_workspace_id": "w2"},
+			{"path": stuck, "label": "stuck", "is_bare": false, "is_detached": false,
+				"is_prunable": false, "is_linked_worktree": true, "branch": "stuck",
+				"open_workspace_id": "w3"},
+		},
+	})
+	server.HandleResult("workspace.list", map[string]any{
+		"type": "workspace_list",
+		"workspaces": []map[string]any{
+			{"workspace_id": "w2", "number": 2, "label": "working", "focused": false,
+				"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "working"},
+			{"workspace_id": "w3", "number": 3, "label": "stuck", "focused": false,
+				"pane_count": 1, "tab_count": 1, "active_tab_id": "t2", "agent_status": "blocked"},
+		},
+	})
+	server.HandleResult("pane.list", map[string]any{
+		"type":  "pane_list",
+		"panes": []map[string]any{{"pane_id": "w3:p1", "workspace_id": "w3", "tab_id": "t2", "index": 0}},
+	})
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.Ls(client, repo.RealRoot, "", nil, wt.Options{Blocked: true}, &buf); err != nil {
+		t.Fatalf("Ls: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "stuck") || !strings.Contains(out, "w3:p1") {
+		t.Errorf("the blocked worktree and the pane that can restart it must both be there:\n%s", out)
+	}
+	if strings.Contains(out, "working") {
+		t.Errorf("a working agent is not blocked:\n%s", out)
+	}
+
+	var panes []herdrtest.Call
+	for _, call := range server.Calls() {
+		if call.Method == "pane.list" {
+			panes = append(panes, call)
+		}
+	}
+	if len(panes) != 1 {
+		t.Fatalf("want one pane lookup, got %d: %+v", len(panes), panes)
+	}
+	if got := panes[0].Params["workspace_id"]; got != "w3" {
+		t.Errorf("pane looked up for workspace %v, want the blocked one w3", got)
+	}
+}
+
+// Nothing blocked is an answer, and an empty table is not how to give it: it is
+// the same output as a listing that reached nothing at all.
+func TestLsBlockedSaysSoWhenNothingIsBlocked(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	server := herdrtest.NewServer(t)
+	server.HandleResult("worktree.list", map[string]any{
+		"type":   "worktree_list",
+		"source": map[string]any{"repo_key": "k", "repo_name": "repo", "repo_root": repo.Root, "source_checkout_path": repo.Root},
+		"worktrees": []map[string]any{
+			{"path": repo.Root, "label": "repo", "is_bare": false, "is_detached": false,
+				"is_prunable": false, "is_linked_worktree": false, "branch": "main"},
+		},
+	})
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{}})
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.Ls(client, repo.RealRoot, "", nil, wt.Options{Blocked: true}, &buf); err != nil {
+		t.Fatalf("Ls: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "no blocked agents") {
+		t.Errorf("a filter that matched nothing must say so, got %q", buf.String())
+	}
+}
+
 // A workspace list failure must fail the command. Degrading the status column
 // to "-" would render a herdr that did not answer as a session with no
 // workspaces at all, which reads as an instruction to run sync.
@@ -217,7 +467,7 @@ func TestLsFailsWhenWorkspaceListFails(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := herdrapi.NewWithSocket(server.SocketPath)
-	if err := wt.Ls(client, "", repo.Root, nil, false, &buf); err == nil {
+	if err := wt.Ls(client, "", repo.Root, nil, wt.Options{}, &buf); err == nil {
 		t.Fatal("Ls should fail when the workspace list fails")
 	}
 	if buf.Len() != 0 {
