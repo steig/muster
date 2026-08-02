@@ -13,6 +13,22 @@ import (
 
 func ptr(s string) *string { return &s }
 
+// agentList is an agent.list result carrying one agent per pane, each stamped
+// with the state counter given. The other fields are the ones herdr requires,
+// not ones this plugin reads.
+func agentList(seqs map[string]uint64) map[string]any {
+	agents := make([]map[string]any, 0, len(seqs))
+	for pane, seq := range seqs {
+		workspace, _, _ := strings.Cut(pane, ":")
+		agents = append(agents, map[string]any{
+			"pane_id": pane, "workspace_id": workspace, "tab_id": workspace + ":t1",
+			"terminal_id": "term-" + pane, "focused": false, "revision": 1,
+			"agent_status": "idle", "state_change_seq": seq,
+		})
+	}
+	return map[string]any{"type": "agent_list", "agents": agents}
+}
+
 func TestRowsJoinsWorkspaceAgentStatus(t *testing.T) {
 	worktrees := &herdrapi.WorktreeListResponse{Worktrees: []herdrapi.WorktreeInfo{
 		{Path: "/repo", Branch: ptr("main"), IsLinkedWorktree: false},
@@ -162,6 +178,7 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 			{"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "t1", "index": 0},
 		},
 	})
+	server.HandleResult("agent.list", agentList(map[string]uint64{"w2:p1": 412}))
 
 	var buf bytes.Buffer
 	client := herdrapi.NewWithSocket(server.SocketPath)
@@ -174,7 +191,9 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 	out := buf.String()
 	// The pane is here because it is what `dispatch --pane` takes; a listing
 	// that stops at the workspace leaves that step with nowhere to get it.
-	for _, want := range []string{"main", "fix-auth", "w2", "w2:p1", "working"} {
+	// The counter is here because "working" carries no time and this is the only
+	// thing herdr has that moves when the worker does.
+	for _, want := range []string{"main", "fix-auth", "w2", "w2:p1", "working", "412"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
@@ -186,11 +205,11 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 	}
 
 	calls := server.Calls()
-	if len(calls) != 3 {
-		t.Fatalf("want 3 calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 4 {
+		t.Fatalf("want 4 calls, got %d: %+v", len(calls), calls)
 	}
 	if calls[0].Method != "worktree.list" || calls[1].Method != "workspace.list" ||
-		calls[2].Method != "pane.list" {
+		calls[2].Method != "pane.list" || calls[3].Method != "agent.list" {
 		t.Errorf("unexpected methods: %+v", calls)
 	}
 	// The cwd must be the MAIN checkout, not the linked worktree we ran from.
@@ -237,6 +256,7 @@ func fleet(t *testing.T) (*herdrtest.Server, *herdrtest.Repo, string) {
 		"type":  "pane_list",
 		"panes": []map[string]any{{"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "t1", "index": 0}},
 	})
+	server.HandleResult("agent.list", agentList(map[string]uint64{"w2:p1": 412}))
 	return server, repo, unreadable
 }
 
@@ -337,6 +357,104 @@ func TestLsAllSaysWhenHerdrHasNothingOpen(t *testing.T) {
 	// Not one call: with no repositories to read there is nothing to ask about.
 	if calls := server.Calls(); len(calls) != 0 {
 		t.Errorf("herdr was asked %d question(s) about no repositories: %+v", len(calls), calls)
+	}
+}
+
+// #90's complaint, in one assertion: `idle` is a point-in-time enum and the
+// same cell for a worker that finished two seconds ago and one that never
+// received its brief at all. The counter is what the two rows no longer share.
+func TestTheCounterTellsTwoIdleWorkersApart(t *testing.T) {
+	finished, stalled := uint64(1057), uint64(812)
+	rows := []wt.Row{
+		{Branch: "just-finished", PaneID: "w1:p1", AgentStatus: "idle", AgentStatusSeq: &finished, Dir: "a"},
+		{Branch: "never-started", PaneID: "w2:p1", AgentStatus: "idle", AgentStatusSeq: &stalled, Dir: "b"},
+	}
+
+	var buf bytes.Buffer
+	if err := wt.Render(&buf, rows, false); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %q", buf.String())
+	}
+	if !strings.Contains(lines[0], "1057") || !strings.Contains(lines[1], "812") {
+		t.Errorf("each row must carry its own counter:\n%s", buf.String())
+	}
+
+	// Both rows say `idle`, so before this the two lines were the same listing
+	// twice over. The counter is the whole distinction, and a JSON consumer must
+	// get it as a number rather than have to parse the column back out.
+	got := wt.JSON(rows)
+	if got[0].AgentStatusSeq == nil || got[1].AgentStatusSeq == nil ||
+		*got[0].AgentStatusSeq == *got[1].AgentStatusSeq {
+		t.Errorf("the two idle rows are still indistinguishable: %+v", got)
+	}
+}
+
+// The counter is session-wide, so it is one question no matter how many
+// repositories are being listed — the rule AllRows already follows for the
+// workspace list.
+func TestWithAgentSeqsAsksOnceForEveryListing(t *testing.T) {
+	server := herdrtest.NewServer(t)
+	server.HandleResult("agent.list", agentList(map[string]uint64{"w2:p1": 7, "w9:p1": 91}))
+
+	first := []wt.Row{{Branch: "a", PaneID: "w2:p1"}}
+	second := []wt.Row{{Branch: "b", PaneID: "w9:p1"}, {Branch: "unstaffed", PaneID: "w3:p1"}}
+
+	wt.WithAgentSeqs(herdrapi.NewWithSocket(server.SocketPath), first, second)
+
+	if calls := server.Calls(); len(calls) != 1 || calls[0].Method != "agent.list" {
+		t.Fatalf("want one agent.list for both listings, got %+v", calls)
+	}
+	if first[0].AgentStatusSeq == nil || *first[0].AgentStatusSeq != 7 {
+		t.Errorf("first listing: %+v", first[0])
+	}
+	if second[0].AgentStatusSeq == nil || *second[0].AgentStatusSeq != 91 {
+		t.Errorf("second listing: %+v", second[0])
+	}
+	// A pane herdr has no agent in gets no counter rather than a zero, which
+	// would read as an agent that has never done anything.
+	if second[1].AgentStatusSeq != nil {
+		t.Errorf("a pane with no agent has no counter, got %d", *second[1].AgentStatusSeq)
+	}
+}
+
+// A listing with no panes in it has nothing to decorate, and asking anyway is a
+// round trip spent on an answer with nowhere to go.
+func TestWithAgentSeqsAsksNothingWhenNoRowHasAPane(t *testing.T) {
+	server := herdrtest.NewServer(t)
+	server.HandleResult("agent.list", agentList(map[string]uint64{"w2:p1": 7}))
+
+	wt.WithAgentSeqs(herdrapi.NewWithSocket(server.SocketPath), []wt.Row{{Branch: "unopened"}})
+
+	if calls := server.Calls(); len(calls) != 0 {
+		t.Errorf("herdr was asked about a listing with no panes: %+v", calls)
+	}
+}
+
+// The counter is one column. Losing it must cost the listing nothing else —
+// unlike the workspace list, whose failure has to fail the command, because a
+// degraded status column reads as a session with nothing open.
+func TestLsKeepsItsRowsWhenTheCounterCannotBeRead(t *testing.T) {
+	server, repo, _ := fleet(t)
+	server.Handle("agent.list", func(map[string]any) (any, error) {
+		return nil, errors.New("herdr is not answering")
+	})
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.Ls(client, repo.RealRoot, "", nil, wt.Options{}, &buf); err != nil {
+		t.Fatalf("Ls: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "77-cross-repo") || !strings.Contains(out, "w2:p1") {
+		t.Errorf("the listing lost its rows over one missing column:\n%s", out)
+	}
+	if strings.Contains(out, "412") {
+		t.Errorf("a counter appeared from a lookup that failed:\n%s", out)
 	}
 }
 

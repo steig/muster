@@ -38,6 +38,38 @@ func TestJSONRendersAbsenceAsNull(t *testing.T) {
 	}
 }
 
+// The counter has to reach the wire as a number, and be present and null when
+// there is no agent to have one.
+//
+// Present, not omitted, for the reason the top-level pair is: an absent key is
+// indistinguishable from a worktender too old to have it, and a watcher that
+// reads a missing counter as "no agent" would call a whole fleet stalled.
+func TestJSONCarriesTheCounterAndNullsItWithNoAgent(t *testing.T) {
+	seq := uint64(1057)
+	document, err := json.Marshal(wt.JSON([]wt.Row{
+		{Branch: "staffed", PaneID: "w2:p1", AgentStatus: "idle", AgentStatusSeq: &seq, Dir: "a"},
+		{Branch: "unopened", Dir: "b"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(document, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw[0]["agent_status_seq"]); got != "1057" {
+		t.Errorf("agent_status_seq = %s, want the bare number 1057", got)
+	}
+	value, present := raw[1]["agent_status_seq"]
+	if !present {
+		t.Fatalf("agent_status_seq is absent from a row with no agent:\n%s", document)
+	}
+	if string(value) != "null" {
+		t.Errorf("agent_status_seq = %s on the wire, want null", value)
+	}
+}
+
 // The distinction the table has no room for, and the one that costs the most:
 // an unauthenticated gh reads there as "no pull request", which is the reading
 // that makes prune keep everything.

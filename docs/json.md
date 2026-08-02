@@ -15,12 +15,13 @@ name gets longer. And the table has one word for four different absences:
 
 ```sh
 $ worktender ls --pr
-* main                      w21  w21:p1  idle     -       worktender
-  worktree/brave-valley     -    -       -        -       brave-valley-66f8
+* main                      w21  w21:p1  idle     1057  -       worktender
+  worktree/brave-valley     -    -       -        -     -       brave-valley-66f8
 ```
 
 Every `-` there means something different — no workspace, no pane, no agent, no
-pull request — and the last one means *two* things the table cannot separate:
+counter, no pull request — and the last one means *two* things the table cannot
+separate:
 this branch has no pull request, and `gh` could not be asked. That second
 reading is the expensive one. An unauthenticated `gh` fails exactly like a
 branch nobody opened a pull request for, and the verdict that follows is *keep*,
@@ -39,6 +40,7 @@ $ worktender ls --pr --json
       "workspace_id": "w21",
       "pane_id": "w21:p1",
       "agent_status": "idle",
+      "agent_status_seq": 1057,
       "pr": null,
       "dir": "worktender"
     },
@@ -48,6 +50,7 @@ $ worktender ls --pr --json
       "workspace_id": null,
       "pane_id": null,
       "agent_status": null,
+      "agent_status_seq": null,
       "pr": { "state": null, "error": "gh pr list worktree/brave-valley: gh: To get started with GitHub CLI, please run: gh auth login" },
       "dir": "brave-valley-66f8"
     }
@@ -77,6 +80,67 @@ object exists rather than a string:
 `pane_id` is the pane `dispatch --pane` takes, which is what makes this listing
 something to act on rather than only display.
 
+### `agent_status_seq`, and why it is not a time
+
+`agent_status` is a point-in-time enum with no time in it. It is the same
+`idle` for a worker that finished two seconds ago, one that finished forty
+minutes ago, and one that never received its brief at all. `agent_status_seq`
+is what separates them.
+
+It is herdr's `state_change_seq` for the agent in `pane_id`, passed through
+untouched: **a counter, not a clock.** That is not a design preference. Measured
+against a live herdr 0.7.5 / protocol 18, no field on a pane, a workspace or an
+agent carries a timestamp of any kind, so there is no last-activity time to
+surface and nothing here invents one.
+
+What the counter does, measured over a live session rather than read off herdr's
+schema, which documents none of it:
+
+- **Session-wide and monotonic.** Nineteen agents held nineteen distinct values
+  from one range, so two rows are comparable: the lower one is the one herdr
+  stopped seeing first.
+- **Stamped when herdr sees the agent's state change** — which is not the same
+  set of moments as `agent_status` changing, in either direction. It moved for
+  an agent whose status read the same in two consecutive samples, so it catches
+  a `working` → `idle` → `working` that the status column hides entirely. And it
+  stayed put across a `done` → `idle` transition, which is a worker that has
+  done nothing being relabelled.
+- **Null** when herdr has no agent in that pane. Never `0` for a live agent —
+  a zero would read as one that has never done anything.
+
+What it is not is elapsed time, and nothing here converts it into any: the rate
+depends on how busy the rest of the session is, so seconds cannot be recovered
+from one reading. Two readings can, because **the caller has a clock and this
+plugin does not run.** A counter that has not moved between two of your own
+polls is a worker that has not moved in that interval — an interval you timed:
+
+```sh
+# stalled = the counter has not moved since the last poll, whatever "since" was
+"$worktender" ls --all-repos --json \
+  | jq -c '[.repositories[] | .root as $r | .worktrees[]?
+            | select(.agent_status_seq) | {r:$r, b:.branch, s:.agent_status_seq}]' > now.json
+diff <(jq -c '.[]' was.json) <(jq -c '.[]' now.json)
+```
+
+How long a run of no movement has to be before it counts as stalled is a policy
+call, and it stays with you. A `stalled_for_seconds` field would have made it
+this plugin's, on a duration it cannot measure.
+
+Read down a single listing the counter also answers the one-shot question: the
+row furthest below its neighbours is the worker herdr last saw do anything.
+
+```sh
+# the three stalest workers anywhere, whatever their status says
+"$worktender" ls --all-repos --json \
+  | jq -r '[.repositories[] | .root as $r | .worktrees[]?
+            | select(.agent_status_seq)] | sort_by(.agent_status_seq)
+           | .[:3][] | "\(.agent_status_seq)\t\(.agent_status)\t\(.branch)"'
+```
+
+**There is still no watcher.** This makes a stall observable; it does not
+observe it. The plugin has no resident process — see
+[Events](events.md) — and this field adds none.
+
 ## `ls --all-repos --json`
 
 Across repositories the answer is **grouped**, and `worktrees` is null:
@@ -97,6 +161,7 @@ $ worktender ls --all-repos --blocked --json
           "workspace_id": "w30",
           "pane_id": "w30:p1",
           "agent_status": "blocked",
+          "agent_status_seq": 812,
           "pr": null,
           "dir": "77-cross-repo"
         }
@@ -191,7 +256,7 @@ $ worktender doctor --json
       "worktrees": 3,
       "agents": { "working": 1, "blocked": 1, "idle": 1 },
       "blocked": [
-        { "main": false, "branch": "79-stuck", "workspace_id": "w7", "pane_id": null, "agent_status": "blocked", "pr": null, "dir": "79-stuck" }
+        { "main": false, "branch": "79-stuck", "workspace_id": "w7", "pane_id": null, "agent_status": "blocked", "agent_status_seq": null, "pr": null, "dir": "79-stuck" }
       ]
     }
   ],
@@ -211,9 +276,10 @@ $ worktender doctor --json
   `agents`. It is the one status where the session has stopped and only a person
   can restart it, so which worktree it was is the entire question — a count
   answers nobody. Empty when none are, null when the repository could not be
-  read. `pane_id` is null throughout: `doctor` does not ask for panes, and
-  `ls --all-repos --blocked --json` is the view that carries the pane a dispatch
-  needs.
+  read. `pane_id` is null throughout, and `agent_status_seq` with it: `doctor`
+  does not ask for panes, and the counter belongs to the agent in one. `ls
+  --all-repos --blocked --json` is the view that carries both — the pane a
+  dispatch needs, and the counter that says whether it is worth dispatching to.
 - The scope is herdr's open worktree workspaces rather than wherever you are
   standing, so `doctor` answers from outside any repository at all — the same
   scope, and now the same read, that `ls --all-repos` lists in full.
