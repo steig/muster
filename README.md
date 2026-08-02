@@ -7,6 +7,10 @@ A [herdr](https://github.com/herdrdev/herdr) plugin. herdr is the terminal
 multiplexer coding agents run in; this plugin keeps its workspaces and your git
 worktrees pointing at the same reality.
 
+Documentation is rendered at **<https://steig.github.io/worktender/>** — the
+same words as the markdown here, plus an overview and *Patterns*, which exist
+nowhere else.
+
 ## The problem
 
 Running several coding agents at once means running several worktrees. Making
@@ -333,10 +337,10 @@ immediately.
 
 ## Documentation
 
-Rendered at **<https://steig.github.io/worktender/>**, which carries two pages
-that exist nowhere else: an overview, and *Patterns* — delegating to agents
-without losing the thread, with five worked examples. The markdown below stays
-canonical, so an agent that clones this repository reads the same words.
+The markdown below stays canonical, so an agent that clones this repository
+reads the same words the [site](https://steig.github.io/worktender/) renders.
+What the site adds is *Patterns* — delegating to agents without losing the
+thread, with five worked examples — which has no markdown source here.
 
 | | |
 | --- | --- |

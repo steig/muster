@@ -40,16 +40,29 @@
 
 <figure>
   <div class="terminal"><span class="prompt">$ worktender ls</span>
-<span class="here">*</span> main                      w21  <span class="none">idle</span>     worktender
-  feat/1-reconcile-execute  w22  <span class="busy">working</span>  1-reconcile-execute
-  fix/257-erasure-comments  w1K  <span class="none">idle</span>     257-erasure-comments
-  worktree/brave-valley     <span class="none">-</span>    <span class="none">-</span>        brave-valley-66f8</div>
+<span class="here">*</span> main                      w21  w21:p1  <span class="none">idle</span>     1057  worktender
+  feat/1-reconcile-execute  w22  w22:p1  <span class="busy">working</span>  1055  1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  <span class="none">idle</span>     812   257-erasure-comments
+  worktree/brave-valley     <span class="none">-</span>    <span class="none">-</span>       <span class="none">-</span>        <span class="none">-</span>     brave-valley-66f8</div>
   <figcaption>
-    Branch, workspace, agent status, directory. A <code>-</code> means herdr has
-    nothing for that worktree — the last row is a checkout with no workspace and
-    no agent.
+    Branch, workspace, pane, agent status, state counter, directory. A
+    <code>-</code> means herdr has nothing for that worktree — the last row is a
+    checkout with no workspace and no agent.
   </figcaption>
 </figure>
+
+<p>
+  The counter is herdr's own, and it is what <code>idle</code> cannot tell you:
+  <code>idle</code> is the same cell for a worker that finished two seconds ago
+  and one that never received its brief. Read it <em>down</em> the column — the
+  third worktree is 240-odd state changes behind the rest. It counts state
+  <em>changes</em>, though, so <strong>read the status beside it</strong>:
+  frozen beside <code>idle</code> is finished-or-wedged, which is the question
+  it answers, while frozen beside <code>working</code> is a long turn or a wedge
+  and the column cannot say which.
+  <a href="json.html#where-it-goes-blind-a-frozen-counter-on-a-working-row">The
+  full measurement</a> is with the machine-readable output.
+</p>
 
 <div class="callout">
   <span class="label">Two ways in, and one of them is worse</span>
@@ -71,6 +84,58 @@
     enabling event hooks is not its call to make.
   </p>
 </div>
+
+<h2>The other end: an issue to an agent working on it</h2>
+
+<p>
+  Making the directory is the easy half, and every tool does it. What nothing
+  does is the round trip — an issue, a checkout named for it, an agent briefed
+  on it, and a way to know when it finished. One command covers the first three:
+</p>
+
+<figure>
+  <div class="terminal"><span class="prompt">$ worktender start 42 --repo .</span>
+repository: /Users/you/code/thing
+worktree: 42-fix-the-thing on origin/main (workspace w9, pane w9:p1)
+fork point: origin/main is 31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10
+<span class="busy">done</span>  staff  42-fix-the-thing  started claude as wt-42-fix-the-thing-016aab in w9:p1
+
+briefed wt-42-fix-the-thing-016aab on #42; wait for it with:
+  worktender gate --target wt-42-fix-the-thing-016aab --until done --require-pr</div>
+  <figcaption>
+    It reads the issue title with <code>gh</code>, creates the worktree, starts
+    the agent, and types a brief covering the whole round — read the issue,
+    explore, change, test, self-review, open a pull request, then
+    <code>report</code>.
+  </figcaption>
+</figure>
+
+<p>
+  <strong>The brief is confirmed, not claimed.</strong> herdr answering ok means
+  it delivered keystrokes, not that an agent received a prompt — it reports an
+  agent started as soon as it recognises its prompt box, which a TUI draws
+  seconds before it will act on a submit. Keys sent in that gap are discarded, so
+  <code>start</code> offers the submit again every couple of seconds for as long
+  as the agent stays <code>idle</code>, and fails if it never takes it up.
+</p>
+
+<p>
+  <strong>The brief does not carry the issue.</strong> It names it and tells the
+  worker to run <code>gh issue view</code>, so the text arrives as tool output
+  rather than as prose pasted into a prompt. Nothing an issue author writes
+  reaches the brief — the title survives only as a branch name, already reduced
+  to <code>[a-z0-9-]</code>.
+</p>
+
+<p>
+  <code>start</code> deliberately does not wait. Start several, then wait on the
+  lot of them with <code>gate --any</code>; the first to report releases it and
+  it says which one. <code>--base &lt;ref&gt;</code> forks from something other
+  than the trunk, which is how a second slice starts while the first is still in
+  review — and the fork point is printed because a squash merge keeps none of
+  the base branch's own commits.
+  <a href="dispatch.html">Dispatch</a> has the mechanics.
+</p>
 
 <h2>What it refuses to do</h2>
 
@@ -164,6 +229,7 @@ npx skills add steig/worktender --skill coordinator -g</code></pre>
   <li><a href="patterns.html"><span class="name">Delegating to agents</span><span class="what">What the coordinator skill encodes.</span></a></li>
   <li><a href="examples.html"><span class="name">Worked examples</span><span class="what">Five fan-outs end to end, including when not to.</span></a></li>
   <li><a href="dispatch.html"><span class="name">Dispatch</span><span class="what">The mechanics: dispatch, report, gate, and the permission-mode problem.</span></a></li>
+  <li><a href="json.html"><span class="name">Machine-readable output</span><span class="what">The <code>--json</code> every command takes, and what each null means.</span></a></li>
   <li><a href="pruning.html"><span class="name">Pruning</span><span class="what">What authorises a removal, and the guards.</span></a></li>
   <li><a href="events.html"><span class="name">Events</span><span class="what">The hooks that adopt and staff automatically.</span></a></li>
   <li><a href="trust.html"><span class="name">Trust</span><span class="what">What running unsandboxed means here.</span></a></li>
