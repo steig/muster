@@ -777,3 +777,40 @@ func TestPruneRefusesWhenTheAgentListCannotBeRead(t *testing.T) {
 		t.Fatal("a checkout was removed without confirming it was idle")
 	}
 }
+
+// THE CLAIMED DECIDE-EXECUTE RACE, tested rather than argued. A competitive
+// analysis of worktrunk said we "have exactly this race" — Collect gathers
+// facts, Reconcile decides, the executor acts, and a commit landing in that
+// window is deleted anyway — and proposed compare-and-swap branch deletion
+// (`git update-ref -d` with an expected SHA) as the fix.
+//
+// The premise is wrong for the branch half, and this is what says so. We do not
+// delete with `-D`. `git branch -d` evaluates merged-ness at the moment it runs,
+// not at the moment the plan was made, so a commit that lands in the window is
+// exactly what it refuses on.
+func TestPruneKeepsABranchThatGainedACommitAfterThePlan(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "raced")
+
+	// The window: the plan was made against a merged branch, and then work
+	// landed on it. Committed, so the dirty guard does not mask the question.
+	repo.CommitIn(checkout, "late.txt", "landed after the decision")
+
+	exec, _ := fixture(t, repo)
+	exec.ApplyPrune = true
+
+	result := only(t, exec.Run([]reconcile.Action{{
+		Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "raced", Reason: "PR merged",
+	}}))
+
+	if result.Status != execute.StatusDone {
+		t.Fatalf("status = %q, want done: %s", result.Status, result.Detail)
+	}
+	if repo.BranchMissing("raced") {
+		t.Fatal("the branch was deleted with a commit base does not have — the race is real and needs a CAS")
+	}
+	if !strings.Contains(result.Detail, "kept branch raced") {
+		t.Errorf("keeping the branch has to be reported, got %q", result.Detail)
+	}
+}
