@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -43,6 +44,10 @@ type Row struct {
 	// agent in and therefore the one `dispatch --pane` wants.
 	PaneID      string
 	AgentStatus string
+	// AgentStatusSeq is herdr's counter as of the last time the agent in PaneID
+	// changed state, and nil when there is no such agent or herdr gave no
+	// counter for it. See WithAgentSeqs for what it is and is not.
+	AgentStatusSeq *uint64
 	// PR is nil unless a pull request lookup ran for this row — see WithPRs.
 	PR  *PR
 	Dir string
@@ -120,6 +125,77 @@ func firstPane(client *herdrapi.Client, workspaceID string) string {
 	return panes.Panes[0].PaneID
 }
 
+// WithAgentSeqs fills the agent counter on every listing given, from one
+// agent.list. It is variadic because `--all-repos` has a listing per repository
+// and the counter is session-wide: asking once per repository would be N round
+// trips for one answer, the same reason AllRows fetches the workspaces once.
+//
+// The counter is herdr's `state_change_seq`, verbatim. It is a counter rather
+// than a clock because herdr has no clock to offer: measured against a live
+// herdr 0.7.5 / protocol 18, not one field on a pane, a workspace or an agent
+// carries a time. This is what it has instead.
+//
+// What it is, measured over a live session rather than read off the schema,
+// which documents none of it: session-wide — nineteen agents held nineteen
+// distinct values from one range — monotonic, and stamped on an agent when
+// herdr sees its state change. Which is not the same set of moments as the
+// status column changing, in both directions: it moved for an agent whose
+// status read the same in two consecutive samples, so it catches the
+// working→idle→working that column hides, and it stayed put across a done→idle
+// transition, which is a worker that has done nothing being relabelled. The
+// pane's own `revision` is not this signal — it sat still through every status
+// change in the same window.
+//
+// What it is not is elapsed time. Nothing here converts it to seconds, because
+// nothing here can: the rate depends on how busy the rest of the session is.
+// Two listings and the caller's own clock are what turn it into a duration, and
+// the caller is the one holding both.
+//
+// Keyed by pane, so this is the agent in the row's PaneID — the pane staffing
+// starts an agent in and `dispatch --pane` targets. An agent elsewhere in the
+// workspace leaves the counter nil rather than lending the row its own.
+//
+// A failed lookup leaves every counter nil, exactly as a session with no agents
+// would. That is the same trade WithPanes makes: this is one column, and losing
+// it must not cost the listing the rows it decorates.
+func WithAgentSeqs(client *herdrapi.Client, listings ...[]Row) {
+	if !anyPane(listings) {
+		return
+	}
+
+	agents, err := client.AgentList()
+	if err != nil {
+		return
+	}
+	seqs := map[string]*uint64{}
+	for _, agent := range agents.Agents {
+		if agent.StateChangeSeq != nil {
+			seqs[agent.PaneID] = agent.StateChangeSeq
+		}
+	}
+
+	for _, rows := range listings {
+		for i, row := range rows {
+			if row.PaneID != "" {
+				rows[i].AgentStatusSeq = seqs[row.PaneID]
+			}
+		}
+	}
+}
+
+// anyPane reports whether any listing has a row an agent could be in. Nothing
+// to decorate means nothing to ask about, and a round trip is not free.
+func anyPane(listings [][]Row) bool {
+	for _, rows := range listings {
+		for _, row := range rows {
+			if row.PaneID != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // WithPRs fills the pull request column from the supplied lookup. The main
 // checkout is skipped: trunk has no pull request, and every lookup is a network
 // round trip — which is why its PR stays nil rather than becoming an answer.
@@ -184,7 +260,7 @@ func renderRows(w io.Writer, rows []Row, withPR bool, indent string) {
 			marker = indent + "*"
 		}
 		cells := []string{marker, cell(row.Branch), cell(row.WorkspaceID),
-			cell(row.PaneID), cell(row.AgentStatus)}
+			cell(row.PaneID), cell(row.AgentStatus), cell(seqCell(row.AgentStatusSeq))}
 		if withPR {
 			cells = append(cells, cell(prCell(row.PR)))
 		}
@@ -248,6 +324,20 @@ func cell(s string) string {
 		return missing
 	}
 	return safetext.Escape(s)
+}
+
+// seqCell is the agent counter column, empty when there is no counter.
+//
+// The number is printed raw, and it is meant to be read down the column rather
+// than across one row: on its own it says nothing, while beside its neighbours
+// it says which worker herdr last saw move and which one it stopped seeing
+// first. That is the reading the status column cannot give, and it is as far as
+// a listing can go without a clock to subtract from.
+func seqCell(seq *uint64) string {
+	if seq == nil {
+		return ""
+	}
+	return strconv.FormatUint(*seq, 10)
 }
 
 // prCell is the pull request column, empty for every case the table has no room
@@ -363,6 +453,16 @@ type RowJSON struct {
 	WorkspaceID *string `json:"workspace_id"`
 	PaneID      *string `json:"pane_id"`
 	AgentStatus *string `json:"agent_status"`
+	// AgentStatusSeq is herdr's state_change_seq for the agent in PaneID: the
+	// value of a session-wide counter as of that agent's last state change, and
+	// the only thing herdr has that moves when a worker does — it has no clock
+	// to expose. Null when there is no agent in that pane.
+	//
+	// A number, not a duration, and deliberately not converted into one. Two
+	// readings of it, taken by a caller that has a clock, are what say whether a
+	// worker moved in between; how long a run of no movement has to be before it
+	// counts as stalled is that caller's call and nobody else's.
+	AgentStatusSeq *uint64 `json:"agent_status_seq"`
 	// PR is null when no lookup ran for this row: --pr was not passed, or this
 	// is the main checkout, which is never asked about.
 	PR  *PRJSON `json:"pr"`
@@ -388,13 +488,14 @@ func JSON(rows []Row) []RowJSON {
 	out := make([]RowJSON, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, RowJSON{
-			Main:        row.Main,
-			Branch:      jsonout.String(row.Branch),
-			WorkspaceID: jsonout.String(row.WorkspaceID),
-			PaneID:      jsonout.String(row.PaneID),
-			AgentStatus: jsonout.String(row.AgentStatus),
-			PR:          prJSON(row.PR),
-			Dir:         row.Dir,
+			Main:           row.Main,
+			Branch:         jsonout.String(row.Branch),
+			WorkspaceID:    jsonout.String(row.WorkspaceID),
+			PaneID:         jsonout.String(row.PaneID),
+			AgentStatus:    jsonout.String(row.AgentStatus),
+			AgentStatusSeq: row.AgentStatusSeq,
+			PR:             prJSON(row.PR),
+			Dir:            row.Dir,
 		})
 	}
 	return out
@@ -460,6 +561,7 @@ func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) 
 		rows = OnlyBlocked(rows)
 	}
 	WithPanes(client, rows)
+	WithAgentSeqs(client, rows)
 	if lookupPR != nil {
 		WithPRs(rows, lookupPR)
 	}
@@ -493,12 +595,15 @@ func LsAll(client *herdrapi.Client, roots []string, opts Options, out io.Writer)
 		return err
 	}
 
+	listings := make([][]Row, 0, len(repos))
 	for i := range repos {
 		if opts.Blocked {
 			repos[i].Rows = OnlyBlocked(repos[i].Rows)
 		}
 		WithPanes(client, repos[i].Rows)
+		listings = append(listings, repos[i].Rows)
 	}
+	WithAgentSeqs(client, listings...)
 
 	if opts.JSON {
 		return jsonout.Write(out, ListJSON{Repositories: ReposJSON(repos)})

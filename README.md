@@ -29,25 +29,36 @@ worktree.**
 
 ```sh
 $ worktender ls
-* main                      w21  w21:p1  idle     worktender
-  feat/1-reconcile-execute  w22  w22:p1  working  1-reconcile-execute
-  fix/257-erasure-comments  w1K  w1K:p1  idle     257-erasure-comments
-  worktree/brave-valley     -    -       -        brave-valley-66f8
+* main                      w21  w21:p1  idle     1057  worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  1055  1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     812   257-erasure-comments
+  worktree/brave-valley     -    -       -        -     brave-valley-66f8
 ```
 
-Columns are branch, herdr workspace, pane, agent status, and directory. `*`
-marks the repository's main checkout; `-` means herdr has nothing for that
-worktree — the last row is a checkout with no workspace and no agent, which is
-exactly what `sync` picks up.
+Columns are branch, herdr workspace, pane, agent status, state counter, and
+directory. `*` marks the repository's main checkout; `-` means herdr has nothing
+for that worktree — the last row is a checkout with no workspace and no agent,
+which is exactly what `sync` picks up.
 
-The pane is the one `dispatch --pane` takes. Add `--pr` for a pull request
-column, which is off by default because it costs one `gh` call per branch:
+The pane is the one `dispatch --pane` takes.
+
+The counter is herdr's own, and it is what `idle` cannot tell you: `idle` is the
+same cell for a worker that finished two seconds ago and one that never received
+its brief at all. Read it *down* the column rather than across a row — the third
+worktree above is 240-odd state changes behind the rest, which is the shape of a
+worker that stopped. It is a counter and not a clock because herdr exposes no
+timestamp on an agent at all; two readings and your own clock are what turn it
+into a duration, and what counts as *stalled* stays yours to decide. See
+[Machine-readable output](docs/json.md#agent_status_seq-and-why-it-is-not-a-time).
+
+Add `--pr` for a pull request column, which is off by default because it costs
+one `gh` call per branch:
 
 ```sh
 $ worktender ls --pr
-* main                      w21  w21:p1  idle     -       worktender
-  feat/1-reconcile-execute  w22  w22:p1  working  OPEN    1-reconcile-execute
-  fix/257-erasure-comments  w1K  w1K:p1  idle     MERGED  257-erasure-comments
+* main                      w21  w21:p1  idle     1057  -       worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  1055  OPEN    1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     812   MERGED  257-erasure-comments
 ```
 
 Agents in six repositories are six invocations and six directories to remember
@@ -58,10 +69,10 @@ that cannot be read says so on its own line and costs the others nothing:
 ```sh
 $ worktender ls --all-repos
 /Users/you/code/worktender
-  *  main                   w21  w21:p1  idle     worktender
-     77-cross-repo          w30  w30:p1  blocked  77-cross-repo
+  *  main                   w21  w21:p1  idle     1057  worktender
+     77-cross-repo          w30  w30:p1  blocked  812   77-cross-repo
 /Users/you/code/lighthouse
-  *  main  w4  w4:p1  working  lighthouse
+  *  main  w4  w4:p1  working  1061  lighthouse
 ```
 
 `--pr` is deliberately not available across repositories: the lookup runs in
@@ -76,7 +87,7 @@ somebody looks, which is why it is worth a question of its own:
 ```sh
 $ worktender ls --all-repos --blocked
 /Users/you/code/worktender
-     77-cross-repo  w30  w30:p1  blocked  77-cross-repo
+     77-cross-repo  w30  w30:p1  blocked  812  77-cross-repo
 ```
 
 Repositories with nothing blocked are left out rather than drawn as empty

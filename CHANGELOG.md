@@ -38,6 +38,38 @@ install` tracks branch HEAD rather than a tag — the version in
   `prune --json` gained `releases_agents` on each result, so a coordinator
   tracking its own workers can see which removals ended one.
 
+- **A state counter on every `ls` row, so a stalled worker stops looking like a
+  working one.** `agent_status` is a point-in-time enum with no time in it: the
+  same `idle` for a worker that finished two seconds ago, one that finished
+  forty minutes ago, and one that never received its brief at all — which is not
+  hypothetical, it is what three workers reported for the whole of #82. Every
+  field on a row was a snapshot and none was a rate, so a watcher built on `ls`
+  could only fire on state *changes*, and a stuck worker produces none.
+
+  The obvious fix was a timestamp, and herdr does not have one. Measured against
+  a live herdr 0.7.5 / protocol 18 — every field of every pane, workspace and
+  agent in the session — not one carries a time. `state_change_seq` is what it
+  has instead, and `agent_status_seq` is that value passed through untouched.
+
+  A counter, not a clock, and deliberately not converted into one: the rate
+  depends on how busy the session is, so seconds cannot be recovered from a
+  single reading. Two readings can, and the caller is the one holding a clock.
+  Read down one listing it still answers the one-shot question — the row far
+  below its neighbours is the worker herdr last saw do anything. What counts as
+  *stalled* stays the caller's call, which is why there is no
+  `stalled_for_seconds`.
+
+  Measured semantics, since herdr's schema documents none of them: session-wide,
+  monotonic, and stamped on herdr's own notion of a state change rather than on
+  the status column — it moves for a `working` → `idle` → `working` that column
+  hides, and holds still across a `done` → `idle` relabelling. Null when herdr
+  has no agent in the row's pane, never `0`.
+
+  It costs one `agent.list` per invocation, not per row or per repository, and
+  it is skipped when no row has a pane. A lookup that fails costs the listing
+  the column and nothing else. **No watcher, no poll loop, no resident process**
+  — this makes a stall observable, which is the opposite job.
+
 - **`ls --all-repos`, so a listing can answer for more than the repository you
   are standing in.** `ls` took a single root and every call below it was scoped
   to that root, which left someone running agents in six repositories with no
