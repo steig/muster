@@ -25,10 +25,10 @@ const defaultCallTimeout = 5 * time.Second
 
 // callMargin is how much longer than herdr's own wait the client will hold on.
 //
-// Some requests ask herdr to wait — agent.start blocks until the pane is usable
-// — and a client deadline shorter than the wait it just requested would abort
-// the call before herdr could possibly answer, turning "still starting" into a
-// hard failure on exactly the slow case the wait exists for.
+// Some requests ask herdr to wait, and a client deadline shorter than the wait
+// it just requested would abort the call before herdr could possibly answer,
+// turning "still starting" into a hard failure on exactly the slow case the
+// wait exists for.
 const callMargin = 10 * time.Second
 
 // deadlineFor is how long to wait for a reply to a request that asked herdr to
@@ -327,8 +327,15 @@ func (c *Client) PaneReportMetadata(paneID, source string, tokens map[string]any
 	}, nil)
 }
 
-// AgentStart starts an agent in a pane. timeoutMS bounds herdr's own wait for
-// the pane to become usable; zero leaves herdr's default in place.
+// AgentStart starts an agent in a pane. timeoutMS is herdr's own launch bound;
+// zero leaves herdr's default in place.
+//
+// IT DOES NOT COVER PANE AVAILABILITY, whatever this comment used to say.
+// Measured against protocol 17: agent.start against a pane running anything but
+// its shell answers agent_pane_busy in 1.6-3.0ms, identically with timeoutMS
+// unset, 1000, 60000 and 120000. So a caller staffing a worktree seconds old —
+// still in direnv, nix or a login banner — gets an immediate refusal and has to
+// do its own waiting. execute.staff is where that happens.
 func (c *Client) AgentStart(name, kind, paneID string, args []string, timeoutMS int) error {
 	params := map[string]any{"name": name, "kind": kind, "pane_id": paneID}
 	if len(args) > 0 {

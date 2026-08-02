@@ -162,6 +162,62 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Fixed
 
+- **The brief no longer carries the issue; it says to go and read it.** (#94)
+  The body used to be flattened onto one line, capped at 4000 runes and pasted
+  between markers, and the result arrived at the worker **twice and cut
+  mid-sentence**. Every one of those three mechanisms was a workaround for
+  putting untrusted prose where instructions go, and dropping the body retires
+  all of them at once: the worker runs `gh issue view` and reads the same text
+  as tool output, uncut and unflattened. Nothing an issue author writes reaches
+  the brief now — the title survives only as a branch name `reconcile.Slug` has
+  already reduced to `[a-z0-9-]`. `start` does not even ask `gh` for the body.
+
+  It also fixes what the length cost. **Measured against protocol 17**, in a
+  scratch pane rather than argued: a pane delivers text to its process in reads
+  of at most **1022 bytes**, so a 4400-byte brief arrived as five separate
+  bursts — and the Enter followed the last of them by **10µs**, in a read of its
+  own. That is no separation at all for a TUI batching its input, which is why a
+  submit "sent after the text" could still be swallowed as part of the paste.
+  The brief is now one burst.
+
+  The hypothesis in the issue — that `pane.send_text` returns before the TTY has
+  drained, so the Enter lands mid-stream — **was tested and is false.** A
+  4400-byte payload followed immediately by `pane.send_keys` arrived byte-exact
+  with the newline strictly last, twice over. The ordering was never the problem;
+  the proximity was.
+
+- **`start` reads the brief back out of the pane before pressing Enter.** (#94)
+  The same accepted-versus-delivered gap `writeReport` closes on its metadata
+  tokens, applied to the payload that matters most. It polls `pane.read` until
+  the tail of the brief shows up — comparing only letters and digits, so a
+  composer's wrapping and borders do not hide it — and that observed render is
+  the separation the Enter needs, rather than a sleep guessing at how much is
+  enough.
+
+  It is best effort by design: not seeing the text is not evidence it is absent,
+  since a TUI may collapse a paste into a placeholder, so the Enter is pressed
+  either way and the existing confirmation stays the judge. What the answer buys
+  is the diagnosis. A brief that never appeared and one sitting unsubmitted need
+  different advice, and the old message told you to press Enter again in both
+  cases — which is what #94 followed into a composer holding a mangled brief.
+
+- **Staffing waits out a pane that is still busy, because herdr does not.** (#95)
+  `start` on a fresh worktree failed with `agent_pane_busy` while its shell was
+  still in direnv, nix or a login banner, leaving a created worktree with no
+  agent and needing a second, different command to finish. `AgentStartTimeout`
+  was 60 seconds and said in its own comment that it bounded exactly this wait.
+  **It did not.** Measured against protocol 17: `agent.start` on an occupied pane
+  answers `agent_pane_busy` in **1.6–3.0ms**, identically with `timeout_ms`
+  unset, 1000, 60000 and 120000. The constant described a guarantee that did not
+  exist, and the comment now says what was measured.
+
+  So `execute.staff` does the waiting — every staffing path, not just `start`,
+  since `sync` staffed the same fresh worktrees. It retries only
+  `agent_pane_busy`, the one code a later attempt can change, and re-reads the
+  "has somebody else staffed this workspace" guard on every attempt, because a
+  minute of waiting is a minute in which they can. A staffing that waited says
+  so in its report line, and one that gives up names what it was waiting for.
+
 - **`start` submits the brief, and confirms it was taken up.** It typed the
   brief with a trailing newline and reported "briefed". The newline did not
   submit: a brief is kilobytes arriving in one burst, the TUI reads a burst as a
