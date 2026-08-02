@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
@@ -181,7 +182,7 @@ func GhPRState(root, branch string) PRState {
 // reworded in a minor release without anything here noticing. Measured against
 // gh 2.96.0.
 func GhPRLookup(root, branch string) (PRState, error) {
-	args := []string{"pr", "list", "--head", branch, "--state", "all", "--json", "state"}
+	args := []string{"pr", "list", "--head", branch, "--state", "all", "--json", "state,createdAt"}
 	if origin := gitx.RemoteURL(root); origin != "" {
 		args = append(args, "--repo", origin)
 	}
@@ -194,9 +195,7 @@ func GhPRLookup(root, branch string) (PRState, error) {
 		return PRNone, fmt.Errorf("gh pr list %s: %s", branch, ghMessage(err))
 	}
 
-	var payload []struct {
-		State string `json:"state"`
-	}
+	var payload []prRecord
 	if err := json.Unmarshal(out, &payload); err != nil {
 		return PRNone, fmt.Errorf("gh pr list %s: unreadable answer: %w", branch, err)
 	}
@@ -207,7 +206,19 @@ func GhPRLookup(root, branch string) (PRState, error) {
 	// A branch can carry more than one pull request — close one, push again,
 	// open another — and an open one is the answer whichever order gh returns
 	// them in. Reading the closed one would prune a worktree with live work.
-	state := PRState(payload[0].State)
+	//
+	// With none open the answer is the newest, which is why createdAt is asked
+	// for at all: gh's list order is not documented and not guaranteed, and a
+	// branch that was merged, reused, and closed unmerged the second time holds
+	// commits that exist nowhere else. Answering "merged" there prunes the
+	// checkout and says so confidently.
+	latest := payload[0]
+	for _, pr := range payload[1:] {
+		if pr.supersedes(latest) {
+			latest = pr
+		}
+	}
+	state := PRState(latest.State)
 	for _, pr := range payload {
 		if PRState(pr.State) == PROpen {
 			state = PROpen
@@ -221,6 +232,33 @@ func GhPRLookup(root, branch string) (PRState, error) {
 	default:
 		return PRNone, fmt.Errorf("gh pr list %s: unknown state %q", branch, state)
 	}
+}
+
+// prRecord is one row of `gh pr list --json state,createdAt`.
+type prRecord struct {
+	State     string `json:"state"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// supersedes says whether pr should be read as the branch's current pull
+// request in preference to other. Newer wins.
+//
+// Without two usable timestamps — equal ones, or a gh that stops sending the
+// field — the tie goes to the state that keeps the worktree, rather than back
+// to the array order this exists to stop trusting. Keeping costs disk; the
+// other direction costs a checkout whose work was never merged.
+func (pr prRecord) supersedes(other prRecord) bool {
+	mine, ok := pr.created()
+	theirs, otherOK := other.created()
+	if ok && otherOK && !mine.Equal(theirs) {
+		return mine.After(theirs)
+	}
+	return PRState(pr.State) == PRClosed && PRState(other.State) == PRMerged
+}
+
+func (pr prRecord) created() (time.Time, bool) {
+	at, err := time.Parse(time.RFC3339, pr.CreatedAt)
+	return at, err == nil
 }
 
 // ghMessage is what gh said, because its exit status alone names nothing a

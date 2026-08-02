@@ -218,6 +218,24 @@ install` tracks branch HEAD rather than a tag — the version in
   minute of waiting is a minute in which they can. A staffing that waited says
   so in its report line, and one that gives up names what it was waiting for.
 
+- **A reused branch is read by its latest pull request, not by whichever one
+  `gh` listed first.** `GhPRLookup` preferred an `OPEN` pull request and
+  otherwise took `payload[0]` — gh's list order, which is undocumented, not
+  guaranteed by the API, and was asserted by nothing. A branch that was merged,
+  pushed to again, and whose second pull request was closed unmerged has both a
+  `MERGED` and a `CLOSED` one and neither is open. If the merged one arrived
+  first, `verdict()` read "PR merged", which is unconditional authority to
+  remove a worktree — so a checkout holding the second attempt's commits was
+  pruned, under a reason that says the work landed. `git branch -d` will not
+  force, so the commits stayed reachable in the repository; the checkout and the
+  accurate reason did not.
+
+  The lookup now asks for `createdAt` and takes the newest. An open pull request
+  still wins outright. Where the timestamps cannot decide — a tie, or a gh that
+  stops sending the field — `CLOSED` beats `MERGED` rather than falling back to
+  the array order, because keeping costs disk and the other direction costs
+  work. Pinned by tests that assert `CLOSED` + `MERGED` in both orders.
+
 - **`start` submits the brief, and confirms it was taken up.** It typed the
   brief with a trailing newline and reported "briefed". The newline did not
   submit: a brief is kilobytes arriving in one burst, the TUI reads a burst as a

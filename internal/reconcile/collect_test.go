@@ -355,6 +355,122 @@ func TestGhPRLookupPrefersTheOpenPullRequest(t *testing.T) {
 	}
 }
 
+// The reused branch: merged once, pushed again, and the second pull request
+// closed unmerged. The branch now holds the second attempt's commits, so the
+// answer is CLOSED — and it has to be CLOSED in both array orders, because
+// gh's list order is undocumented and reading MERGED prunes the checkout with
+// the reason "PR merged", which is both wrong and reassuring.
+func TestGhPRLookupPicksTheLatestPullRequest(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	merged := `{"state":"MERGED","createdAt":"2026-01-05T10:00:00Z"}`
+	closed := `{"state":"CLOSED","createdAt":"2026-03-09T10:00:00Z"}`
+
+	for _, tc := range []struct {
+		name string
+		list string
+	}{
+		{"merged first", "[" + merged + "," + closed + "]"},
+		{"closed first", "[" + closed + "," + merged + "]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			herdrtest.FakeGh(t, `echo '`+tc.list+`'`)
+
+			state, err := reconcile.GhPRLookup(repo.Root, "fix/reused")
+			if err != nil {
+				t.Fatalf("GhPRLookup: %v", err)
+			}
+			if state != reconcile.PRClosed {
+				t.Errorf("state = %q, want PRClosed: the branch's latest pull request "+
+					"was closed unmerged and its commits exist nowhere else", state)
+			}
+		})
+	}
+
+	// The ordering rests on a field gh only sends when asked for it, and the
+	// fake above answers whatever this file tells it to regardless of argv.
+	t.Run("createdAt is asked for", func(t *testing.T) {
+		argv := filepath.Join(t.TempDir(), "argv")
+		herdrtest.FakeGh(t, `echo "$@" > `+argv+`; echo '[]'`)
+
+		if _, err := reconcile.GhPRLookup(repo.Root, "fix/reused"); err != nil {
+			t.Fatalf("GhPRLookup: %v", err)
+		}
+		asked, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatalf("read argv: %v", err)
+		}
+		if !strings.Contains(string(asked), "createdAt") {
+			t.Errorf("gh was asked %q, which leaves the pull requests unordered",
+				strings.TrimSpace(string(asked)))
+		}
+	})
+
+	// And with the field gone, the tie goes to the state that keeps the
+	// worktree rather than back to the array order.
+	t.Run("no timestamps", func(t *testing.T) {
+		herdrtest.FakeGh(t, `echo '[{"state":"MERGED"},{"state":"CLOSED"}]'`)
+
+		state, err := reconcile.GhPRLookup(repo.Root, "fix/reused")
+		if err != nil {
+			t.Fatalf("GhPRLookup: %v", err)
+		}
+		if state != reconcile.PRClosed {
+			t.Errorf("state = %q, want PRClosed", state)
+		}
+	})
+
+	// An open pull request is still the answer even when an older one, because
+	// it is what someone is working on now.
+	t.Run("open outranks a newer closed", func(t *testing.T) {
+		herdrtest.FakeGh(t, `echo '[{"state":"OPEN","createdAt":"2026-01-05T10:00:00Z"},`+closed+`]'`)
+
+		state, err := reconcile.GhPRLookup(repo.Root, "fix/reused")
+		if err != nil {
+			t.Fatalf("GhPRLookup: %v", err)
+		}
+		if state != reconcile.PROpen {
+			t.Errorf("state = %q, want PROpen", state)
+		}
+	})
+}
+
+// The verdict the ordering protects, end to end: the reconciler must keep this
+// worktree, and say why.
+func TestCollectKeepsReusedBranchClosedUnmerged(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("reused", "reused")
+	repo.CommitIn(checkout, "first.txt", "landed")
+	repo.Git("merge", "--no-ff", "-m", "merge first attempt", "reused")
+	repo.CommitIn(checkout, "second.txt", "never merged anywhere")
+
+	herdrtest.FakeGh(t, `echo '[{"state":"MERGED","createdAt":"2026-01-05T10:00:00Z"},`+
+		`{"state":"CLOSED","createdAt":"2026-03-09T10:00:00Z"}]'`)
+
+	collector := collectFixture(t, repo,
+		[]map[string]any{worktreeJSON(checkout, "reused", true, "")}, nil, nil, nil)
+	collector.LookupPR = func(branch string) reconcile.PRState {
+		return reconcile.GhPRState(repo.Root, branch)
+	}
+
+	state, err := collector.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	actions := reconcile.Reconcile(state)
+	if action := find(actions, reconcile.KindPrune, checkout); action != nil {
+		t.Fatalf("a branch whose latest pull request was closed unmerged must not be pruned, got %q", action.Reason)
+	}
+	keep := find(actions, reconcile.KindKeep, checkout)
+	if keep == nil {
+		t.Fatal("expected a keep for the reused branch")
+	}
+	if !strings.Contains(keep.Reason, "closed without merging") {
+		t.Errorf("Reason = %q, want the closed-unmerged reason", keep.Reason)
+	}
+}
+
 // The lookup has to ask about every state. gh's default filter is open-only,
 // and under it a merged pull request comes back as the empty array that means
 // "this branch was never opened as one" — which is prune's whole verdict read
@@ -403,17 +519,30 @@ func TestGhPRLookupAgainstRealGh(t *testing.T) {
 		t.Errorf("state = %q, want PRNone", state)
 	}
 
-	// And the other half of the contract, against a pull request that is
-	// merged and will stay merged. Only this repository has it.
+	// And the other half: a branch that does have a pull request answers with a
+	// state. Which branch is found at runtime rather than written down, because
+	// no particular pull request is permanent — a branch can be reused and its
+	// state change under a test that pinned one. The assertion is correspondingly
+	// loose: some state, not a named one.
 	if !strings.Contains(gitx.RemoteURL(root), "steig/worktender") {
 		t.Skip("origin is not the upstream repository")
 	}
-	state, err = reconcile.GhPRLookup(root, "test/87-prune-decide-execute-race")
+	found, err := exec.Command("gh", "pr", "list", "--state", "all", "--limit", "1",
+		"--json", "headRefName", "--jq", ".[].headRefName").Output()
 	if err != nil {
-		t.Fatalf("GhPRLookup: %v", err)
+		t.Skipf("gh could not name a pull request to ask about: %v", err)
 	}
-	if state != reconcile.PRMerged {
-		t.Errorf("state = %q, want PRMerged (worktender#88)", state)
+	branch := strings.TrimSpace(string(found))
+	if branch == "" {
+		t.Skip("the repository has no pull requests to ask about")
+	}
+
+	state, err = reconcile.GhPRLookup(root, branch)
+	if err != nil {
+		t.Fatalf("GhPRLookup %s: %v", branch, err)
+	}
+	if state == reconcile.PRNone {
+		t.Errorf("state = PRNone for %s, which gh just listed a pull request for", branch)
 	}
 }
 
