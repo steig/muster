@@ -157,7 +157,7 @@ func onEventCommand(out io.Writer) error {
 	defer releaseLock(lock, out)
 
 	return lock.Repeat(reconcilePasses, func() error {
-		actions, err := s.planWith(collector)
+		actions, err := s.planWith(collector, false)
 		if err != nil {
 			return err
 		}

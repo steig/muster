@@ -57,7 +57,7 @@ func TestStaffsAgentlessWorkspace(t *testing.T) {
 		Workspaces: []reconcile.Workspace{
 			{ID: "w2", CheckoutPath: "/repo/wt/a", IsLinked: true, PaneIDs: []string{"w2:p1", "w2:p2"}},
 		},
-		AgentPanes: map[string]bool{},
+		AgentPanes: map[string]reconcile.AgentState{},
 	}
 
 	action := find(reconcile.Reconcile(state), reconcile.KindStaff, "/repo/wt/a")
@@ -87,7 +87,7 @@ func TestStaffingNameSeparatesRepositories(t *testing.T) {
 			Workspaces: []reconcile.Workspace{
 				{ID: "w2", CheckoutPath: root + "/wt/api", IsLinked: true, PaneIDs: []string{"w2:p1"}},
 			},
-			AgentPanes: map[string]bool{},
+			AgentPanes: map[string]reconcile.AgentState{},
 		}
 		action := find(reconcile.Reconcile(state), reconcile.KindStaff, root+"/wt/api")
 		if action == nil {
@@ -114,7 +114,7 @@ func TestDoesNotStaffWorkspaceThatAlreadyHasAnAgent(t *testing.T) {
 			// would wrongly restaff this workspace.
 			{ID: "w2", CheckoutPath: "/repo/wt/a", IsLinked: true, PaneIDs: []string{"w2:p1", "w2:p2"}},
 		},
-		AgentPanes: map[string]bool{"w2:p2": true},
+		AgentPanes: map[string]reconcile.AgentState{"w2:p2": reconcile.AgentWorking},
 	}
 
 	if find(reconcile.Reconcile(state), reconcile.KindStaff, "/repo/wt/a") != nil {
@@ -129,7 +129,7 @@ func TestDoesNotStaffMainCheckoutWorkspace(t *testing.T) {
 		Workspaces: []reconcile.Workspace{
 			{ID: "w1", CheckoutPath: "/repo", IsLinked: false, PaneIDs: []string{"w1:p1"}},
 		},
-		AgentPanes: map[string]bool{},
+		AgentPanes: map[string]reconcile.AgentState{},
 	}
 
 	if find(reconcile.Reconcile(state), reconcile.KindStaff, "/repo") != nil {
@@ -155,7 +155,7 @@ func TestStaffResumesWhenATranscriptExists(t *testing.T) {
 				Workspaces: []reconcile.Workspace{
 					{ID: "w2", CheckoutPath: "/repo/wt/a", IsLinked: true, PaneIDs: []string{"w2:p1"}},
 				},
-				AgentPanes: map[string]bool{},
+				AgentPanes: map[string]reconcile.AgentState{},
 			}
 
 			action := find(reconcile.Reconcile(state), reconcile.KindStaff, "/repo/wt/a")
@@ -209,7 +209,7 @@ func TestNeverPrunesWorktreeHostingALiveAgent(t *testing.T) {
 		Workspaces: []reconcile.Workspace{
 			{ID: "w2", CheckoutPath: "/repo/wt/a", IsLinked: true, PaneIDs: []string{"w2:p1"}},
 		},
-		AgentPanes: map[string]bool{"w2:p1": true},
+		AgentPanes: map[string]reconcile.AgentState{"w2:p1": reconcile.AgentWorking},
 	}
 
 	actions := reconcile.Reconcile(state)
@@ -218,6 +218,136 @@ func TestNeverPrunesWorktreeHostingALiveAgent(t *testing.T) {
 	}
 	if keep := find(actions, reconcile.KindKeep, "/repo/wt/a"); keep == nil || keep.Reason != "agent running" {
 		t.Errorf("expected an explanatory keep, got %+v", keep)
+	}
+}
+
+// occupied is the state the whole release question is about: a worktree whose
+// work has landed, held open by a workspace whose one pane still hosts an agent
+// in the given state.
+func occupied(path, branch string, status reconcile.AgentState) reconcile.State {
+	w := linked(path, branch)
+	w.WorkspaceID = "w2"
+	return reconcile.State{
+		Base:      "main",
+		Worktrees: []reconcile.Worktree{w},
+		Workspaces: []reconcile.Workspace{
+			{ID: "w2", CheckoutPath: path, IsLinked: true, PaneIDs: []string{"w2:p1"}},
+		},
+		AgentPanes: map[string]reconcile.AgentState{"w2:p1": status},
+	}
+}
+
+// The issue this is all for. A dispatched worker that finished still occupies
+// its pane — herdr frees an agent only when the pane goes away — so read as
+// presence, guard b makes the ordinary end state of a successful dispatch a
+// worktree nothing can ever remove. It is still kept by default, but the line
+// has to say what would remove it rather than read as live work.
+func TestKeepingAFinishedAgentsWorktreeSaysWhatWouldRemoveIt(t *testing.T) {
+	for _, status := range []reconcile.AgentState{reconcile.AgentIdle, reconcile.AgentDone} {
+		t.Run(string(status), func(t *testing.T) {
+			actions := reconcile.Reconcile(occupied("/repo/wt/a", "a", status))
+
+			if find(actions, reconcile.KindPrune, "/repo/wt/a") != nil {
+				t.Fatal("without --release-agents this is still a keep")
+			}
+			keep := find(actions, reconcile.KindKeep, "/repo/wt/a")
+			if keep == nil {
+				t.Fatal("expected an explanatory keep")
+			}
+			if keep.Reason == "agent running" {
+				t.Error("a finished agent must not be reported as work in flight")
+			}
+			if !strings.Contains(keep.Reason, "PR merged") {
+				t.Errorf("the reason should still say the work landed, got %q", keep.Reason)
+			}
+			if !strings.Contains(keep.Reason, "--release-agents") {
+				t.Errorf("a keep nothing can act on is the bug; got %q", keep.Reason)
+			}
+		})
+	}
+}
+
+func TestPrunesAFinishedAgentsWorktreeWhenAskedTo(t *testing.T) {
+	state := occupied("/repo/wt/a", "a", reconcile.AgentIdle)
+	state.ReleaseAgents = true
+
+	action := find(reconcile.Reconcile(state), reconcile.KindPrune, "/repo/wt/a")
+	if action == nil {
+		t.Fatal("--release-agents is what gives the keep somewhere to go")
+	}
+	if !action.ReleasesAgents {
+		t.Error("the executor has to know this removal is also taking a pane away")
+	}
+	if action.Reason != "PR merged" {
+		t.Errorf("Reason = %q; the authority for the removal is unchanged", action.Reason)
+	}
+}
+
+// --release-agents reaches an agent that has stopped, and nothing else. An
+// unrecognised status is busy for the reason an unreadable guard is unsatisfied:
+// this build cannot tell what it means.
+func TestNeverReleasesAnAgentThatIsNotFinished(t *testing.T) {
+	for _, status := range []reconcile.AgentState{
+		reconcile.AgentWorking, reconcile.AgentBlocked, reconcile.AgentUnknown, "compacting", "",
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			state := occupied("/repo/wt/a", "a", status)
+			state.ReleaseAgents = true
+
+			actions := reconcile.Reconcile(state)
+			if find(actions, reconcile.KindPrune, "/repo/wt/a") != nil {
+				t.Fatal("asking to release finished agents must not reach one that is not")
+			}
+			if keep := find(actions, reconcile.KindKeep, "/repo/wt/a"); keep == nil || keep.Reason != "agent running" {
+				t.Errorf("expected the ordinary agent keep, got %+v", keep)
+			}
+		})
+	}
+}
+
+// A workspace holding a finished agent beside a working one has live work in
+// it. Reporting the finished one would be answering with the pane that suits
+// the verdict rather than the one that is true.
+func TestABusyPaneOutweighsAFinishedOneInTheSameWorkspace(t *testing.T) {
+	state := occupied("/repo/wt/a", "a", reconcile.AgentIdle)
+	state.Workspaces[0].PaneIDs = []string{"w2:p1", "w2:p2"}
+	state.AgentPanes["w2:p2"] = reconcile.AgentWorking
+	state.ReleaseAgents = true
+
+	actions := reconcile.Reconcile(state)
+	if find(actions, reconcile.KindPrune, "/repo/wt/a") != nil {
+		t.Fatal("a workspace with a working agent in any pane is not free to remove")
+	}
+	if keep := find(actions, reconcile.KindKeep, "/repo/wt/a"); keep == nil || keep.Reason != "agent running" {
+		t.Errorf("expected the ordinary agent keep, got %+v", keep)
+	}
+}
+
+// Releasing agents removes a reason to keep; it is not a second authority to
+// remove. Everything the verdict decides still decides it.
+func TestReleasingAgentsDoesNotWidenTheVerdict(t *testing.T) {
+	state := occupied("/repo/wt/a", "a", reconcile.AgentIdle)
+	state.Worktrees[0].PR = reconcile.PROpen
+	state.ReleaseAgents = true
+
+	actions := reconcile.Reconcile(state)
+	if find(actions, reconcile.KindPrune, "/repo/wt/a") != nil {
+		t.Fatal("an open pull request is unfinished work, agent or no agent")
+	}
+	keep := find(actions, reconcile.KindKeep, "/repo/wt/a")
+	if keep == nil || keep.Reason != "still open" {
+		t.Errorf("expected the verdict's own reason, got %+v", keep)
+	}
+}
+
+// The other half of telling attached from busy: staffing still asks only
+// whether a pane is occupied. A finished agent is sitting at a prompt, and a
+// second agent started on top of it lands on that conversation.
+func TestAFinishedAgentStillCountsAsStaffed(t *testing.T) {
+	state := occupied("/repo/wt/a", "a", reconcile.AgentDone)
+
+	if find(reconcile.Reconcile(state), reconcile.KindStaff, "/repo/wt/a") != nil {
+		t.Error("a workspace whose agent has finished is occupied, not empty")
 	}
 }
 
@@ -365,7 +495,7 @@ func TestActionsAreOrderedForExecution(t *testing.T) {
 		Workspaces: []reconcile.Workspace{
 			{ID: "w3", CheckoutPath: "/repo/wt/bare", IsLinked: true, PaneIDs: []string{"w3:p1"}},
 		},
-		AgentPanes: map[string]bool{},
+		AgentPanes: map[string]reconcile.AgentState{},
 	}
 
 	var order []reconcile.Kind
@@ -408,7 +538,7 @@ func TestReconcileIsPure(t *testing.T) {
 		Worktrees: []reconcile.Worktree{
 			{Path: "/repo/wt/a", Branch: "a", IsLinked: true, OwnCommits: 1, PR: reconcile.PRMerged},
 		},
-		AgentPanes: map[string]bool{},
+		AgentPanes: map[string]reconcile.AgentState{},
 	}
 
 	first := reconcile.Reconcile(state)
@@ -570,7 +700,7 @@ func TestNeverPrunesWorktreeHostingALiveAgentUnderADifferentSpelling(t *testing.
 		Workspaces: []reconcile.Workspace{
 			{ID: "w2", CheckoutPath: real, IsLinked: true, PaneIDs: []string{"w2:p1"}},
 		},
-		AgentPanes: map[string]bool{"w2:p1": true},
+		AgentPanes: map[string]reconcile.AgentState{"w2:p1": reconcile.AgentWorking},
 	}
 
 	actions := reconcile.Reconcile(state)

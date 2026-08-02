@@ -27,6 +27,29 @@ const (
 	PRClosed PRState = "CLOSED"
 )
 
+// AgentState is what herdr says the agent occupying a pane is doing. It is
+// mirrored here rather than imported for the reason PRState mirrors gh's
+// states: the reconciler is a pure function over facts and talks to nothing.
+type AgentState string
+
+const (
+	AgentIdle    AgentState = "idle"
+	AgentWorking AgentState = "working"
+	AgentBlocked AgentState = "blocked"
+	AgentDone    AgentState = "done"
+	AgentUnknown AgentState = "unknown"
+)
+
+// Finished reports an agent that is plainly not in the middle of anything: it
+// has either said it is done or is sitting at a prompt waiting to be told what
+// to do next.
+//
+// Everything else is busy, including a status this build has never heard of —
+// an unreadable guard is an unsatisfied one. `blocked` is busy on purpose: it
+// means an agent waiting on a human, which is unfinished work with somebody
+// still to answer it.
+func (s AgentState) Finished() bool { return s == AgentIdle || s == AgentDone }
+
 // Worktree is one checkout on disk, with the git facts already resolved.
 type Worktree struct {
 	Path   string
@@ -78,9 +101,14 @@ type State struct {
 	Worktrees []Worktree
 	// Workspaces is every herdr workspace for this repository.
 	Workspaces []Workspace
-	// AgentPanes holds the id of every pane currently hosting an agent,
-	// across all workspaces.
-	AgentPanes map[string]bool
+	// AgentPanes holds what the agent in each pane is doing, keyed by pane id,
+	// across all workspaces. A pane absent from the map hosts no agent.
+	AgentPanes map[string]AgentState
+	// ReleaseAgents permits a prune to take a finished agent's pane away by
+	// closing the workspace it sits in, which is the only way herdr frees an
+	// agent. Off by default, and it never reaches an agent that is still
+	// working — see prune.
+	ReleaseAgents bool
 }
 
 // Kind is what an Action asks the executor to do.
@@ -106,6 +134,10 @@ type Action struct {
 	WorkspaceID string
 	// PaneID is the pane to start an agent in, set on KindStaff.
 	PaneID string
+	// ReleasesAgents records that carrying this prune out will close a
+	// workspace that still hosts an agent, and so free it. Set on KindPrune,
+	// and only ever when the caller asked for it.
+	ReleasesAgents bool
 	// AgentName is the herdr agent name to use, set on KindStaff.
 	AgentName string
 	// Resume asks the executor to continue the existing transcript rather
@@ -227,19 +259,39 @@ func prune(state State) []Action {
 
 		// Guard b: an agent is mid-task here. Never delete the ground it
 		// stands on, whatever the branch looks like.
-		if ws, ok := byPath[pathKey(w.Path)]; ok && hasAgent(state, ws) {
+		//
+		// The guard turns on what the agent is doing rather than on its being
+		// there at all, because after a dispatch those two come apart: herdr
+		// frees an agent only when its pane goes away, so a worker that
+		// finished still occupies one. Read as presence, the guard makes the
+		// ordinary end state of a successful dispatch a worktree nothing can
+		// ever remove.
+		occupant, occupied := agentIn(state, byPath[pathKey(w.Path)])
+		if occupied && !occupant.Finished() {
 			keep("agent running")
 			continue
 		}
 
-		if landed, reason := verdict(w, state.Base); landed {
-			actions = append(actions, Action{
-				Kind: KindPrune, Path: w.Path, Branch: w.Branch,
-				WorkspaceID: w.WorkspaceID, Reason: reason,
-			})
-		} else {
+		landed, reason := verdict(w, state.Base)
+		if !landed {
 			keep(reason)
+			continue
 		}
+
+		// A finished agent still holds this pane, and closing its workspace is
+		// the only way to let go of it. That is a deliberate second step rather
+		// than a widening of the verdict, so by default this is still a keep —
+		// but one that says what would remove it.
+		if occupied && !state.ReleaseAgents {
+			keep(reason + ", but a finished agent still holds the pane — " +
+				"`prune-apply --release-agents` closes its workspace and removes it")
+			continue
+		}
+
+		actions = append(actions, Action{
+			Kind: KindPrune, Path: w.Path, Branch: w.Branch,
+			WorkspaceID: w.WorkspaceID, ReleasesAgents: occupied, Reason: reason,
+		})
 	}
 	return actions
 }
@@ -297,14 +349,31 @@ func verdict(w Worktree, base string) (landed bool, reason string) {
 	return false, "still open"
 }
 
-// hasAgent reports whether any pane in the workspace hosts an agent.
+// hasAgent reports whether any pane in the workspace hosts an agent, whatever
+// it is doing. Staffing asks only that: a workspace with a finished agent in it
+// is staffed, and starting a second one lands on top of the first.
 func hasAgent(state State, ws Workspace) bool {
+	_, occupied := agentIn(state, ws)
+	return occupied
+}
+
+// agentIn reports what the workspace's agent is doing, and whether there is one.
+//
+// The busiest pane wins. A workspace holding a finished agent beside a working
+// one is a workspace with live work in it, and reporting the finished one would
+// hand the prune guard the answer it wanted rather than the one that is true.
+func agentIn(state State, ws Workspace) (status AgentState, occupied bool) {
 	for _, pane := range ws.PaneIDs {
-		if state.AgentPanes[pane] {
-			return true
+		s, ok := state.AgentPanes[pane]
+		if !ok {
+			continue
 		}
+		if !occupied || !s.Finished() {
+			status = s
+		}
+		occupied = true
 	}
-	return false
+	return status, occupied
 }
 
 // pathKey is how a checkout is identified when joining worktrees to workspaces.

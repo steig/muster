@@ -69,10 +69,12 @@ func (c *Collector) Collect() (State, error) {
 		return State{}, err
 	}
 
-	state := State{Root: c.Root, Base: base, AgentPanes: map[string]bool{}}
+	state := State{Root: c.Root, Base: base, AgentPanes: map[string]AgentState{}}
 
 	for _, a := range agents.Agents {
-		state.AgentPanes[a.PaneID] = true
+		// Carried across verbatim: a status this build has no constant for is
+		// one AgentState.Finished treats as busy, which is the safe reading.
+		state.AgentPanes[a.PaneID] = AgentState(a.AgentStatus)
 	}
 
 	for _, w := range worktrees.Worktrees {

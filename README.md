@@ -183,7 +183,7 @@ worktender=$(herdr plugin list --json \
 Each of those four is also a herdr action — `Worktender: list worktrees` and
 friends — for reaching them from a keybinding or the plugin menu.
 
-Four things worth knowing before step 5 surprises you:
+A few things worth knowing before step 5 surprises you:
 
 - **`prune-apply` deletes the local branch too**, not just the checkout. It uses
   `git branch -d` and never `-D`, so a branch git considers unmerged survives and
@@ -202,6 +202,12 @@ Four things worth knowing before step 5 surprises you:
   the root they resolved, so read the `repository:` line before acting on a plan. Pass
   `--repo <path>` to settle it: a path anywhere inside a repository resolves to its
   root, and a path that is not one is an error rather than a fallback.
+- **A worker that finished still holds its pane**, because herdr frees an agent
+  only when the pane goes away. Its worktree is kept, and the line says so and
+  says what would remove it: `prune-apply --release-agents` closes the workspace
+  and takes the agent with it. Pass the flag to `prune` as well, or the dry run
+  describes a plan the apply will not carry out. An agent that is *working* is
+  never released, flag or no flag.
 - **Prune reads remote-tracking refs, so run `git fetch --prune` first** if you
   want a deleted upstream to count. A stale tracking ref reads as still present,
   which keeps the worktree — being out of date fails in the safe direction.

@@ -10,6 +10,34 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Added
 
+- **`--release-agents` on `prune` and `prune-apply`, and a prune guard that
+  tells an attached agent from a busy one.** herdr frees an agent when its pane
+  goes away and at no other moment — there is no `agent release` — so a worker
+  that finished its task still occupies the pane it was started in. The guard
+  read that as live work, which made the ordinary end state of a successful
+  dispatch a worktree nothing could ever remove. Measured after five pull
+  requests merged: five checkouts, five lines reading `agent running`, and the
+  only way out was closing each workspace by hand in the herdr UI — the manual
+  bookkeeping this plugin exists to end.
+
+  The guard now turns on what the agent is doing. `working` and `blocked` are
+  live work, and so is any status this build has no name for, because an
+  unreadable guard is an unsatisfied one. `idle` and `done` are an agent sitting
+  at a prompt with nothing in hand.
+
+  **Nothing is removed by default that was not removed before.** A finished
+  agent is still a keep — but a keep that names what would remove it, rather
+  than a sentence about live work that reads as a warning. `--release-agents` is
+  where that line now goes: it closes the workspace, which is what lets go of
+  the agent, and it is re-read at execution time like every other guard, so an
+  agent that picked work up between the plan and the removal is skipped. It is
+  not a herdr action and cannot be — an action is a fixed command array with no
+  argument surface — so it is always something a person typed. Pass it to both
+  halves, or the dry run describes a plan the apply will not carry out.
+
+  `prune --json` gained `releases_agents` on each result, so a coordinator
+  tracking its own workers can see which removals ended one.
+
 - **`ls --all-repos`, so a listing can answer for more than the repository you
   are standing in.** `ls` took a single root and every call below it was scoped
   to that root, which left someone running agents in six repositories with no

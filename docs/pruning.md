@@ -52,6 +52,37 @@ anything is removed rather than trusted from the plan:
 A guard that cannot be checked counts as unsatisfied. If herdr cannot be asked
 whether an agent is running, the worktree is kept rather than removed.
 
+## The agent that has finished
+
+**"Has an agent" is not "is busy", and after a dispatch the two come apart.**
+herdr frees an agent when its pane goes away and at no other moment — there is
+no `agent release` — so a worker that finished its task still occupies the pane
+it was started in. Read as presence, the agent guard makes the ordinary end
+state of a successful dispatch a worktree nothing can ever remove: five merged
+pull requests, five checkouts, five lines reading `agent running`.
+
+So the guard turns on what the agent is *doing*. `working` and `blocked` are
+live work; so is any status this build has no name for, because an unreadable
+guard is an unsatisfied one. `idle` and `done` are an agent sitting at a prompt
+with nothing in hand.
+
+That does not widen what may be removed. A finished agent whose branch has not
+landed is kept by the verdict, exactly as it would be with no agent at all. What
+changes is the one case where the verdict says remove and the only thing left
+standing in the way is a pane:
+
+```
+skipped  keep  fix/80-agent-names  PR merged, but a finished agent still holds the pane — `prune-apply --release-agents` closes its workspace and removes it
+```
+
+`--release-agents` is the deliberate second step, and it takes the pane away by
+closing the workspace, which is the only thing that frees an agent. It reaches
+an agent that has stopped and nothing else: one that picked work up between the
+plan and the removal is re-read at execution time and skipped, like every other
+guard here. It is not a herdr action and cannot be — an action is a fixed
+command array with no argument surface — so it is always something a person
+typed.
+
 ---
 
 [← README](../README.md)
