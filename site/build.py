@@ -59,7 +59,10 @@ def wrap_tables(html):
 
 def render_markdown(path):
     text = FOOTER.sub("", path.read_text())
-    md = markdown.Markdown(extensions=["fenced_code", "tables", "sane_lists", "attr_list"])
+    # toc is here for the heading ids alone, not for a table of contents. Three
+    # cross-document links point at a section, and without ids every one of them
+    # lands at the top of a long page looking like nothing more was written.
+    md = markdown.Markdown(extensions=["fenced_code", "tables", "sane_lists", "attr_list", "toc"])
     return wrap_tables(rewrite_links(md.convert(text)))
 
 
