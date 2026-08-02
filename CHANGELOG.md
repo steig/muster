@@ -60,6 +60,29 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Changed
 
+- **The pull request lookup asks `gh pr list --head`, not `gh pr view`.** Both
+  answer the same question; only one answers it in a way that is not English.
+  `gh pr view` exits non-zero for "this branch has no pull request" exactly as it
+  does for "I am not logged in", so the two were told apart by matching a
+  substring of gh's stderr prose — a sentence in another project, changeable in
+  any minor release, with nothing here to notice. `gh pr list` returns an empty
+  array and exits 0 for the first and fails only for the second.
+
+  `ls --json`'s three-valued `pr` and `doctor`'s gh check both rest on that
+  distinction, and a rewording would have folded every branch into "gh could not
+  be asked": an error on every row, and prune keeping everything for a reason
+  that reads as ordinary. The error text a consumer sees now says `gh pr list`
+  where it said `gh pr view`. Behaviour is otherwise unchanged, with one
+  addition — a branch carrying several pull requests reads as open if any of
+  them is, because reading the closed one prunes live work.
+
+  The suite still pins the contract against a fake gh, but an empty array and an
+  exit status are a contract; the fake is no longer repeating a sentence back to
+  itself. A second test asks the gh that is actually installed and skips when
+  there is none that can reach GitHub, so a future gh that stops answering this
+  way fails on someone's machine instead of going quiet. Measured against gh
+  2.96.0.
+
 - **A `wt.Row` now holds an empty string where a fact is absent, not `"-"`.** The
   dash is a rendering choice and lives in the renderer; a struct that stored it
   could only hand the ambiguity on. The table's output is unchanged.

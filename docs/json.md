@@ -48,7 +48,7 @@ $ worktender ls --pr --json
       "workspace_id": null,
       "pane_id": null,
       "agent_status": null,
-      "pr": { "state": null, "error": "gh pr view worktree/brave-valley: gh: To get started with GitHub CLI, please run: gh auth login" },
+      "pr": { "state": null, "error": "gh pr list worktree/brave-valley: gh: To get started with GitHub CLI, please run: gh auth login" },
       "dir": "brave-valley-66f8"
     }
   ]

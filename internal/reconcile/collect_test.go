@@ -1,10 +1,13 @@
 package reconcile_test
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
 	"github.com/steig/worktender/internal/herdrtest"
 	"github.com/steig/worktender/internal/reconcile"
@@ -109,7 +112,7 @@ func TestCollectPrunesOnlyWithAPRVerdict(t *testing.T) {
 	repo.CommitIn(done, "shipped.txt", "work")
 	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
 
-	herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+	herdrtest.FakeGh(t, `echo '[{"state":"MERGED"}]'`)
 
 	collector := collectFixture(t, repo,
 		[]map[string]any{worktreeJSON(done, "done", true, "")}, nil, nil, nil)
@@ -254,7 +257,7 @@ func TestCollectUsesGhForSquashMergedBranch(t *testing.T) {
 	repo.Git("merge", "--squash", "squashed")
 	repo.Git("commit", "-m", "squashed work")
 
-	herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+	herdrtest.FakeGh(t, `echo '[{"state":"MERGED"}]'`)
 
 	collector := collectFixture(t, repo,
 		[]map[string]any{worktreeJSON(checkout, "squashed", true, "")}, nil, nil, nil)
@@ -286,15 +289,18 @@ func TestGhPRStateToleratesFailure(t *testing.T) {
 	}
 }
 
-// The distinction GhPRState folds away and GhPRLookup keeps. gh exits 1 for
-// both, so a consumer told only "PRNone" cannot tell a branch that was never
-// opened as a pull request from a gh that is not logged in — and it is the
-// second that makes prune keep everything.
+// The distinction GhPRState folds away and GhPRLookup keeps: a consumer told
+// only "PRNone" cannot tell a branch that was never opened as a pull request
+// from a gh that is not logged in — and it is the second that makes prune keep
+// everything. The two arrive as an empty array on a success and a non-zero
+// exit, which is a contract and not a sentence, so this fake can speak it
+// without pinning anyone's prose. TestGhPRLookupAgainstRealGh checks the real
+// gh still keeps that contract.
 func TestGhPRLookupTellsNoPullRequestFromNoAnswer(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 
 	t.Run("no pull request", func(t *testing.T) {
-		herdrtest.FakeGh(t, `echo 'no pull requests found for branch "wip"' >&2; exit 1`)
+		herdrtest.FakeGh(t, `echo '[]'`)
 
 		state, err := reconcile.GhPRLookup(repo.Root, "wip")
 		if err != nil {
@@ -333,13 +339,91 @@ func TestGhPRLookupTellsNoPullRequestFromNoAnswer(t *testing.T) {
 	})
 }
 
+// A branch can carry several pull requests — close one, push again, open
+// another — and the open one is the verdict, because reading the closed one
+// prunes a worktree that is still being worked in.
+func TestGhPRLookupPrefersTheOpenPullRequest(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	herdrtest.FakeGh(t, `echo '[{"state":"CLOSED"},{"state":"OPEN"}]'`)
+
+	state, err := reconcile.GhPRLookup(repo.Root, "wip")
+	if err != nil {
+		t.Fatalf("GhPRLookup: %v", err)
+	}
+	if state != reconcile.PROpen {
+		t.Errorf("state = %q, want PROpen", state)
+	}
+}
+
+// The lookup has to ask about every state. gh's default filter is open-only,
+// and under it a merged pull request comes back as the empty array that means
+// "this branch was never opened as one" — which is prune's whole verdict read
+// backwards.
+func TestGhPRLookupAsksAboutEveryState(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	argv := filepath.Join(t.TempDir(), "argv")
+	herdrtest.FakeGh(t, `echo "$@" > `+argv+`; echo '[]'`)
+
+	if _, err := reconcile.GhPRLookup(repo.Root, "wip"); err != nil {
+		t.Fatalf("GhPRLookup: %v", err)
+	}
+	asked, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatalf("read argv: %v", err)
+	}
+	if !strings.Contains(string(asked), "--state all") {
+		t.Errorf("gh was asked %q, which omits merged and closed pull requests", strings.TrimSpace(string(asked)))
+	}
+}
+
+// The fake above speaks whatever this file tells it to, so it cannot notice gh
+// changing its mind. This one asks the gh that is actually installed, and fails
+// when the contract the lookup rests on — an empty array and a zero exit for a
+// branch with no pull request, a state for one that has them — stops holding.
+// It is skipped without a gh that can reach GitHub, so CI and offline runs
+// never see it.
+func TestGhPRLookupAgainstRealGh(t *testing.T) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		t.Skip("no gh installed")
+	}
+	if err := exec.Command("gh", "auth", "status").Run(); err != nil {
+		t.Skip("gh cannot reach GitHub")
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	// A branch nobody has ever opened a pull request for.
+	state, err := reconcile.GhPRLookup(root, "worktender/no-such-branch-8f3a1c")
+	if err != nil {
+		t.Errorf("gh no longer answers absence with an empty array: %v", err)
+	}
+	if state != reconcile.PRNone {
+		t.Errorf("state = %q, want PRNone", state)
+	}
+
+	// And the other half of the contract, against a pull request that is
+	// merged and will stay merged. Only this repository has it.
+	if !strings.Contains(gitx.RemoteURL(root), "steig/worktender") {
+		t.Skip("origin is not the upstream repository")
+	}
+	state, err = reconcile.GhPRLookup(root, "test/87-prune-decide-execute-race")
+	if err != nil {
+		t.Fatalf("GhPRLookup: %v", err)
+	}
+	if state != reconcile.PRMerged {
+		t.Errorf("state = %q, want PRMerged (worktender#88)", state)
+	}
+}
+
 // An open PR keeps the worktree even when everything else looks finished.
 func TestCollectKeepsWorktreeWithOpenPR(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 	checkout := repo.AddWorktree("wip", "wip")
 	repo.CommitIn(checkout, "wip.txt", "work")
 
-	herdrtest.FakeGh(t, `echo '{"state":"OPEN"}'`)
+	herdrtest.FakeGh(t, `echo '[{"state":"OPEN"}]'`)
 
 	collector := collectFixture(t, repo,
 		[]map[string]any{worktreeJSON(checkout, "wip", true, "")}, nil, nil, nil)
