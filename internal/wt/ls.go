@@ -275,9 +275,11 @@ type Repo struct {
 
 // AllRows reads the supplied repositories, in the order given.
 //
-// The workspace list is fetched once and joined against every repository's
-// worktrees: the agent status lives on the workspace, and asking herdr for the
-// same global list once per repository would be N round trips for one answer.
+// The workspace list is fetched once here and joined against every
+// repository's worktrees: the agent status lives on the workspace, and asking
+// herdr for the same global list once per repository would be N round trips for
+// one answer. Once here, not once per run — whoever discovered the roots has
+// already read the same list to find them.
 //
 // Which repositories to read is the caller's to decide. Discovery already
 // exists — herdr's open worktree workspaces — and a second one here would be a
