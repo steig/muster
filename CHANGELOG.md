@@ -64,6 +64,13 @@ install` tracks branch HEAD rather than a tag — the version in
   dash is a rendering choice and lives in the renderer; a struct that stored it
   could only hand the ambiguity on. The table's output is unchanged.
 
+- **The gate's release line now names the worker, on `--target` too.** It was
+  `gate: released after 4s` and is now `gate: worker released after 4s`. With
+  `--any` the name is the answer — it is what the caller drops before gating on
+  the rest — and a line that carried it only sometimes would be worse to script
+  against than one that always does. A caller matching the old prefix exactly
+  breaks; the report envelope printed under it is unchanged.
+
 ### Fixed
 
 - **`start` submits the brief, and confirms it was taken up.** It typed the

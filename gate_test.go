@@ -538,7 +538,9 @@ func TestGateReleasesOnANewReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gate did not release: %v\n%s", err, out)
 	}
-	for _, want := range []string{"released", "status: done", "pr: 12", noteQuote + "green", noteClose} {
+	// The release line names the worker on one target as well as on several, so
+	// the line is the same shape whichever flag opened the gate.
+	for _, want := range []string{"gate: worker released after", "status: done", "pr: 12", noteQuote + "green", noteClose} {
 		if !strings.Contains(out, want) {
 			t.Errorf("released report is missing %q:\n%s", want, out)
 		}
