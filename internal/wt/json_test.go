@@ -127,15 +127,14 @@ func TestLsAllJSONGroupsByRepositoryRatherThanTaggingEveryRow(t *testing.T) {
 		t.Fatalf("LsAll: %v", err)
 	}
 
+	// Exactly one of the two fields is ever non-null, so a consumer can tell
+	// which question was asked from the document alone — checked on the wire,
+	// because that invariant is a promise about the bytes.
+	assertNullOnTheWire(t, buf.Bytes(), "worktrees")
+
 	var document wt.ListJSON
 	if err := json.Unmarshal(buf.Bytes(), &document); err != nil {
 		t.Fatalf("stdout is not one JSON document: %v\n%s", err, buf.String())
-	}
-
-	// Exactly one of the two fields is ever non-null, so a consumer can tell
-	// which question was asked from the document alone.
-	if document.Worktrees != nil {
-		t.Errorf("worktrees must be null when the answer was grouped, got %+v", document.Worktrees)
 	}
 	if len(document.Repositories) != 2 {
 		t.Fatalf("want both repositories, got %+v", document.Repositories)
@@ -178,15 +177,39 @@ func TestLsJSONLeavesTheGroupedFieldNull(t *testing.T) {
 		t.Fatalf("Ls: %v", err)
 	}
 
+	assertNullOnTheWire(t, buf.Bytes(), "repositories")
+
 	var document wt.ListJSON
 	if err := json.Unmarshal(buf.Bytes(), &document); err != nil {
 		t.Fatalf("stdout is not one JSON document: %v\n%s", err, buf.String())
 	}
-	if document.Repositories != nil {
-		t.Errorf("repositories = %+v, want null when one repository was listed", document.Repositories)
-	}
 	if len(document.Worktrees) != 2 {
 		t.Errorf("want the flat listing, got %+v", document.Worktrees)
+	}
+}
+
+// assertNullOnTheWire fails unless field is present in the document and null.
+//
+// Unmarshalling into the struct cannot make this assertion: an explicit null
+// and an absent key both arrive as a nil slice, so a test written that way
+// passes whether or not the field ever reached the wire — and would keep
+// passing if somebody added `omitempty`. That is the one change this invariant
+// cannot survive: with the key gone, single-repository mode is indistinguishable
+// from a worktender too old to have the field at all, and telling those apart
+// is the whole point of emitting both keys.
+func assertNullOnTheWire(t *testing.T, document []byte, field string) {
+	t.Helper()
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(document, &raw); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\n%s", err, document)
+	}
+	value, present := raw[field]
+	if !present {
+		t.Fatalf("%q is absent from the document; it must be present and null:\n%s", field, document)
+	}
+	if string(value) != "null" {
+		t.Errorf("%q = %s on the wire, want null", field, value)
 	}
 }
 

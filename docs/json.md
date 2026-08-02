@@ -51,9 +51,18 @@ $ worktender ls --pr --json
       "pr": { "state": null, "error": "gh pr view worktree/brave-valley: gh: To get started with GitHub CLI, please run: gh auth login" },
       "dir": "brave-valley-66f8"
     }
-  ]
+  ],
+  "repositories": null
 }
 ```
+
+**Exactly one of `worktrees` and `repositories` is non-null, and both keys are
+always present.** That is the contract: `worktrees` answers for one repository
+and `repositories` is the `--all-repos` grouping, so a consumer reads which
+question was asked off the document rather than off the flags it thinks it
+passed. Neither key is ever omitted — an absent key would be indistinguishable
+from a worktender too old to have it, which is the one thing this pair exists to
+tell apart.
 
 Absence is `null`, always. `pr` has three states and they are the reason this
 object exists rather than a string:
@@ -99,8 +108,8 @@ $ worktender ls --all-repos --blocked --json
 }
 ```
 
-Exactly one of `worktrees` and `repositories` is ever non-null, so a consumer
-can tell which question was asked from the document alone.
+This is the other side of the invariant above: `worktrees` is `null` here, and
+still present.
 
 Grouped rather than a `repository` field on every row, which was the other
 candidate and the cheaper one. Three things decided it:
