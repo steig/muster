@@ -153,6 +153,12 @@ Errors you are most likely to meet:
   `prune-apply`**, and never joins it — see
   [Machine-readable output](json.md). Human asides that would otherwise sit
   beside the table, like a lock that would not release, go to stderr instead.
+- **`--release-agents` on `prune` and `prune-apply`** removes a finished
+  worktree whose agent has stopped, closing the workspace — which is the only
+  way herdr lets go of an agent. Pass it to *both* halves or the dry run
+  describes a plan the apply will not carry out. It never reaches an agent that
+  is working, and there is no action for it: see
+  [How it decides what to remove](pruning.md).
 - **`base` is `origin/HEAD`, not `main`.** It falls back to `main` only when
   origin cannot be asked, so a repository defaulting to `master` or `develop` is
   handled without configuration.

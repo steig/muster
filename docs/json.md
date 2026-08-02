@@ -146,7 +146,8 @@ $ worktender prune --repo . --json
       "workspace_id": "w4",
       "pane_id": null,
       "agent_name": null,
-      "reason": "merged into main"
+      "reason": "merged into main",
+      "releases_agents": false
     }
   ]
 }
@@ -162,6 +163,9 @@ $ worktender prune --repo . --json
   second step.
 - **`reason`** is why the reconciler planned the action; **`detail`** is what
   became of it. The table has room for one of them.
+- **`releases_agents`** marks a prune that also takes a finished agent's pane
+  away, which only `--release-agents` produces. A coordinator tracking its own
+  workers wants to know which removals ended one.
 - **`results`** is one document for the whole command, even though `sync`
   reconciles in up to three passes. The exit code is unchanged — a failed action
   still exits 1, and the report is written either way, because a consumer that

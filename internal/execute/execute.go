@@ -161,14 +161,24 @@ func (e *Executor) prune(action reconcile.Action) Result {
 	}
 
 	if !e.ApplyPrune {
-		return Result{action, StatusPlanned, fmt.Sprintf("would remove: %s", action.Reason)}
+		return Result{action, StatusPlanned,
+			fmt.Sprintf("would remove: %s%s", action.Reason, releaseNote(action))}
 	}
 
 	if err := e.removeCheckout(action, workspaceID); err != nil {
 		return Result{action, StatusFailed, err.Error()}
 	}
 	return Result{action, StatusDone,
-		fmt.Sprintf("removed: %s%s", action.Reason, e.dropBranch(action.Branch))}
+		fmt.Sprintf("removed: %s%s%s", action.Reason, releaseNote(action), e.dropBranch(action.Branch))}
+}
+
+// releaseNote says when a removal also takes an agent's pane away. The reason
+// covers why the worktree went; this covers what else went with it.
+func releaseNote(action reconcile.Action) string {
+	if !action.ReleasesAgents {
+		return ""
+	}
+	return ", releasing the finished agent holding it"
 }
 
 // pruneBlocked re-reads the guards at execution time and explains any refusal.
@@ -197,10 +207,17 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason st
 		workspaceID = holder
 	}
 	if workspaceID != "" {
-		if staffed, err := e.workspaceStaffed(workspaceID); err != nil {
+		occupied, busy, err := e.workspaceOccupant(workspaceID)
+		switch {
+		case err != nil:
 			return "", fmt.Sprintf("could not confirm the workspace is idle: %v", err), true
-		} else if staffed {
+		case occupied && !action.ReleasesAgents:
 			return "", "an agent started here since the plan was made", true
+		case occupied && busy:
+			// The plan was made against an agent that had finished. It has
+			// picked work up since, and --release-agents does not reach an
+			// agent that is doing something.
+			return "", "the agent here started working since the plan was made", true
 		}
 	}
 
@@ -232,27 +249,41 @@ func (e *Executor) workspaceHolding(checkout string) (string, error) {
 }
 
 // workspaceStaffed reports whether any pane of the workspace hosts an agent,
-// reading herdr fresh rather than trusting the plan.
+// whatever it is doing.
 func (e *Executor) workspaceStaffed(workspaceID string) (bool, error) {
+	staffed, _, err := e.workspaceOccupant(workspaceID)
+	return staffed, err
+}
+
+// workspaceOccupant reports whether any pane of the workspace hosts an agent
+// and whether any of those is busy, reading herdr fresh rather than trusting
+// the plan. Busy-ness is decided by the reconciler's own rule, so the guard
+// that plans a release and the guard that performs it cannot disagree.
+func (e *Executor) workspaceOccupant(workspaceID string) (occupied, busy bool, err error) {
 	agents, err := e.Client.AgentList()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	panes, err := e.Client.PaneList(workspaceID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 
-	hosting := make(map[string]bool, len(agents.Agents))
+	hosting := make(map[string]reconcile.AgentState, len(agents.Agents))
 	for _, a := range agents.Agents {
-		hosting[a.PaneID] = true
+		hosting[a.PaneID] = reconcile.AgentState(a.AgentStatus)
 	}
 	for _, p := range panes.Panes {
-		if hosting[p.PaneID] {
-			return true, nil
+		status, ok := hosting[p.PaneID]
+		if !ok {
+			continue
+		}
+		occupied = true
+		if !status.Finished() {
+			busy = true
 		}
 	}
-	return false, nil
+	return occupied, busy, nil
 }
 
 // removeCheckout deletes the worktree, preferring herdr so the workspace is
@@ -362,6 +393,10 @@ type ResultJSON struct {
 	// Reason is why the reconciler planned this action, which is not always
 	// what became of it — Detail is that.
 	Reason *string `json:"reason"`
+	// ReleasesAgents is set on a prune that takes a finished agent's pane away
+	// with the worktree. A consumer that tracks its own workers wants to know
+	// which removals ended one.
+	ReleasesAgents bool `json:"releases_agents"`
 }
 
 // JSON projects results for a machine, from exactly the []Result the table
@@ -370,16 +405,17 @@ func JSON(results []Result) []ResultJSON {
 	out := make([]ResultJSON, 0, len(results))
 	for _, r := range results {
 		out = append(out, ResultJSON{
-			Status:      string(r.Status),
-			Kind:        string(r.Action.Kind),
-			Target:      target(r.Action),
-			Detail:      r.Detail,
-			Branch:      jsonout.String(r.Action.Branch),
-			Path:        jsonout.String(r.Action.Path),
-			WorkspaceID: jsonout.String(r.Action.WorkspaceID),
-			PaneID:      jsonout.String(r.Action.PaneID),
-			AgentName:   jsonout.String(r.Action.AgentName),
-			Reason:      jsonout.String(r.Action.Reason),
+			Status:         string(r.Status),
+			Kind:           string(r.Action.Kind),
+			Target:         target(r.Action),
+			Detail:         r.Detail,
+			Branch:         jsonout.String(r.Action.Branch),
+			Path:           jsonout.String(r.Action.Path),
+			WorkspaceID:    jsonout.String(r.Action.WorkspaceID),
+			PaneID:         jsonout.String(r.Action.PaneID),
+			AgentName:      jsonout.String(r.Action.AgentName),
+			Reason:         jsonout.String(r.Action.Reason),
+			ReleasesAgents: r.Action.ReleasesAgents,
 		})
 	}
 	return out

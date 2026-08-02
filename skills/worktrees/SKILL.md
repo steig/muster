@@ -199,6 +199,22 @@ Removal also refuses a worktree with uncommitted changes, one whose pane hosts a
 agent, and the directory the caller is standing in. All are re-checked immediately
 before removal rather than trusted from the plan.
 
+**A worker that finished still holds its pane.** herdr frees an agent only when the
+pane goes away, so the ordinary end state of a successful dispatch is a checkout whose
+work landed and whose agent is still sitting there. That is kept by default, and the
+keep says what would remove it:
+
+```bash
+"$worktender" prune --release-agents --repo .        # read this first
+"$worktender" prune-apply --release-agents --repo .  # then this
+```
+
+Pass the flag to **both** halves or the dry run describes a plan the apply will not
+carry out. It closes the workspace, which is what lets go of the agent, and it reaches
+an agent that has stopped and nothing else — `working` and `blocked` are still refused,
+at plan time and again at execution time. Report to the user that a removal ended an
+agent; the output says so with `releasing the finished agent holding it`.
+
 ## Reporting and gating
 
 `report` and `gate` are the hand-off pair: a dispatched worker reports where it got to,

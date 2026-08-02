@@ -125,6 +125,116 @@ func TestPruneRefusesWorktreeThatGainedAnAgentAfterThePlan(t *testing.T) {
 	}
 }
 
+// occupy makes the fake herdr report one agent, in the given state, in the one
+// pane of workspace w2.
+func occupy(server *herdrtest.Server, status string) {
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{{
+		"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1", "terminal_id": "t",
+		"agent_status": status, "focused": false, "revision": 1,
+	}}})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+		"panes": []map[string]any{{"pane_id": "w2:p1"}}})
+}
+
+// The end state of a successful dispatch: the worker stopped, and still holds
+// the pane, because herdr frees an agent only when the pane goes away. Removing
+// the worktree closes the workspace, which is what lets go of it — so this only
+// happens on an action that asked for it.
+func TestPruneReleasesAFinishedAgentWhenTheActionSaysSo(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+	occupy(server, "idle")
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout, Branch: "done",
+		WorkspaceID: "w2", ReleasesAgents: true, Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusDone {
+		t.Fatalf("status = %q, want done: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "releasing the finished agent") {
+		t.Errorf("a removal that ends an agent should say so, got %q", result.Detail)
+	}
+	// Through herdr, or the workspace outlives the checkout and the agent with it.
+	if got := callTo(t, server, "worktree.remove").Params["workspace_id"]; got != "w2" {
+		t.Errorf("workspace_id = %v, want w2", got)
+	}
+}
+
+// The same agent, on an action that did not ask. Guard b is unchanged for
+// everything that did not opt in.
+func TestPruneRefusesAFinishedAgentTheActionDidNotAskToRelease(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+	occupy(server, "idle")
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout, Branch: "done",
+		WorkspaceID: "w2", Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("an agent's ground was removed without being asked to release it")
+	}
+}
+
+// The staleness case the release path adds: the plan was made against an agent
+// that had stopped, and it has picked work up since. --release-agents does not
+// reach an agent that is doing something, at plan time or at execution time.
+func TestPruneRefusesAnAgentThatWentBackToWorkAfterThePlan(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	exec.ApplyPrune = true
+	occupy(server, "working")
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout, Branch: "done",
+		WorkspaceID: "w2", ReleasesAgents: true, Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "started working since the plan was made") {
+		t.Errorf("detail should explain the refusal, got %q", result.Detail)
+	}
+	for _, call := range server.Calls() {
+		if call.Method == "worktree.remove" {
+			t.Fatal("herdr was asked to close a workspace with a working agent in it")
+		}
+	}
+}
+
+// The dry run is what a human reads before applying, so it has to disclose the
+// half of the removal the reason does not cover.
+func TestDryRunSaysWhenARemovalWouldEndAnAgent(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec, server := fixture(t, repo)
+	occupy(server, "done")
+
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout, Branch: "done",
+		WorkspaceID: "w2", ReleasesAgents: true, Reason: "PR merged"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusPlanned {
+		t.Fatalf("status = %q, want planned: %s", result.Status, result.Detail)
+	}
+	if !strings.Contains(result.Detail, "releasing the finished agent") {
+		t.Errorf("detail = %q, want it to name what else the removal takes", result.Detail)
+	}
+}
+
 // Pruning is a dry run unless explicitly applied.
 func TestPruneIsDryRunByDefault(t *testing.T) {
 	repo := herdrtest.NewRepo(t)

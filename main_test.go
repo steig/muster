@@ -389,6 +389,58 @@ func TestPruneApplyRemoves(t *testing.T) {
 	}
 }
 
+// The measured case from #89, end to end: a merged pull request, a clean
+// checkout, and the worker that did the work still sitting in the pane it was
+// started in. Kept by default, and removable by asking — the whole difference
+// being that "has an agent" and "is busy" come apart after a dispatch.
+func TestPruneApplyReleasesAFinishedAgentOnlyWhenAsked(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantRemove bool
+	}{
+		{"without the flag", []string{"prune-apply"}, false},
+		{"with the flag", []string{"prune-apply", "--release-agents"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := herdrtest.NewRepo(t)
+			checkout := repo.AddWorktree("done", "done")
+			repo.CommitIn(checkout, "done.txt", "work")
+			repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+			herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+
+			server := fakeSession(t, repo)
+			server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "done", "w2"))
+			server.HandleResult("workspace.list", workspaceListReply(repo, checkout, "w2"))
+			server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+				"panes": []map[string]any{{"pane_id": "w2:p1"}}})
+			server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{{
+				"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "w2:t1", "terminal_id": "t",
+				"agent_status": "idle", "focused": false, "revision": 1,
+			}}})
+			server.HandleResult("worktree.remove", map[string]any{"type": "worktree_removed"})
+
+			var out bytes.Buffer
+			if err := run(tc.args, &out); err != nil {
+				t.Fatalf("%v: %v", tc.args, err)
+			}
+
+			removed := false
+			for _, call := range server.Calls() {
+				if call.Method == "worktree.remove" {
+					removed = true
+				}
+			}
+			if removed != tc.wantRemove {
+				t.Fatalf("worktree.remove called = %v, want %v; output:\n%s", removed, tc.wantRemove, out.String())
+			}
+			if !tc.wantRemove && !strings.Contains(out.String(), "--release-agents") {
+				t.Errorf("a keep nothing can act on is the bug; output:\n%s", out.String())
+			}
+		})
+	}
+}
+
 // The dry run exists to be read before the apply, so both must say which
 // repository they resolved. They do not resolve it the same way — listing may
 // fall back to the working directory and applying may not — and that asymmetry

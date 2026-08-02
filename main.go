@@ -197,17 +197,22 @@ func newSessionIn(repo string) (*session, error) {
 }
 
 // plan collects the current state and decides what the repository needs.
-func (s *session) plan() ([]reconcile.Action, error) {
-	return s.planWith(reconcile.NewCollector(s.client, s.root))
+func (s *session) plan(releaseAgents bool) ([]reconcile.Action, error) {
+	return s.planWith(reconcile.NewCollector(s.client, s.root), releaseAgents)
 }
 
 // planWith is plan against a collector the caller has adjusted, which is how
 // the event path drops the PR lookup.
-func (s *session) planWith(collector *reconcile.Collector) ([]reconcile.Action, error) {
+//
+// releaseAgents is policy rather than a fact, which is why it is set here and
+// not on the collector: the collector reads the world, and whether a finished
+// agent may have its pane taken away is something the caller asked for.
+func (s *session) planWith(collector *reconcile.Collector, releaseAgents bool) ([]reconcile.Action, error) {
 	state, err := collector.Collect()
 	if err != nil {
 		return nil, err
 	}
+	state.ReleaseAgents = releaseAgents
 	return reconcile.Reconcile(state), nil
 }
 
@@ -219,6 +224,10 @@ func (s *session) planWith(collector *reconcile.Collector) ([]reconcile.Action, 
 type output struct {
 	w    io.Writer
 	json bool
+	// releaseAgents records that the plan being printed was made with
+	// --release-agents, because the line telling the reader how to apply it
+	// then has to name a command rather than a herdr action.
+	releaseAgents bool
 	// held is the JSON mode's accumulator across those passes. Text mode holds
 	// nothing, because each pass has already printed.
 	held []execute.Result
@@ -245,8 +254,18 @@ func (o *output) record(results []execute.Result) {
 
 	fmt.Fprint(o.w, execute.Render(results))
 	if execute.Counts(results)[execute.StatusPlanned] > 0 {
-		fmt.Fprintln(o.w, "\nrun the `Worktender: prune (apply)` action to remove the worktrees listed above")
+		fmt.Fprintln(o.w, "\n"+o.applyHint())
 	}
+}
+
+// applyHint is how to carry out the plan just printed. A herdr action is a
+// fixed command array with no argument surface, so a plan made with a flag
+// cannot be applied by one and must not point at it.
+func (o *output) applyHint() string {
+	if o.releaseAgents {
+		return "run `worktender prune-apply --release-agents` to remove the worktrees listed above"
+	}
+	return "run the `Worktender: prune (apply)` action to remove the worktrees listed above"
 }
 
 // reconcileJSON is what `sync`, `prune` and `prune-apply` write for a machine.
@@ -397,7 +416,7 @@ func syncCommand(args []string, out io.Writer) error {
 	collector.LookupPR = nil
 
 	err = lock.Repeat(reconcilePasses, func() error {
-		actions, err := s.planWith(collector)
+		actions, err := s.planWith(collector, false)
 		if err != nil {
 			return err
 		}
@@ -419,7 +438,7 @@ func pruneName(apply bool) string {
 }
 
 func pruneUsage(apply bool) string {
-	return "usage: worktender " + pruneName(apply) + " [--repo <path>] [--json]"
+	return "usage: worktender " + pruneName(apply) + " [--repo <path>] [--release-agents] [--json]"
 }
 
 // pruneCommand reports finished worktrees, and removes them only when apply is
@@ -429,6 +448,8 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	fs := flag.NewFlagSet(pruneName(apply), flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	repo := fs.String("repo", "", "repository to act on, instead of the one herdr is currently in")
+	releaseAgents := fs.Bool("release-agents", false,
+		"also remove finished worktrees whose agent has stopped, closing its workspace and freeing the agent")
 	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -451,6 +472,7 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 		return err
 	}
 	o := newOutput(out, *asJSON)
+	o.releaseAgents = *releaseAgents
 
 	// Both halves name the repository they resolved, because they do not resolve
 	// it the same way — listing may fall back to the working directory, applying
@@ -464,7 +486,7 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	// Listing changes nothing, so it needs no claim on the repository; only the
 	// half that removes worktrees serialises against a concurrent reconcile.
 	if !apply {
-		actions, err := s.plan()
+		actions, err := s.plan(*releaseAgents)
 		if err != nil {
 			return err
 		}
@@ -484,7 +506,7 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	// A single pass, not Repeat: re-running a removal because more work was
 	// marked would act on a trigger someone else observed. The mark is left for
 	// the next reconcile.
-	actions, err := s.plan()
+	actions, err := s.plan(*releaseAgents)
 	if err != nil {
 		return err
 	}
