@@ -163,6 +163,47 @@ func TestDoctorJSONSaysWhyItCouldNotFinish(t *testing.T) {
 	}
 }
 
+// The counts answer "how many" and blocked is the status where that is no
+// answer at all: the session has stopped and only a person can restart it, so
+// the document names the worktree it was.
+func TestDoctorJSONNamesBlockedWorktreesRatherThanOnlyCountingThem(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("79-stuck", "79-stuck")
+
+	server := fakeSession(t, repo)
+	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "79-stuck", "w2"))
+	server.HandleResult("workspace.list", map[string]any{"type": "workspace_list", "workspaces": []map[string]any{{
+		"workspace_id": "w2", "number": 2, "label": "wt", "focused": false,
+		"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "blocked",
+		"worktree": map[string]any{"repo_key": "k", "repo_name": "repo",
+			"repo_root": repo.Root, "checkout_path": checkout, "is_linked_worktree": true},
+	}}})
+
+	var out bytes.Buffer
+	if err := doctorCommand([]string{"--json"}, &out); err != nil {
+		t.Fatalf("doctor --json: %v", err)
+	}
+
+	var document doctorJSON
+	if err := json.Unmarshal(out.Bytes(), &document); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\n%s", err, out.String())
+	}
+	if len(document.Repositories) != 1 {
+		t.Fatalf("want one repository, got %+v", document.Repositories)
+	}
+
+	got := document.Repositories[0]
+	if got.Agents["blocked"] != 1 {
+		t.Errorf("agents = %v, want one blocked", got.Agents)
+	}
+	if len(got.Blocked) != 1 {
+		t.Fatalf("blocked = %+v, want the one worktree it is", got.Blocked)
+	}
+	if branch := got.Blocked[0].Branch; branch == nil || *branch != "79-stuck" {
+		t.Errorf("blocked branch = %v, want 79-stuck", branch)
+	}
+}
+
 // The table prints a basename and a sentence. The document has to carry the
 // same counts as numbers, and the path the basename came from.
 func TestDoctorJSONReportsRepositories(t *testing.T) {

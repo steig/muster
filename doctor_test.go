@@ -132,6 +132,33 @@ func TestDoctorSummarisesAgentsBusiestFirst(t *testing.T) {
 	}
 }
 
+// Busiest-first put the one status that needs a human last on the line whenever
+// it was the rarest, which is nearly always: one agent stops and five keep
+// working. And a count is the wrong answer for it — nobody can act on "1
+// blocked" without going and finding which one.
+func TestDoctorPutsBlockedFirstAndNamesIt(t *testing.T) {
+	rows := []wt.Row{
+		{Branch: "a", AgentStatus: "working"},
+		{Branch: "b", AgentStatus: "working"},
+		{Branch: "77-cross-repo", AgentStatus: "blocked"},
+		{Branch: "c", AgentStatus: "idle"},
+	}
+
+	if got, want := summariseAgents(rows), "1 blocked (77-cross-repo), 2 working, 1 idle"; got != want {
+		t.Errorf("summariseAgents = %q, want %q", got, want)
+	}
+}
+
+// A detached checkout has no branch and still has an agent sitting in it, so
+// the name falls back to the directory: "1 blocked ()" tells nobody anything.
+func TestDoctorNamesABlockedWorktreeThatHasNoBranch(t *testing.T) {
+	rows := []wt.Row{{Dir: "brave-valley-66f8", AgentStatus: "blocked"}}
+
+	if got, want := summariseAgents(rows), "1 blocked (brave-valley-66f8)"; got != want {
+		t.Errorf("summariseAgents = %q, want %q", got, want)
+	}
+}
+
 // A worktree with no agent must not be counted as one with an unnamed status:
 // an empty status is what a workspace herdr has nothing for carries.
 func TestDoctorCountsNoAgentsRatherThanBlankOnes(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,6 +114,105 @@ func TestJSONCarriesRawValuesTheTableEscapes(t *testing.T) {
 	}
 }
 
+// The schema change #77 needs, and the reason it is a group rather than a
+// repository string on every row: a repository that could not be read has no
+// rows to carry its name, and a repository whose rows were all filtered away
+// still has to be in the document as an empty group. A flat array says neither.
+func TestLsAllJSONGroupsByRepositoryRatherThanTaggingEveryRow(t *testing.T) {
+	server, repo, unreadable := fleet(t)
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.LsAll(client, []string{repo.RealRoot, unreadable}, wt.Options{JSON: true}, &buf); err != nil {
+		t.Fatalf("LsAll: %v", err)
+	}
+
+	// Exactly one of the two fields is ever non-null, so a consumer can tell
+	// which question was asked from the document alone — checked on the wire,
+	// because that invariant is a promise about the bytes.
+	assertNullOnTheWire(t, buf.Bytes(), "worktrees")
+
+	var document wt.ListJSON
+	if err := json.Unmarshal(buf.Bytes(), &document); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\n%s", err, buf.String())
+	}
+	if len(document.Repositories) != 2 {
+		t.Fatalf("want both repositories, got %+v", document.Repositories)
+	}
+
+	read, failed := document.Repositories[0], document.Repositories[1]
+	if read.Root != repo.RealRoot || read.Name != filepath.Base(repo.RealRoot) {
+		t.Errorf("repository = %+v, want root %s", read, repo.RealRoot)
+	}
+	if read.Error != nil {
+		t.Fatalf("the readable repository carries an error: %v", *read.Error)
+	}
+	if len(read.Worktrees) != 2 {
+		t.Fatalf("want 2 worktrees, got %+v", read.Worktrees)
+	}
+	if pane := read.Worktrees[1].PaneID; pane == nil || *pane != "w2:p1" {
+		t.Errorf("pane_id = %v, want w2:p1 — the pane is what makes this actable", pane)
+	}
+
+	// One unreadable repository costs the others nothing, and says why on its
+	// own group. Its worktrees are null, not empty: "none" and "unreadable" are
+	// the distinction this format exists to keep.
+	if failed.Error == nil || !strings.Contains(*failed.Error, "not a git repository") {
+		t.Errorf("error = %v, want the reason it could not be read", failed.Error)
+	}
+	if failed.Worktrees != nil {
+		t.Errorf("worktrees = %+v, want null when the repository could not be read", failed.Worktrees)
+	}
+}
+
+// The inverse, which is what keeps the two modes apart: a single-repository
+// listing leaves the grouped field null rather than wrapping one group around
+// itself.
+func TestLsJSONLeavesTheGroupedFieldNull(t *testing.T) {
+	server, repo, _ := fleet(t)
+
+	var buf bytes.Buffer
+	client := herdrapi.NewWithSocket(server.SocketPath)
+	if err := wt.Ls(client, repo.RealRoot, "", nil, wt.Options{JSON: true}, &buf); err != nil {
+		t.Fatalf("Ls: %v", err)
+	}
+
+	assertNullOnTheWire(t, buf.Bytes(), "repositories")
+
+	var document wt.ListJSON
+	if err := json.Unmarshal(buf.Bytes(), &document); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\n%s", err, buf.String())
+	}
+	if len(document.Worktrees) != 2 {
+		t.Errorf("want the flat listing, got %+v", document.Worktrees)
+	}
+}
+
+// assertNullOnTheWire fails unless field is present in the document and null.
+//
+// Unmarshalling into the struct cannot make this assertion: an explicit null
+// and an absent key both arrive as a nil slice, so a test written that way
+// passes whether or not the field ever reached the wire — and would keep
+// passing if somebody added `omitempty`. That is the one change this invariant
+// cannot survive: with the key gone, single-repository mode is indistinguishable
+// from a worktender too old to have the field at all, and telling those apart
+// is the whole point of emitting both keys.
+func assertNullOnTheWire(t *testing.T, document []byte, field string) {
+	t.Helper()
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(document, &raw); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\n%s", err, document)
+	}
+	value, present := raw[field]
+	if !present {
+		t.Fatalf("%q is absent from the document; it must be present and null:\n%s", field, document)
+	}
+	if string(value) != "null" {
+		t.Errorf("%q = %s on the wire, want null", field, value)
+	}
+}
+
 // One document on stdout, and the same rows the table would have printed.
 func TestLsJSONWritesOneDocumentInsteadOfTheTable(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
@@ -144,7 +244,7 @@ func TestLsJSONWritesOneDocumentInsteadOfTheTable(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := herdrapi.NewWithSocket(server.SocketPath)
-	if err := wt.Ls(client, "", checkout, nil, true, &buf); err != nil {
+	if err := wt.Ls(client, "", checkout, nil, wt.Options{JSON: true}, &buf); err != nil {
 		t.Fatalf("Ls: %v", err)
 	}
 

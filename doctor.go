@@ -51,7 +51,7 @@ func doctorCommand(args []string, out io.Writer) error {
 	// Nothing below the checks is answerable without herdr, and saying so once
 	// is better than four repetitions of the same cause.
 	var fatal error
-	var repos []repoSummary
+	var repos []wt.Repo
 	if clientErr != nil {
 		fatal = fmt.Errorf("cannot reach herdr, so nothing else here could be checked: %w", clientErr)
 	} else if repos, fatal = repositories(client); fatal != nil {
@@ -131,9 +131,19 @@ type repoJSON struct {
 	Error     *string        `json:"error"`
 	Worktrees *int           `json:"worktrees"`
 	Agents    map[string]int `json:"agents"`
+	// Blocked names the worktrees herdr reports a blocked agent in, rather than
+	// leaving them as one number among the counts above. It is the one status
+	// where the session has stopped and only a person can restart it, so which
+	// worktree it was is the entire question — a count answers nobody.
+	//
+	// Empty when none are blocked, null when this repository could not be read.
+	// `pane_id` is null throughout: doctor does not ask for panes. `ls
+	// --all-repos --blocked --json` is the view that carries the pane a
+	// dispatch needs.
+	Blocked []wt.RowJSON `json:"blocked"`
 }
 
-func writeDoctorJSON(out io.Writer, checks []check, repos []repoSummary, fatal error) error {
+func writeDoctorJSON(out io.Writer, checks []check, repos []wt.Repo, fatal error) error {
 	document := doctorJSON{Checks: make([]checkJSON, 0, len(checks)), Binary: jsonout.String(binaryPath())}
 	for _, c := range checks {
 		document.Checks = append(document.Checks, checkJSON{
@@ -151,6 +161,7 @@ func writeDoctorJSON(out io.Writer, checks []check, repos []repoSummary, fatal e
 				count := len(r.Rows)
 				entry.Worktrees = &count
 				entry.Agents = agentCounts(r.Rows)
+				entry.Blocked = wt.JSON(wt.OnlyBlocked(r.Rows))
 			}
 			document.Repositories = append(document.Repositories, entry)
 		}
@@ -319,49 +330,20 @@ func eventsCheck() check {
 	}
 }
 
-// repoSummary is one repository as doctor knows it: what herdr holds, or why it
-// could not be read. Collected once and rendered either way, so the table and
-// the document cannot describe different sessions.
-type repoSummary struct {
-	Root string
-	// Err is why this repository could not be read, empty when it could. One
-	// unreadable repository must not cost the others their place.
-	Err  string
-	Rows []wt.Row
-}
-
 // repositories reads what herdr currently holds. The scope is herdr's open
 // worktree workspaces rather than the caller's directory, because doctor has to
-// answer from outside any repository at all.
-func repositories(client *herdrapi.Client) ([]repoSummary, error) {
+// answer from outside any repository at all — the same scope, and now the same
+// read, that `ls --all-repos` lists in full.
+func repositories(client *herdrapi.Client) ([]wt.Repo, error) {
 	roots, err := openRepositories(client)
 	if err != nil {
 		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
-	if len(roots) == 0 {
-		return nil, nil
-	}
-
-	workspaces, err := client.WorkspaceList()
-	if err != nil {
-		return nil, fmt.Errorf("list workspaces: %w", err)
-	}
-
-	summaries := make([]repoSummary, 0, len(roots))
-	for _, root := range roots {
-		summary := repoSummary{Root: root}
-		if worktrees, err := client.WorktreeList(root); err != nil {
-			summary.Err = err.Error()
-		} else {
-			summary.Rows = wt.Rows(worktrees, workspaces)
-		}
-		summaries = append(summaries, summary)
-	}
-	return summaries, nil
+	return wt.AllRows(client, roots)
 }
 
 // renderRepositories lists what herdr holds, one line per repository.
-func renderRepositories(out io.Writer, summaries []repoSummary) error {
+func renderRepositories(out io.Writer, summaries []wt.Repo) error {
 	if len(summaries) == 0 {
 		fmt.Fprintln(out, "\nno repositories: herdr has no worktree workspaces open")
 		return nil
@@ -393,19 +375,28 @@ func agentCounts(rows []wt.Row) map[string]int {
 	return counts
 }
 
-// summariseAgents renders those counts busiest first, so the interesting half
-// of the line comes first.
+// summariseAgents renders those counts blocked first and the rest busiest
+// first, and names the blocked worktrees instead of only counting them.
+//
+// Busiest-first alone put the status that needs a human last on the line
+// whenever it was the rarest, which is nearly always — one agent stops and five
+// keep working. And a count is the wrong answer for it anyway: nobody can act
+// on "1 blocked" without going and finding which one.
 func summariseAgents(rows []wt.Row) string {
 	counts := agentCounts(rows)
 	if len(counts) == 0 {
 		return "no agents"
 	}
 
+	const blocked = string(herdrapi.AgentStatusBlocked)
 	statuses := make([]string, 0, len(counts))
 	for s := range counts {
 		statuses = append(statuses, s)
 	}
 	sort.Slice(statuses, func(i, j int) bool {
+		if isBlocked := statuses[i] == blocked; isBlocked != (statuses[j] == blocked) {
+			return isBlocked
+		}
 		if counts[statuses[i]] != counts[statuses[j]] {
 			return counts[statuses[i]] > counts[statuses[j]]
 		}
@@ -414,9 +405,29 @@ func summariseAgents(rows []wt.Row) string {
 
 	parts := make([]string, 0, len(statuses))
 	for _, s := range statuses {
-		parts = append(parts, fmt.Sprintf("%d %s", counts[s], safetext.Escape(s)))
+		part := fmt.Sprintf("%d %s", counts[s], safetext.Escape(s))
+		if s == blocked {
+			part += " (" + strings.Join(blockedNames(rows), ", ") + ")"
+		}
+		parts = append(parts, part)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// blockedNames is what to call each blocked worktree: its branch, or its
+// directory when it has none — a detached checkout still has an agent sitting
+// in it, and "1 blocked ()" tells the reader nothing.
+func blockedNames(rows []wt.Row) []string {
+	blocked := wt.OnlyBlocked(rows)
+	names := make([]string, 0, len(blocked))
+	for _, row := range blocked {
+		name := row.Branch
+		if name == "" {
+			name = row.Dir
+		}
+		names = append(names, safetext.Escape(name))
+	}
+	return names
 }
 
 func plural(n int, noun string) string {

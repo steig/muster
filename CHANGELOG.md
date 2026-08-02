@@ -10,6 +10,44 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Added
 
+- **`ls --all-repos`, so a listing can answer for more than the repository you
+  are standing in.** `ls` took a single root and every call below it was scoped
+  to that root, which left someone running agents in six repositories with no
+  view of them at all — the case this plugin's own README opens by describing.
+  The only cross-repository surface was `doctor`'s repos block, and it prints
+  counts. The discovery already existed: `startup` computes exactly the set of
+  repositories herdr has worktree workspaces for, and `doctor` was calling it
+  and throwing away everything but a number. `--all-repos` lists it in full,
+  from anywhere, including outside a repository entirely. One repository failing
+  prints its error on its own line and costs the others nothing.
+
+  `--pr` is refused with it rather than paired: the lookup runs one `gh` call
+  per branch in series *and* is scoped to a single repository, so across several
+  it would be both slow and asking the wrong repository.
+
+- **`ls --blocked`, and `doctor` naming blocked worktrees instead of counting
+  them.** herdr's `agent_status` has carried `blocked` all along and nothing
+  acted on it: `ls` showed it only for the repository you were in, and
+  `doctor` averaged it into `"2 working, 1 blocked"` sorted busiest-first —
+  which put the one status that needs a human last on the line, since it is
+  nearly always the rarest. It is the status worth surfacing because it is the
+  one that stays put: working resolves itself, idle is finished or waiting,
+  blocked sits there until somebody looks. `doctor` now sorts it first and names
+  which worktree it was, in the table and in `blocked` in the document.
+
+  This is herdr's status for the workspace's agent, not a worker's `worktender
+  report --status blocked`, which is this plugin's own envelope and reaches only
+  whoever gated on it. They are different signals and nothing folds one into the
+  other.
+
+- **`ls --all-repos --json` is grouped by repository**, and `worktrees` is null
+  when it is — exactly one of the two fields is ever non-null, so a consumer can
+  tell which question was asked from the document alone. Grouped rather than a
+  `repository` field per row because a repository that could not be read has no
+  rows to hang its name off, and one whose rows were all filtered away still has
+  to appear as an empty group: *asked, and none* versus *not asked* is the
+  distinction the JSON exists to keep. See [docs/json.md](docs/json.md).
+
 - **`--json` on `ls`, `doctor`, `sync`, `prune` and `prune-apply`.** Every output
   path went through `text/tabwriter` and nothing else, so anything that wanted to
   *consume* worktender — a status line, a TUI, a fleet view, a coordinating agent

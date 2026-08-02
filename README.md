@@ -50,6 +50,41 @@ $ worktender ls --pr
   fix/257-erasure-comments  w1K  w1K:p1  idle     MERGED  257-erasure-comments
 ```
 
+Agents in six repositories are six invocations and six directories to remember
+to visit, so `--all-repos` lists every repository herdr has a worktree
+workspace for — from anywhere, including outside a repository entirely. One
+that cannot be read says so on its own line and costs the others nothing:
+
+```sh
+$ worktender ls --all-repos
+/Users/you/code/worktender
+  *  main                   w21  w21:p1  idle     worktender
+     77-cross-repo          w30  w30:p1  blocked  77-cross-repo
+/Users/you/code/lighthouse
+  *  main  w4  w4:p1  working  lighthouse
+```
+
+`--pr` is deliberately not available across repositories: the lookup runs in
+series and is scoped to one repository, so it would be both slow and asking the
+wrong repository.
+
+`--blocked` keeps only the worktrees herdr reports a blocked agent in — the one
+status where the session has stopped and nobody but you can restart it. Working
+resolves itself and idle is finished or waiting; blocked sits there until
+somebody looks, which is why it is worth a question of its own:
+
+```sh
+$ worktender ls --all-repos --blocked
+/Users/you/code/worktender
+     77-cross-repo  w30  w30:p1  blocked  77-cross-repo
+```
+
+Repositories with nothing blocked are left out rather than drawn as empty
+headings, and nothing blocked anywhere says so instead of printing nothing.
+This is herdr's own agent status, not a worker's `report --status blocked`,
+which is worktender's own envelope and reaches only whoever gated on it.
+`doctor` names blocked worktrees too, rather than folding them into a count.
+
 `ls`, `doctor`, `sync`, `prune` and `prune-apply` take `--json` if you are
 building on this rather than reading it — see
 [Machine-readable output](docs/json.md).

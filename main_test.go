@@ -494,3 +494,49 @@ func TestPruneRejectsAStrayArgument(t *testing.T) {
 		t.Fatalf("the error should name the half it came from, got: %v", err)
 	}
 }
+
+// #77's whole point: someone with agents in several repositories sees them
+// without visiting each one — and from outside any repository at all, which is
+// the case a per-repository listing cannot serve. The scope is herdr's open
+// worktree workspaces, the set startup already computes.
+func TestLsAllRepositoriesAnswersFromOutsideARepository(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("77-cross-repo", "77-cross-repo")
+
+	server := herdrtest.NewServer(t)
+	t.Setenv("HERDR_SOCKET_PATH", server.SocketPath)
+	// Neither a launch context nor a repository to stand in.
+	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
+	t.Chdir(t.TempDir())
+
+	server.HandleResult("workspace.list", workspaceListReply(repo, checkout, "w2"))
+	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "77-cross-repo", "w2"))
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+		"panes": []map[string]any{{"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "t1", "index": 0}}})
+
+	var out bytes.Buffer
+	if err := run([]string{"ls", "--all-repos"}, &out); err != nil {
+		t.Fatalf("ls --all-repos: %v", err)
+	}
+
+	for _, want := range []string{repo.RealRoot, "77-cross-repo", "w2:p1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// The pull request lookup is scoped to one repository and runs in series, so
+// across several it would be slow and asking the wrong repository. Refused
+// rather than quietly answered from whichever repository happened to be first.
+func TestLsRefusesPullRequestStateAcrossRepositories(t *testing.T) {
+	t.Setenv("HERDR_SOCKET_PATH", "")
+
+	err := run([]string{"ls", "--all-repos", "--pr"}, new(bytes.Buffer))
+	if err == nil {
+		t.Fatal("--pr with --all-repos should be refused")
+	}
+	if !strings.Contains(err.Error(), "--pr cannot be combined with --all-repos") {
+		t.Errorf("the error must name the combination, got: %v", err)
+	}
+}

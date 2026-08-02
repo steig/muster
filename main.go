@@ -296,12 +296,14 @@ func jsonFlag(fs *flag.FlagSet) *bool {
 	return fs.Bool("json", false, "write a machine-readable document instead of the table")
 }
 
-const lsUsage = "usage: worktender ls [--pr] [--json]"
+const lsUsage = "usage: worktender ls [--all-repos] [--blocked] [--pr] [--json]"
 
 func lsCommand(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	withPR := fs.Bool("pr", false, "ask gh for each branch's pull request state")
+	allRepos := fs.Bool("all-repos", false, "list every repository herdr has a worktree workspace for, not only this one")
+	blocked := fs.Bool("blocked", false, "keep only the worktrees herdr reports a blocked agent in")
 	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -309,6 +311,24 @@ func lsCommand(args []string, out io.Writer) error {
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), lsUsage)
+	}
+	opts := wt.Options{Blocked: *blocked, JSON: *asJSON}
+
+	if *allRepos {
+		if *withPR {
+			return errors.New("--pr cannot be combined with --all-repos: the lookup is one `gh` call per branch in series, and it is scoped to one repository, so across several it would be slow and asking the wrong repository; run `ls --pr` in the one you care about")
+		}
+		// No session: the scope is herdr's open worktree workspaces, so this
+		// answers from outside a repository the same way `doctor` does.
+		client, err := herdrapi.New()
+		if err != nil {
+			return err
+		}
+		roots, err := openRepositories(client)
+		if err != nil {
+			return fmt.Errorf("list workspaces: %w", err)
+		}
+		return wt.LsAll(client, roots, opts, out)
 	}
 
 	// Read-only: usable from a plain shell.
@@ -326,7 +346,7 @@ func lsCommand(args []string, out io.Writer) error {
 			return string(state), err
 		}
 	}
-	return wt.Ls(s.client, s.root, s.dir, lookupPR, *asJSON, out)
+	return wt.Ls(s.client, s.root, s.dir, lookupPR, opts, out)
 }
 
 const syncUsage = "usage: worktender sync [--json]"

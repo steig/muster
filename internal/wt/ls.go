@@ -13,6 +13,17 @@ import (
 	"github.com/steig/worktender/internal/safetext"
 )
 
+// Options is what a listing was asked for beyond which repositories to read.
+//
+// A struct rather than two more parameters: both are booleans, and `nil, true,
+// false, true` at a call site says nothing about which switch is which. The
+// pull request lookup is deliberately not here — see LsAll.
+type Options struct {
+	// Blocked keeps only the worktrees herdr reports a blocked agent in.
+	Blocked bool
+	JSON    bool
+}
+
 // missing is printed for a column with nothing to show.
 //
 // It lives in the renderer and nowhere else. Inside a Row an absent fact is the
@@ -126,6 +137,27 @@ func WithPRs(rows []Row, lookup func(branch string) (string, error)) {
 	}
 }
 
+// OnlyBlocked keeps the worktrees herdr reports a blocked agent in.
+//
+// This is herdr's own agent status for the workspace, not worktender's `report
+// --status blocked` envelope. The two are different signals and nothing here
+// folds one into the other: herdr's says a session has stopped and only a
+// person can restart it, while the envelope is a worker telling whichever
+// coordinator gated on it why it gave up — and reaches nobody else.
+//
+// It is the status worth a filter of its own because it is the one that stays
+// put. Working resolves itself, idle is finished or waiting to be told what to
+// do, and blocked sits there until somebody looks.
+func OnlyBlocked(rows []Row) []Row {
+	kept := make([]Row, 0, len(rows))
+	for _, row := range rows {
+		if row.AgentStatus == string(herdrapi.AgentStatusBlocked) {
+			kept = append(kept, row)
+		}
+	}
+	return kept
+}
+
 // Render writes the rows as an aligned table.
 //
 // The pull request column is omitted rather than dashed when it was not asked
@@ -138,10 +170,18 @@ func WithPRs(rows []Row, lookup func(branch string) (string, error)) {
 // are themselves control characters.
 func Render(w io.Writer, rows []Row, withPR bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	renderRows(tw, rows, withPR, "")
+	return tw.Flush()
+}
+
+// renderRows writes the row lines into an open tabwriter, each marker cell
+// prefixed with indent. Shared so the grouped listing draws the same columns as
+// the flat one rather than a second table that resembles it.
+func renderRows(w io.Writer, rows []Row, withPR bool, indent string) {
 	for _, row := range rows {
-		marker := " "
+		marker := indent + " "
 		if row.Main {
-			marker = "*"
+			marker = indent + "*"
 		}
 		cells := []string{marker, cell(row.Branch), cell(row.WorkspaceID),
 			cell(row.PaneID), cell(row.AgentStatus)}
@@ -149,9 +189,57 @@ func Render(w io.Writer, rows []Row, withPR bool) error {
 			cells = append(cells, cell(prCell(row.PR)))
 		}
 		cells = append(cells, cell(row.Dir))
-		fmt.Fprintln(tw, strings.Join(cells, "\t"))
+		fmt.Fprintln(w, strings.Join(cells, "\t"))
 	}
-	return tw.Flush()
+}
+
+// RenderRepos writes a cross-repository listing: a line naming the repository,
+// then its rows indented beneath it. Grouped rather than given a repository
+// column because a repository that could not be read has no rows to hang the
+// name off, and that is the row the reader most needs.
+//
+// The full root rather than its basename: two checkouts on one machine
+// routinely share a basename — `web`, `api` — and this listing exists to be
+// read across all of them at once.
+//
+// A repository whose rows were all filtered away is skipped rather than drawn
+// as a bare heading. `--blocked` across six repositories is a question with a
+// short answer, and five empty headings bury it. A repository that could not be
+// read is never skipped.
+func RenderRepos(w io.Writer, repos []Repo, opts Options) error {
+	if len(repos) == 0 {
+		fmt.Fprintln(w, "no repositories: herdr has no worktree workspaces open")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	printed := 0
+	for _, repo := range repos {
+		if opts.Blocked && repo.Err == "" && len(repo.Rows) == 0 {
+			continue
+		}
+		printed++
+		fmt.Fprintln(tw, safetext.Escape(repo.Root))
+		if repo.Err != "" {
+			fmt.Fprintf(tw, "  cannot be read: %s\n", safetext.Escape(repo.Err))
+			continue
+		}
+		renderRows(tw, repo.Rows, false, "  ")
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	// Silence is not an answer here: the same empty output is what a listing
+	// that failed to reach anything would print.
+	if printed == 0 {
+		noun := "repositories"
+		if len(repos) == 1 {
+			noun = "repository"
+		}
+		fmt.Fprintf(w, "no blocked agents in %d %s\n", len(repos), noun)
+	}
+	return nil
 }
 
 // cell is one column's text: escaped, and a dash when there is nothing to show.
@@ -171,9 +259,91 @@ func prCell(pr *PR) string {
 	return pr.State
 }
 
+// Repo is one repository's rows, or why they could not be read.
+//
+// The failure travels beside the rows rather than aborting the walk: one
+// unreadable repository must not cost the others their place in a listing whose
+// whole purpose is covering all of them.
+type Repo struct {
+	Root string
+	// Err is why this repository could not be read, empty when it could. Rows is
+	// nil rather than empty when it is set — "no worktrees" and "none readable"
+	// are different facts.
+	Err  string
+	Rows []Row
+}
+
+// AllRows reads the supplied repositories, in the order given.
+//
+// The workspace list is fetched once here and joined against every
+// repository's worktrees: the agent status lives on the workspace, and asking
+// herdr for the same global list once per repository would be N round trips for
+// one answer. Once here, not once per run — whoever discovered the roots has
+// already read the same list to find them.
+//
+// Which repositories to read is the caller's to decide. Discovery already
+// exists — herdr's open worktree workspaces — and a second one here would be a
+// second answer to which repositories this plugin manages.
+func AllRows(client *herdrapi.Client, roots []string) ([]Repo, error) {
+	if len(roots) == 0 {
+		return nil, nil
+	}
+
+	workspaces, err := client.WorkspaceList()
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces: %w", err)
+	}
+
+	repos := make([]Repo, 0, len(roots))
+	for _, root := range roots {
+		repo := Repo{Root: root}
+		if worktrees, err := client.WorktreeList(root); err != nil {
+			repo.Err = err.Error()
+		} else {
+			repo.Rows = Rows(worktrees, workspaces)
+		}
+		repos = append(repos, repo)
+	}
+	return repos, nil
+}
+
 // ListJSON is what `ls --json` writes. An object rather than a bare array, so a
 // later field has somewhere to go that does not change the type of the document.
 type ListJSON struct {
+	// Worktrees is the listing for a single repository, and null when the answer
+	// was grouped by repository instead.
+	Worktrees []RowJSON `json:"worktrees"`
+	// Repositories is the `--all-repos` listing, and null when a single
+	// repository was listed. Exactly one of the two fields is ever non-null, so
+	// a consumer can tell which question was asked from the document alone.
+	//
+	// Grouped, rather than a repository field on every row — which was the other
+	// candidate and the cheaper one. Three things decided it:
+	//
+	// A per-repository failure needs somewhere to live. `--all-repos` keeps
+	// going when one repository cannot be read, and a flat array of worktrees
+	// has nowhere to record that except by inventing a row that is not a
+	// worktree.
+	//
+	// A repository whose rows are all filtered out — `--blocked` is the usual
+	// reason — has to survive as an empty group. "Asked, and none" versus "not
+	// asked" is the distinction this format exists to keep, and a flat array
+	// erases it by simply having fewer rows.
+	//
+	// And `doctor --json` already reports per repository, so the two
+	// cross-repository views nest the same way rather than each inventing one.
+	Repositories []RepoJSON `json:"repositories"`
+}
+
+// RepoJSON is one repository in a cross-repository listing.
+type RepoJSON struct {
+	// Root is the repository path; Name is the basename the table would show,
+	// carried so a consumer does not have to re-derive the label.
+	Root string `json:"root"`
+	Name string `json:"name"`
+	// Error is why this repository could not be read. Worktrees is null when it
+	// is set, empty when the repository was read and nothing matched.
+	Error     *string   `json:"error"`
 	Worktrees []RowJSON `json:"worktrees"`
 }
 
@@ -230,6 +400,19 @@ func JSON(rows []Row) []RowJSON {
 	return out
 }
 
+// ReposJSON projects a cross-repository listing for a machine.
+func ReposJSON(repos []Repo) []RepoJSON {
+	out := make([]RepoJSON, 0, len(repos))
+	for _, repo := range repos {
+		entry := RepoJSON{Root: repo.Root, Name: filepath.Base(repo.Root), Error: jsonout.String(repo.Err)}
+		if repo.Err == "" {
+			entry.Worktrees = JSON(repo.Rows)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func prJSON(pr *PR) *PRJSON {
 	if pr == nil {
 		return nil
@@ -249,7 +432,7 @@ func prJSON(pr *PR) *PRJSON {
 //
 // lookupPR is nil unless the caller asked for pull request state, which costs a
 // round trip per branch and is therefore never the default.
-func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) (string, error), asJSON bool, out io.Writer) error {
+func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) (string, error), opts Options, out io.Writer) error {
 	if root == "" {
 		var err error
 		if root, err = gitx.RepoRoot(dir); err != nil {
@@ -271,14 +454,56 @@ func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) 
 	}
 
 	rows := Rows(worktrees, workspaces)
+	// Filtered before the lookups, not after: a pane costs a round trip, and a
+	// row that will not be printed is not worth one.
+	if opts.Blocked {
+		rows = OnlyBlocked(rows)
+	}
 	WithPanes(client, rows)
 	if lookupPR != nil {
 		WithPRs(rows, lookupPR)
 	}
-	if asJSON {
+
+	if opts.JSON {
 		return jsonout.Write(out, ListJSON{Worktrees: JSON(rows)})
 	}
+	// An empty table is the same output as a listing that reached nothing, so a
+	// filter that matched nothing says so.
+	if opts.Blocked && len(rows) == 0 {
+		fmt.Fprintln(out, "no blocked agents in "+safetext.Escape(root))
+		return nil
+	}
 	return Render(out, rows, lookupPR != nil)
+}
+
+// LsAll lists every worktree of every supplied repository, grouped by
+// repository. This is the view for someone with agents running in six
+// checkouts, for whom the per-repository listing means six invocations and six
+// directories to remember to visit.
+//
+// There is no pull request lookup here, and that is deliberate rather than
+// pending. The lookup runs one `gh` call per branch in series, so across six
+// repositories it is a listing nobody would wait for — and it is scoped to a
+// single repository, so pointing it at another repository's branches would
+// quietly ask the wrong GitHub repository and answer confidently. Pairing them
+// needs concurrency and a per-repository lookup first.
+func LsAll(client *herdrapi.Client, roots []string, opts Options, out io.Writer) error {
+	repos, err := AllRows(client, roots)
+	if err != nil {
+		return err
+	}
+
+	for i := range repos {
+		if opts.Blocked {
+			repos[i].Rows = OnlyBlocked(repos[i].Rows)
+		}
+		WithPanes(client, repos[i].Rows)
+	}
+
+	if opts.JSON {
+		return jsonout.Write(out, ListJSON{Repositories: ReposJSON(repos)})
+	}
+	return RenderRepos(out, repos, opts)
 }
 
 func deref(s *string) string {
