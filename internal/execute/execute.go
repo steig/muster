@@ -19,6 +19,7 @@ import (
 
 	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/jsonout"
 	"github.com/steig/worktender/internal/reconcile"
 	"github.com/steig/worktender/internal/safetext"
 )
@@ -336,6 +337,52 @@ func Render(results []Result) string {
 	}
 	_ = tw.Flush()
 	return b.String()
+}
+
+// ResultJSON is Result as a consumer reads it: the action's own fields beside
+// the verdict, rather than the one "target" cell a table has room for.
+//
+// Values are raw, not terminal-escaped, for the reason wt.RowJSON's are — this
+// is data, and an escaped path is no longer a path. Detail carries git's stderr
+// verbatim and so can be several lines; the table flattens it, this does not.
+//
+// The shape may move before 1.0.
+type ResultJSON struct {
+	Status string `json:"status"`
+	Kind   string `json:"kind"`
+	// Target is the same cell the table prints, kept so a consumer showing a
+	// one-line summary does not have to re-derive it.
+	Target      string  `json:"target"`
+	Detail      string  `json:"detail"`
+	Branch      *string `json:"branch"`
+	Path        *string `json:"path"`
+	WorkspaceID *string `json:"workspace_id"`
+	PaneID      *string `json:"pane_id"`
+	AgentName   *string `json:"agent_name"`
+	// Reason is why the reconciler planned this action, which is not always
+	// what became of it — Detail is that.
+	Reason *string `json:"reason"`
+}
+
+// JSON projects results for a machine, from exactly the []Result the table
+// renders.
+func JSON(results []Result) []ResultJSON {
+	out := make([]ResultJSON, 0, len(results))
+	for _, r := range results {
+		out = append(out, ResultJSON{
+			Status:      string(r.Status),
+			Kind:        string(r.Action.Kind),
+			Target:      target(r.Action),
+			Detail:      r.Detail,
+			Branch:      jsonout.String(r.Action.Branch),
+			Path:        jsonout.String(r.Action.Path),
+			WorkspaceID: jsonout.String(r.Action.WorkspaceID),
+			PaneID:      jsonout.String(r.Action.PaneID),
+			AgentName:   jsonout.String(r.Action.AgentName),
+			Reason:      jsonout.String(r.Action.Reason),
+		})
+	}
+	return out
 }
 
 // target names the worktree an action is about, preferring the branch.

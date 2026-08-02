@@ -50,6 +50,10 @@ $ worktender ls --pr
   fix/257-erasure-comments  w1K  w1K:p1  idle     MERGED  257-erasure-comments
 ```
 
+`ls`, `doctor`, `sync`, `prune` and `prune-apply` take `--json` if you are
+building on this rather than reading it — see
+[Machine-readable output](docs/json.md).
+
 Everything is a subcommand of one binary, which herdr installs rather than
 putting on `PATH`. Resolve it once:
 

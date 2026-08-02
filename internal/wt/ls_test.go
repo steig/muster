@@ -30,22 +30,22 @@ func TestRowsJoinsWorkspaceAgentStatus(t *testing.T) {
 	if !rows[0].Main {
 		t.Error("first worktree is the main checkout, want Main=true")
 	}
-	if rows[0].WorkspaceID != "-" || rows[0].AgentStatus != "-" {
+	if rows[0].WorkspaceID != "" || rows[0].AgentStatus != "" {
 		t.Errorf("unopened worktree should have no workspace/status, got %+v", rows[0])
 	}
 
 	// Rows joins two herdr calls and no more: the pane and pull request columns
-	// each cost their own lookup, so they are left as "-" for WithPanes and
+	// each cost their own lookup, so they are left empty for WithPanes and
 	// WithPRs to fill.
-	want := wt.Row{Main: false, Branch: "fix-auth", WorkspaceID: "w2", PaneID: "-",
-		AgentStatus: "working", PR: "-", Dir: "fix-auth"}
+	want := wt.Row{Main: false, Branch: "fix-auth", WorkspaceID: "w2",
+		AgentStatus: "working", Dir: "fix-auth"}
 	if rows[1] != want {
 		t.Errorf("row 1:\n got %+v\nwant %+v", rows[1], want)
 	}
 }
 
 // A worktree can point at a workspace herdr has already closed. The status must
-// degrade to "-" rather than reporting a stale or zero-valued agent state.
+// degrade to absent rather than reporting a stale or zero-valued agent state.
 func TestRowsHandlesStaleWorkspaceReference(t *testing.T) {
 	worktrees := &herdrapi.WorktreeListResponse{Worktrees: []herdrapi.WorktreeInfo{
 		{Path: "/repo/wt/gone", Branch: ptr("gone"), IsLinkedWorktree: true,
@@ -54,8 +54,8 @@ func TestRowsHandlesStaleWorkspaceReference(t *testing.T) {
 	workspaces := &herdrapi.WorkspaceListResponse{}
 
 	rows := wt.Rows(worktrees, workspaces)
-	if rows[0].AgentStatus != "-" {
-		t.Errorf("stale workspace ref should yield %q, got %q", "-", rows[0].AgentStatus)
+	if rows[0].AgentStatus != "" {
+		t.Errorf("stale workspace ref should yield no status, got %q", rows[0].AgentStatus)
 	}
 	if rows[0].WorkspaceID != "w-closed" {
 		t.Errorf("workspace id should still be shown, got %q", rows[0].WorkspaceID)
@@ -68,15 +68,15 @@ func TestRowsDetachedHeadHasNoBranch(t *testing.T) {
 	}}
 
 	rows := wt.Rows(worktrees, nil)
-	if rows[0].Branch != "-" {
-		t.Errorf("detached worktree should render branch as %q, got %q", "-", rows[0].Branch)
+	if rows[0].Branch != "" {
+		t.Errorf("detached worktree has no branch, got %q", rows[0].Branch)
 	}
 }
 
 func TestRenderAlignsColumns(t *testing.T) {
 	var buf bytes.Buffer
 	err := wt.Render(&buf, []wt.Row{
-		{Main: true, Branch: "main", WorkspaceID: "-", PaneID: "-", AgentStatus: "-", Dir: "repo"},
+		{Main: true, Branch: "main", Dir: "repo"},
 		{Branch: "a-much-longer-branch", WorkspaceID: "w2", PaneID: "p1", AgentStatus: "idle", Dir: "wt"},
 	}, false)
 	if err != nil {
@@ -115,7 +115,7 @@ func TestRenderEscapesABranchNameThatDrawsAsAnother(t *testing.T) {
 
 	var buf bytes.Buffer
 	if err := wt.Render(&buf, []wt.Row{
-		{Branch: branch, WorkspaceID: "-", PaneID: "-", AgentStatus: "-", Dir: "wt"},
+		{Branch: branch, Dir: "wt"},
 	}, false); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestLsAgainstFakeHerdr(t *testing.T) {
 	client := herdrapi.NewWithSocket(server.SocketPath)
 	// Called from inside the linked worktree: the listing must still cover the
 	// whole repository, which is what RepoRoot's --git-common-dir is for.
-	if err := wt.Ls(client, "", checkout, nil, &buf); err != nil {
+	if err := wt.Ls(client, "", checkout, nil, false, &buf); err != nil {
 		t.Fatalf("Ls: %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestLsFailsWhenWorkspaceListFails(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := herdrapi.NewWithSocket(server.SocketPath)
-	if err := wt.Ls(client, "", repo.Root, nil, &buf); err == nil {
+	if err := wt.Ls(client, "", repo.Root, nil, false, &buf); err == nil {
 		t.Fatal("Ls should fail when the workspace list fails")
 	}
 	if buf.Len() != 0 {

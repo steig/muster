@@ -148,6 +148,10 @@ Errors you are most likely to meet:
 
 ## Smaller things worth knowing
 
+- **`--json` replaces the table on `ls`, `doctor`, `sync`, `prune` and
+  `prune-apply`**, and never joins it — see
+  [Machine-readable output](json.md). Human asides that would otherwise sit
+  beside the table, like a lock that would not release, go to stderr instead.
 - **`base` is `origin/HEAD`, not `main`.** It falls back to `main` only when
   origin cannot be asked, so a repository defaulting to `master` or `develop` is
   handled without configuration.

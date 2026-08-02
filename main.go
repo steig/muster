@@ -17,6 +17,7 @@ import (
 	"github.com/steig/worktender/internal/execute"
 	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/jsonout"
 	"github.com/steig/worktender/internal/reconcile"
 	"github.com/steig/worktender/internal/repolock"
 	"github.com/steig/worktender/internal/wt"
@@ -59,7 +60,7 @@ func run(args []string, out io.Writer) error {
 		return lsCommand(args[1:], out)
 	case "doctor":
 		// Read-only, takes no lock, works from outside a repository.
-		return doctorCommand(out)
+		return doctorCommand(args[1:], out)
 	case "update":
 		// Moves this plugin's own install forward; touches no repository of the
 		// user's.
@@ -70,7 +71,7 @@ func run(args []string, out io.Writer) error {
 		return startCommand(args[1:], out)
 	case "sync":
 		// Adopt and staff. Finished worktrees are only listed.
-		return syncCommand(out)
+		return syncCommand(args[1:], out)
 	case "dispatch":
 		// Staffs one named pane; changes no worktree, so it takes no lock.
 		return dispatchCommand(args[1:], out)
@@ -210,8 +211,69 @@ func (s *session) planWith(collector *reconcile.Collector) ([]reconcile.Action, 
 	return reconcile.Reconcile(state), nil
 }
 
-// perform executes actions, writes the report, and fails when any action did.
-func (s *session) perform(out io.Writer, actions []reconcile.Action, applyPrune bool) error {
+// output is where a command's answer goes, and in which of the two shapes.
+//
+// The JSON is a projection of exactly the results the table renders, written
+// once at the end rather than per pass: a consumer parses a single document
+// from stdout, and a reconcile runs its body up to reconcilePasses times.
+type output struct {
+	w    io.Writer
+	json bool
+	// held is the JSON mode's accumulator across those passes. Text mode holds
+	// nothing, because each pass has already printed.
+	held []execute.Result
+}
+
+func newOutput(w io.Writer, asJSON bool) *output { return &output{w: w, json: asJSON} }
+
+// notes is where a human aside goes — a lock that would not release, the hint
+// pointing at prune-apply. Never stdout in JSON mode: an aside printed beside
+// the document is exactly what breaks the consumer reading it.
+func (o *output) notes() io.Writer {
+	if o.json {
+		return os.Stderr
+	}
+	return o.w
+}
+
+// record takes one pass's results.
+func (o *output) record(results []execute.Result) {
+	if o.json {
+		o.held = append(o.held, results...)
+		return
+	}
+
+	fmt.Fprint(o.w, execute.Render(results))
+	if execute.Counts(results)[execute.StatusPlanned] > 0 {
+		fmt.Fprintln(o.w, "\nrun the `Worktender: prune (apply)` action to remove the worktrees listed above")
+	}
+}
+
+// reconcileJSON is what `sync`, `prune` and `prune-apply` write for a machine.
+//
+// The repository is in the document because text mode prints it as a line above
+// the table — a line that must not appear on a stdout being parsed, and a fact
+// no consumer should have to re-derive to learn what was acted on.
+//
+// The shape may move before 1.0.
+type reconcileJSON struct {
+	Repository string               `json:"repository"`
+	Results    []execute.ResultJSON `json:"results"`
+}
+
+// flush writes the JSON document, and does nothing in text mode.
+func (o *output) flush(repository string) error {
+	if !o.json {
+		return nil
+	}
+	return jsonout.Write(o.w, reconcileJSON{
+		Repository: repository,
+		Results:    execute.JSON(o.held),
+	})
+}
+
+// perform executes actions, records the report, and fails when any action did.
+func (s *session) perform(o *output, actions []reconcile.Action, applyPrune bool) error {
 	executor := &execute.Executor{
 		Client:     s.client,
 		Root:       s.root,
@@ -220,24 +282,27 @@ func (s *session) perform(out io.Writer, actions []reconcile.Action, applyPrune 
 	}
 	results := executor.Run(actions)
 
-	fmt.Fprint(out, execute.Render(results))
+	o.record(results)
 
-	counts := execute.Counts(results)
-	if counts[execute.StatusPlanned] > 0 {
-		fmt.Fprintln(out, "\nrun the `Worktender: prune (apply)` action to remove the worktrees listed above")
-	}
-	if failed := counts[execute.StatusFailed]; failed > 0 {
+	if failed := execute.Counts(results)[execute.StatusFailed]; failed > 0 {
 		return fmt.Errorf("%d of %d action(s) failed", failed, len(results))
 	}
 	return nil
 }
 
-const lsUsage = "usage: worktender ls [--pr]"
+// jsonFlag registers --json on a flag set. One description, so the commands
+// cannot advertise the switch differently.
+func jsonFlag(fs *flag.FlagSet) *bool {
+	return fs.Bool("json", false, "write a machine-readable document instead of the table")
+}
+
+const lsUsage = "usage: worktender ls [--pr] [--json]"
 
 func lsCommand(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	withPR := fs.Bool("pr", false, "ask gh for each branch's pull request state")
+	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%v; %s", err, lsUsage)
@@ -254,28 +319,45 @@ func lsCommand(args []string, out io.Writer) error {
 
 	// Opt-in, because it is one `gh` invocation per branch and they run in
 	// series. A listing people run to see where they stand has to stay fast.
-	var lookupPR func(string) string
+	var lookupPR func(string) (string, error)
 	if *withPR {
-		lookupPR = func(branch string) string {
-			return string(reconcile.GhPRState(s.root, branch))
+		lookupPR = func(branch string) (string, error) {
+			state, err := reconcile.GhPRLookup(s.root, branch)
+			return string(state), err
 		}
 	}
-	return wt.Ls(s.client, s.root, s.dir, lookupPR, out)
+	return wt.Ls(s.client, s.root, s.dir, lookupPR, *asJSON, out)
 }
+
+const syncUsage = "usage: worktender sync [--json]"
 
 // syncCommand adopts unopened worktrees and staffs agentless workspaces. It
 // never prunes: removals are the prune commands' job.
-func syncCommand(out io.Writer) error {
+func syncCommand(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	asJSON := jsonFlag(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%v; %s", err, syncUsage)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), syncUsage)
+	}
+
 	// Opens workspaces and starts agents, so it must be told where.
 	s, err := newSession(false)
 	if err != nil {
 		return err
 	}
+	o := newOutput(out, *asJSON)
 
 	// Named for the reason `prune` names it: sync resolves the repository from
 	// herdr's invocation context first, so it can act somewhere other than where
-	// the caller believes they are standing.
-	fmt.Fprintf(out, "repository: %s\n", s.root)
+	// the caller believes they are standing. The JSON carries it as a field.
+	if !o.json {
+		fmt.Fprintf(o.w, "repository: %s\n", s.root)
+	}
 
 	// Serialise against an event hook reconciling the same repository. The
 	// executor re-checks its guards regardless, so this is about not doing the
@@ -287,20 +369,23 @@ func syncCommand(out io.Writer) error {
 	if lock == nil {
 		return fmt.Errorf("another worktender reconcile has held %s for more than %s; try again", s.root, commandLockWait)
 	}
-	defer releaseLock(lock, out)
+	defer releaseLock(lock, o.notes())
 
 	collector := reconcile.NewCollector(s.client, s.root)
 	// No gh: PR state only ever authorises a prune, and prunes are filtered out
 	// below. Every lookup is a network round trip per worktree, deciding nothing.
 	collector.LookupPR = nil
 
-	return lock.Repeat(reconcilePasses, func() error {
+	err = lock.Repeat(reconcilePasses, func() error {
 		actions, err := s.planWith(collector)
 		if err != nil {
 			return err
 		}
-		return s.perform(out, reconcile.Only(actions, reconcile.KindAdopt, reconcile.KindStaff), false)
+		return s.perform(o, reconcile.Only(actions, reconcile.KindAdopt, reconcile.KindStaff), false)
 	})
+	// Written even when a pass failed: text mode has already printed what the
+	// earlier passes did, and the document must say the same.
+	return firstError(err, o.flush(s.root))
 }
 
 // pruneName and pruneUsage keep the two halves' errors saying which half they
@@ -314,7 +399,7 @@ func pruneName(apply bool) string {
 }
 
 func pruneUsage(apply bool) string {
-	return "usage: worktender " + pruneName(apply) + " [--repo <path>]"
+	return "usage: worktender " + pruneName(apply) + " [--repo <path>] [--json]"
 }
 
 // pruneCommand reports finished worktrees, and removes them only when apply is
@@ -324,6 +409,7 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	fs := flag.NewFlagSet(pruneName(apply), flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	repo := fs.String("repo", "", "repository to act on, instead of the one herdr is currently in")
+	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%v; %s", err, pruneUsage(apply))
@@ -344,13 +430,16 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	if err != nil {
 		return err
 	}
+	o := newOutput(out, *asJSON)
 
 	// Both halves name the repository they resolved, because they do not resolve
 	// it the same way — listing may fall back to the working directory, applying
 	// may not — and must not disagree in silence. Splitting prune from
 	// prune-apply is the confirmation step, and that only holds if the second
-	// acts on what the first described.
-	fmt.Fprintf(out, "repository: %s\n", s.root)
+	// acts on what the first described. The JSON carries it as a field.
+	if !o.json {
+		fmt.Fprintf(o.w, "repository: %s\n", s.root)
+	}
 
 	// Listing changes nothing, so it needs no claim on the repository; only the
 	// half that removes worktrees serialises against a concurrent reconcile.
@@ -359,7 +448,8 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 		if err != nil {
 			return err
 		}
-		return s.perform(out, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), false)
+		err = s.perform(o, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), false)
+		return firstError(err, o.flush(s.root))
 	}
 
 	lock, err := repolock.AcquireWithin(stateDir(), s.root, commandLockWait)
@@ -369,7 +459,7 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	if lock == nil {
 		return fmt.Errorf("another worktender reconcile has held %s for more than %s; try again", s.root, commandLockWait)
 	}
-	defer releaseLock(lock, out)
+	defer releaseLock(lock, o.notes())
 
 	// A single pass, not Repeat: re-running a removal because more work was
 	// marked would act on a trigger someone else observed. The mark is left for
@@ -378,5 +468,16 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	if err != nil {
 		return err
 	}
-	return s.perform(out, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), true)
+	err = s.perform(o, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), true)
+	return firstError(err, o.flush(s.root))
+}
+
+// firstError prefers the failure the command is about over the one writing it
+// out. A document that could not be written is worth reporting, but not instead
+// of the actions that failed.
+func firstError(err, flushErr error) error {
+	if err != nil {
+		return err
+	}
+	return flushErr
 }

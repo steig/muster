@@ -164,6 +164,9 @@ func onEventCommand(out io.Writer) error {
 		// Adopt and staff only. Removal stays something a human asks for by
 		// name: `prune` and `prune-apply` are separate actions precisely so
 		// nothing removes a worktree as a side effect of something else.
-		return s.perform(out, reconcile.Only(actions, reconcile.KindAdopt, reconcile.KindStaff), false)
+		// Text: an event hook's output lands in the plugin log for a human to
+		// read afterwards, and herdr invokes it with no argument surface to ask
+		// for anything else.
+		return s.perform(newOutput(out, false), reconcile.Only(actions, reconcile.KindAdopt, reconcile.KindStaff), false)
 	})
 }

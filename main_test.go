@@ -64,7 +64,7 @@ func TestDestructiveCommandsRefuseWithoutContext(t *testing.T) {
 		name string
 		run  func(io.Writer) error
 	}{
-		{"sync starts agents", syncCommand},
+		{"sync starts agents", func(w io.Writer) error { return syncCommand(nil, w) }},
 		{"prune-apply removes worktrees", func(w io.Writer) error { return pruneCommand(nil, w, true) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestEveryCommandRejectsAMalformedContext(t *testing.T) {
 		run  func(io.Writer) error
 	}{
 		{"ls", func(w io.Writer) error { return lsCommand(nil, w) }},
-		{"sync", syncCommand},
+		{"sync", func(w io.Writer) error { return syncCommand(nil, w) }},
 		{"prune", func(w io.Writer) error { return pruneCommand(nil, w, false) }},
 		{"prune-apply", func(w io.Writer) error { return pruneCommand(nil, w, true) }},
 	} {
@@ -168,7 +168,7 @@ func TestSyncFailsWhenAnActionFails(t *testing.T) {
 	})
 
 	var out strings.Builder
-	err := syncCommand(&out)
+	err := syncCommand(nil, &out)
 	if err == nil {
 		t.Fatalf("sync should fail when staffing failed; output was:\n%s", out.String())
 	}
@@ -196,7 +196,7 @@ func TestSyncSucceedsWhenNothingFails(t *testing.T) {
 	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
 
 	var out strings.Builder
-	if err := syncCommand(&out); err != nil {
+	if err := syncCommand(nil, &out); err != nil {
 		t.Fatalf("sync with nothing to do should succeed: %v", err)
 	}
 }
@@ -273,7 +273,7 @@ func TestSyncNamesTheRepositoryItResolved(t *testing.T) {
 	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
 
 	var out strings.Builder
-	if err := syncCommand(&out); err != nil {
+	if err := syncCommand(nil, &out); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if !strings.Contains(out.String(), "repository: "+repo.RealRoot) {
@@ -299,7 +299,7 @@ func TestSyncAsksGhNothing(t *testing.T) {
 	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
 
 	var out strings.Builder
-	if err := syncCommand(&out); err != nil {
+	if err := syncCommand(nil, &out); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if _, err := os.Stat(called); err == nil {
@@ -321,7 +321,7 @@ func TestSyncDoesNotPrune(t *testing.T) {
 	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
 
 	var out strings.Builder
-	if err := syncCommand(&out); err != nil {
+	if err := syncCommand(nil, &out); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if !repo.Exists(checkout) {
@@ -350,7 +350,7 @@ func TestSyncAdoptsAWorktreeOutsideTheRepoRoot(t *testing.T) {
 	server.HandleResult("worktree.open", map[string]any{"type": "workspace_created"})
 
 	var out strings.Builder
-	if err := syncCommand(&out); err != nil {
+	if err := syncCommand(nil, &out); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 

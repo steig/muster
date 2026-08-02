@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/jsonout"
 	"github.com/steig/worktender/internal/safetext"
 	"github.com/steig/worktender/internal/wt"
 )
@@ -24,7 +26,18 @@ import (
 //
 // It is read-only, takes no lock, and works from outside a repository — so it
 // asks herdr for the repositories rather than asking git where it is standing.
-func doctorCommand(out io.Writer) error {
+func doctorCommand(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	asJSON := jsonFlag(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%v; %s", err, doctorUsage)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), doctorUsage)
+	}
+
 	client, clientErr := herdrapi.New()
 	herdr := check{name: "herdr", value: "unreachable", state: stateFail}
 	if clientErr == nil {
@@ -35,8 +48,43 @@ func doctorCommand(out io.Writer) error {
 
 	checks := []check{versionCheck(client), herdr, ghCheck(), eventsCheck()}
 
-	// Rendered through a buffer so the padding of a check with no note does not
-	// leave a line of trailing spaces.
+	// Nothing below the checks is answerable without herdr, and saying so once
+	// is better than four repetitions of the same cause.
+	var fatal error
+	var repos []repoSummary
+	if clientErr != nil {
+		fatal = fmt.Errorf("cannot reach herdr, so nothing else here could be checked: %w", clientErr)
+	} else if repos, fatal = repositories(client); fatal != nil {
+		repos = nil
+	}
+
+	if *asJSON {
+		// The failure is in the document as well as on stderr: a consumer that
+		// only reads stdout would otherwise see checks and an empty repository
+		// list, which is what a healthy herdr with nothing open also looks like.
+		if err := writeDoctorJSON(out, checks, repos, fatal); err != nil {
+			return err
+		}
+		return fatal
+	}
+
+	if err := renderChecks(out, checks); err != nil {
+		return err
+	}
+	fmt.Fprint(out, binaryLine())
+	if fatal != nil {
+		return fatal
+	}
+	return renderRepositories(out, repos)
+}
+
+const doctorUsage = "usage: worktender doctor [--json]"
+
+// renderChecks writes the check table.
+//
+// It goes through a buffer so the padding of a check with no note does not
+// leave a line of trailing spaces.
+func renderChecks(out io.Writer, checks []check) error {
 	var table bytes.Buffer
 	tw := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
 	for _, c := range checks {
@@ -48,16 +96,66 @@ func doctorCommand(out io.Writer) error {
 	for line := range strings.SplitSeq(strings.TrimRight(table.String(), "\n"), "\n") {
 		fmt.Fprintln(out, strings.TrimRight(line, " "))
 	}
+	return nil
+}
 
-	fmt.Fprint(out, binaryLine())
+// doctorJSON is what `doctor --json` writes. The shape may move before 1.0.
+type doctorJSON struct {
+	Checks []checkJSON `json:"checks"`
+	// Binary is this process's own path, null when it cannot say where it
+	// lives. It is what the text mode's "run it from a shell with" line carries.
+	Binary *string `json:"binary"`
+	// Repositories is null rather than empty when Error is set: an empty list
+	// is the answer for a herdr with nothing open, which is a different fact.
+	Repositories []repoJSON `json:"repositories"`
+	Error        *string    `json:"error"`
+}
 
-	// Nothing below this line is answerable without herdr, and saying so once is
-	// better than four repetitions of the same cause.
-	if clientErr != nil {
-		return fmt.Errorf("cannot reach herdr, so nothing else here could be checked: %w", clientErr)
+type checkJSON struct {
+	Name  string  `json:"name"`
+	Value string  `json:"value"`
+	State string  `json:"state"`
+	Note  *string `json:"note"`
+}
+
+// repoJSON is one repository at the granularity the table reports it: how many
+// worktrees, and how many agents in each state. `ls --json` is the per-worktree
+// view, and needs a repository to be run in.
+type repoJSON struct {
+	// Root is the repository path, which the table shows only the basename of.
+	Root string `json:"root"`
+	Name string `json:"name"`
+	// Error is why this repository could not be read; the two counts below are
+	// null when it is set, and one unreadable repository costs the others
+	// nothing.
+	Error     *string        `json:"error"`
+	Worktrees *int           `json:"worktrees"`
+	Agents    map[string]int `json:"agents"`
+}
+
+func writeDoctorJSON(out io.Writer, checks []check, repos []repoSummary, fatal error) error {
+	document := doctorJSON{Checks: make([]checkJSON, 0, len(checks)), Binary: jsonout.String(binaryPath())}
+	for _, c := range checks {
+		document.Checks = append(document.Checks, checkJSON{
+			Name: c.name, Value: c.value, State: string(c.state), Note: jsonout.String(c.note),
+		})
 	}
 
-	return reportRepositories(client, out)
+	if fatal != nil {
+		document.Error = jsonout.String(fatal.Error())
+	} else {
+		document.Repositories = make([]repoJSON, 0, len(repos))
+		for _, r := range repos {
+			entry := repoJSON{Root: r.Root, Name: filepath.Base(r.Root), Error: jsonout.String(r.Err)}
+			if r.Err == "" {
+				count := len(r.Rows)
+				entry.Worktrees = &count
+				entry.Agents = agentCounts(r.Rows)
+			}
+			document.Repositories = append(document.Repositories, entry)
+		}
+	}
+	return jsonout.Write(out, document)
 }
 
 // binaryLine is how to reach this binary from a shell, or "" when this process
@@ -67,12 +165,19 @@ func doctorCommand(out io.Writer) error {
 // It is printed before the herdr check gates the rest: someone whose herdr is
 // not answering still has a binary to run.
 func binaryLine() string {
+	path := binaryPath()
+	if path == "" {
+		return ""
+	}
+	return fmt.Sprintf("\nrun it from a shell with:\n  worktender=%s\n", safetext.Escape(path))
+}
+
+func binaryPath() string {
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
 	}
-	return fmt.Sprintf("\nrun it from a shell with:\n  worktender=%s\n",
-		safetext.Escape(gitx.Resolve(exe)))
+	return gitx.Resolve(exe)
 }
 
 // state is a check's verdict, not a boolean: "off" is the documented default
@@ -214,50 +319,84 @@ func eventsCheck() check {
 	}
 }
 
-// reportRepositories lists what herdr currently holds, one line per repository.
-// The scope is herdr's open worktree workspaces rather than the caller's
-// directory, because this has to answer from outside any repository at all.
-func reportRepositories(client *herdrapi.Client, out io.Writer) error {
+// repoSummary is one repository as doctor knows it: what herdr holds, or why it
+// could not be read. Collected once and rendered either way, so the table and
+// the document cannot describe different sessions.
+type repoSummary struct {
+	Root string
+	// Err is why this repository could not be read, empty when it could. One
+	// unreadable repository must not cost the others their place.
+	Err  string
+	Rows []wt.Row
+}
+
+// repositories reads what herdr currently holds. The scope is herdr's open
+// worktree workspaces rather than the caller's directory, because doctor has to
+// answer from outside any repository at all.
+func repositories(client *herdrapi.Client) ([]repoSummary, error) {
 	roots, err := openRepositories(client)
 	if err != nil {
-		return fmt.Errorf("list workspaces: %w", err)
+		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
 	if len(roots) == 0 {
-		fmt.Fprintln(out, "\nno repositories: herdr has no worktree workspaces open")
-		return nil
+		return nil, nil
 	}
 
 	workspaces, err := client.WorkspaceList()
 	if err != nil {
-		return fmt.Errorf("list workspaces: %w", err)
+		return nil, fmt.Errorf("list workspaces: %w", err)
+	}
+
+	summaries := make([]repoSummary, 0, len(roots))
+	for _, root := range roots {
+		summary := repoSummary{Root: root}
+		if worktrees, err := client.WorktreeList(root); err != nil {
+			summary.Err = err.Error()
+		} else {
+			summary.Rows = wt.Rows(worktrees, workspaces)
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
+// renderRepositories lists what herdr holds, one line per repository.
+func renderRepositories(out io.Writer, summaries []repoSummary) error {
+	if len(summaries) == 0 {
+		fmt.Fprintln(out, "\nno repositories: herdr has no worktree workspaces open")
+		return nil
 	}
 
 	fmt.Fprintln(out, "\nrepos")
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	for _, root := range roots {
-		worktrees, err := client.WorktreeList(root)
-		if err != nil {
-			// One unreadable repository must not cost the others their line.
-			fmt.Fprintf(tw, "  %s\t\t%s\n", safetext.Escape(filepath.Base(root)), safetext.Escape(err.Error()))
+	for _, summary := range summaries {
+		name := safetext.Escape(filepath.Base(summary.Root))
+		if summary.Err != "" {
+			fmt.Fprintf(tw, "  %s\t\t%s\n", name, safetext.Escape(summary.Err))
 			continue
 		}
-		rows := wt.Rows(worktrees, workspaces)
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n",
-			safetext.Escape(filepath.Base(root)), plural(len(rows), "worktree"), summariseAgents(rows))
+			name, plural(len(summary.Rows), "worktree"), summariseAgents(summary.Rows))
 	}
 	return tw.Flush()
 }
 
-// summariseAgents counts the agent statuses herdr reports, busiest first so the
-// interesting half of the line comes first.
-func summariseAgents(rows []wt.Row) string {
+// agentCounts tallies the agent statuses herdr reports for these worktrees.
+func agentCounts(rows []wt.Row) map[string]int {
 	counts := map[string]int{}
 	for _, r := range rows {
-		if r.AgentStatus == "" || r.AgentStatus == "-" {
+		if r.AgentStatus == "" {
 			continue
 		}
 		counts[r.AgentStatus]++
 	}
+	return counts
+}
+
+// summariseAgents renders those counts busiest first, so the interesting half
+// of the line comes first.
+func summariseAgents(rows []wt.Row) string {
+	counts := agentCounts(rows)
 	if len(counts) == 0 {
 		return "no agents"
 	}
