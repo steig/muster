@@ -37,7 +37,7 @@ func TestPruneJSONCarriesTheRepositoryInsteadOfPrintingIt(t *testing.T) {
 	repo.CommitIn(checkout, "done.txt", "work")
 	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
 
-	herdrtest.FakeGh(t, `echo '[{"state":"MERGED"}]'`)
+	herdrtest.FakeGhPRState(t, "MERGED")
 
 	server := fakeSession(t, repo)
 	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "done", ""))
