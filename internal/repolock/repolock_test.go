@@ -165,8 +165,10 @@ func TestMaxHoldExceedsTheLongestLegitimateHold(t *testing.T) {
 		t.Fatalf("MaxHold %s does not exceed a single agent start (%s); a healthy holder would be evicted mid-staff",
 			MaxHold, execute.AgentStartTimeout)
 	}
-	// One staffing is the floor, not the target: a pass can staff several
-	// worktrees in sequence, each waiting the full timeout.
+	// One staffing is the floor, not the target. The busy-pane wait is budgeted
+	// across a whole Run rather than per action, so a pass staffing several
+	// worktrees spends AgentStartTimeout once — but the rest of that pass, the
+	// git and gh work around the staffing, is not free.
 	if margin := MaxHold / execute.AgentStartTimeout; margin < 3 {
 		t.Errorf("MaxHold is only %dx a single agent start; a pass staffing several worktrees would be evicted", margin)
 	}

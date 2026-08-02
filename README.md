@@ -129,28 +129,37 @@ gate: wt-43-other-9c21f4 released after 4m12s
 ```
 
 One command from an issue number to an agent working on it: it reads the issue
-with `gh`, creates a worktree named for it, starts an agent in the new pane, and
-types a brief covering the whole round — read the issue, explore, change, test,
-self-review, open a PR, then `report`.
+title with `gh`, creates a worktree named for it, starts an agent in the new
+pane, and types a brief covering the whole round — read the issue, explore,
+change, test, self-review, open a PR, then `report`.
 
 `--repo` because `start` creates a checkout, so it refuses to guess which
 repository — and unlike the reconcile commands it has no herdr action to be
 invoked through, because an action carries no arguments and `start` is nothing
 without its issue number. Flags may be written on either side of the number.
 
-**The brief is confirmed, not claimed.** It is submitted with a separate Enter
-key event and `start` then waits for herdr to report the agent working, because
-herdr answering ok means it delivered keystrokes and not that an agent received
-a prompt. An agent still `idle` when that wait runs out fails the command.
+**The brief is confirmed, not claimed.** It is typed, read back out of the pane,
+then submitted with a separate Enter key event, and `start` waits for herdr to
+report the agent working. herdr answering ok means it delivered keystrokes, not
+that an agent received a prompt — and the read-back in the middle is what stops
+the Enter arriving so close behind the text that the TUI takes it as part of the
+paste. An agent still `idle` when that wait runs out fails the command.
 
 Start several, then wait on the lot of them. `start` deliberately does not wait;
 `gate` is the other half.
 
-**The issue body reaches the agent as framed, untrusted data.** Anyone who can
-file an issue writes it, so it is announced as data and delimited before it
-arrives, flattened onto one line, and never presented as an instruction. Nothing
-about the agent's autonomy is defaulted: without `--permission-mode`, `start`
-changes nothing about what it may do.
+**The brief does not carry the issue.** It names it and tells the worker to run
+`gh issue view`, which reads the same text as tool output rather than as prose
+pasted into a prompt. Nothing an issue author writes reaches the brief at all —
+the title only survives as a branch name, already reduced to `[a-z0-9-]`. Nothing
+about the agent's autonomy is defaulted either: without `--permission-mode`,
+`start` changes nothing about what it may do.
+
+**A worktree seconds old is not ready for an agent.** Its shell is still in
+direnv, nix or a login banner, and herdr refuses to start an agent against it —
+immediately, whatever `timeout_ms` the request carried. Staffing waits the pane
+out itself, for up to a minute, re-checking each time that nobody else has
+claimed the workspace meanwhile.
 
 ## Quickstart
 

@@ -10,6 +10,7 @@
 package execute
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -47,9 +48,18 @@ type Result struct {
 	Detail string
 }
 
-// AgentStartTimeout bounds herdr's own wait for a pane to become usable — a
-// fresh worktree is often still running direnv or nix, and an agent cannot
-// start against a busy prompt.
+// AgentStartTimeout bounds the wait for a pane to become usable — a fresh
+// worktree is often still running direnv, nix or a shell banner, and an agent
+// cannot start against a busy prompt. It bounds one Run, not one action, so a
+// pass over several worktrees cannot multiply it.
+//
+// THIS PACKAGE DOES THE WAITING. It used to be handed to herdr as timeout_ms in
+// the belief that herdr would retry against a busy pane, and herdr does not:
+// measured against protocol 17, agent.start on an occupied pane answers
+// agent_pane_busy in 1.6-3.0ms with timeout_ms unset, 1000, 60000 and 120000
+// alike. The value is passed on anyway — it is still the documented bound for
+// herdr's own launch, which nothing here can observe — but the retry that makes
+// a fresh worktree staffable is the loop in staff().
 //
 // It is exported because it is also the longest a reconcile can legitimately
 // hold the repository lock. repolock.MaxHold is sized from it, and a test
@@ -58,6 +68,16 @@ const AgentStartTimeout = 60 * time.Second
 
 // agentStartTimeoutMS is the same bound in the units the wire protocol wants.
 const agentStartTimeoutMS = int(AgentStartTimeout / time.Millisecond)
+
+// agentBusyPoll is how long to leave a busy pane alone between attempts. A
+// shell finishing direnv is not watched into readiness, so this only decides how
+// promptly the settled pane is noticed.
+const agentBusyPoll = 500 * time.Millisecond
+
+// agentPaneBusy is herdr's code for "that pane is not an available shell". It is
+// the only failure worth retrying: every other one describes something a second
+// attempt cannot change.
+const agentPaneBusy = "agent_pane_busy"
 
 // agentKind is the herdr agent to start when staffing a worktree.
 const agentKind = "claude"
@@ -72,10 +92,22 @@ type Executor struct {
 	CallerDir string
 	// ApplyPrune turns prunes from a dry run into actual removals.
 	ApplyPrune bool
+	// BusyRetryFor bounds how long staffing keeps re-offering a pane herdr
+	// reports busy. Zero means AgentStartTimeout; tests set it short.
+	BusyRetryFor time.Duration
 }
 
 // Run performs every action in order and returns one Result each.
+//
+// The wait for busy panes is budgeted across the whole run, not per action.
+// Worktrees warm up in wall-clock time and not in turn — a shell that has been
+// running direnv while the previous worktree was staffed is that much further
+// along — and a per-action budget would let a pass over five of them hold the
+// repository lock for five times AgentStartTimeout, which is repolock.MaxHold
+// exactly. So the run gets one deadline and they share it.
 func (e *Executor) Run(actions []reconcile.Action) []Result {
+	busyUntil := time.Now().Add(e.busyRetryFor())
+
 	results := make([]Result, 0, len(actions))
 	for _, action := range actions {
 		switch action.Kind {
@@ -86,7 +118,7 @@ func (e *Executor) Run(actions []reconcile.Action) []Result {
 		case reconcile.KindAdopt:
 			results = append(results, e.adopt(action))
 		case reconcile.KindStaff:
-			results = append(results, e.staff(action))
+			results = append(results, e.staff(action, busyUntil))
 		case reconcile.KindPrune:
 			results = append(results, e.prune(action))
 		default:
@@ -111,7 +143,8 @@ func (e *Executor) adopt(action reconcile.Action) Result {
 	return Result{action, StatusDone, "opened workspace"}
 }
 
-// staff starts an agent in a workspace that has none, re-checking first.
+// staff starts an agent in a workspace that has none, re-checking first and
+// waiting out a pane that is still busy.
 //
 // The reconciler decided this workspace was empty from a snapshot that has
 // since aged, and an agent appearing in the gap is routine — an event hook and
@@ -120,19 +153,13 @@ func (e *Executor) adopt(action reconcile.Action) Result {
 //
 // The repository lock makes the collision rare; this re-check is what makes it
 // safe. The lock may fail to exclude, so it cannot be the thing standing here.
-func (e *Executor) staff(action reconcile.Action) Result {
-	if action.WorkspaceID != "" {
-		staffed, err := e.workspaceStaffed(action.WorkspaceID)
-		switch {
-		case err != nil:
-			// An unverifiable guard is not a satisfied one.
-			return Result{action, StatusSkipped,
-				fmt.Sprintf("could not confirm the workspace has no agent: %v", err)}
-		case staffed:
-			return Result{action, StatusSkipped, "an agent started here since the plan was made"}
-		}
-	}
-
+//
+// A pane that is merely busy is a different fact from an occupied one, and the
+// only one worth waiting on: a worktree seconds old is still running direnv,
+// nix or a login banner, and herdr refuses to start an agent against it. Every
+// attempt re-runs the guard, because a pane that stays busy for a minute is a
+// minute in which someone else can staff the workspace.
+func (e *Executor) staff(action reconcile.Action, busyUntil time.Time) Result {
 	var args []string
 	mode := "started"
 	if action.Resume {
@@ -144,11 +171,76 @@ func (e *Executor) staff(action reconcile.Action) Result {
 	// resume is this executor's decision, not the caller's.
 	args = append(args, action.AgentArgs...)
 
-	if err := e.Client.AgentStart(action.AgentName, agentKind, action.PaneID, args, agentStartTimeoutMS); err != nil {
-		return Result{action, StatusFailed, fmt.Sprintf("start agent in %s: %v", action.PaneID, err)}
+	started := time.Now()
+	for attempt := 1; ; attempt++ {
+		if action.WorkspaceID != "" {
+			staffed, err := e.workspaceStaffed(action.WorkspaceID)
+			switch {
+			case err != nil:
+				// An unverifiable guard is not a satisfied one.
+				return Result{action, StatusSkipped,
+					fmt.Sprintf("could not confirm the workspace has no agent: %v", err)}
+			case staffed:
+				return Result{action, StatusSkipped, "an agent started here since the plan was made"}
+			}
+		}
+
+		err := e.Client.AgentStart(action.AgentName, agentKind, action.PaneID, args, agentStartTimeoutMS)
+		switch {
+		case err == nil:
+			return Result{action, StatusDone,
+				fmt.Sprintf("%s %s as %s in %s%s", mode, agentKind, action.AgentName, action.PaneID,
+					waited(attempt, time.Since(started)))}
+		case !paneBusy(err):
+			return Result{action, StatusFailed, fmt.Sprintf("start agent in %s: %v", action.PaneID, err)}
+		case !time.Now().Before(busyUntil):
+			return Result{action, StatusFailed, fmt.Sprintf(
+				"start agent in %s: %v; %s — something in that shell (direnv, nix, a banner) "+
+					"has not finished", action.PaneID, err, gaveUp(attempt, time.Since(started)))}
+		}
+		time.Sleep(agentBusyPoll)
 	}
-	return Result{action, StatusDone,
-		fmt.Sprintf("%s %s as %s in %s", mode, agentKind, action.AgentName, action.PaneID)}
+}
+
+// busyRetryFor is the configured retry budget, or the default.
+func (e *Executor) busyRetryFor() time.Duration {
+	if e.BusyRetryFor > 0 {
+		return e.BusyRetryFor
+	}
+	return AgentStartTimeout
+}
+
+// waited is the suffix reporting a wait that actually happened, empty when the
+// first attempt succeeded. A staffing that took forty seconds and one that took
+// none are not the same event, and the report is where that shows.
+func waited(attempts int, elapsed time.Duration) string {
+	if attempts <= 1 {
+		return ""
+	}
+	return fmt.Sprintf(" after waiting %s for the shell to settle", round(elapsed))
+}
+
+// gaveUp says how much waiting this action actually got before it stopped. On
+// the first action of a run that is the whole budget; on a later one it can
+// honestly be none, because the budget belongs to the run and an earlier
+// worktree may already have spent it — and a reader wondering why this one gave
+// up immediately should be told that rather than shown "0s".
+func gaveUp(attempts int, elapsed time.Duration) string {
+	if attempts <= 1 {
+		return "still busy, and this pass had already spent its wait on an earlier worktree"
+	}
+	return fmt.Sprintf("still busy after %s and %d attempts", round(elapsed), attempts)
+}
+
+// round trims a duration to something worth reading. Seconds alone would print
+// a wait of a few hundred milliseconds as "0s".
+func round(d time.Duration) time.Duration { return d.Round(100 * time.Millisecond) }
+
+// paneBusy reports whether herdr refused because the pane is not yet a usable
+// shell — the one agent.start failure a later attempt can change.
+func paneBusy(err error) bool {
+	var herr *herdrapi.Error
+	return errors.As(err, &herr) && herr.Code == agentPaneBusy
 }
 
 // prune removes a finished worktree, re-checking every guard first: uncommitted

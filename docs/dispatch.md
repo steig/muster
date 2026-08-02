@@ -31,11 +31,15 @@ worktender=$(herdr plugin list --json \
 ```
 
 `start` is `worktree.create` + `dispatch` + a briefing **it confirms**, in that
-order, against one issue. The briefing is typed and then submitted as a separate
-Enter key event, and `start` waits for herdr to report the agent working before
-it says "briefed": herdr answering ok means it delivered keystrokes, not that an
-agent received a prompt, and a brief left sitting in a composer is a worker with
-nothing to do that a listing reports as `idle`. It exists because the pane id the middle step needs came from
+order, against one issue. The briefing is typed, read back out of the pane, and
+only then submitted as a separate Enter key event; `start` waits for herdr to
+report the agent working before it says "briefed". herdr answering ok means it
+delivered keystrokes, not that an agent received a prompt, and a brief left
+sitting in a composer is a worker with nothing to do that a listing reports as
+`idle`. The brief names the issue rather than carrying it — the worker runs `gh
+issue view` itself, which keeps it short enough to arrive in one piece and keeps
+untrusted prose out of the prompt entirely.
+It exists because the pane id the middle step needs came from
 nowhere: `ls` did not print one, so the documented loop had a `<pane>` in it and
 no command that produced it. `ls` prints panes now, and `start` does not need
 you to look.

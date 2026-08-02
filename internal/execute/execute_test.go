@@ -3,6 +3,7 @@ package execute_test
 import (
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -586,6 +587,167 @@ func TestStaffReportsAFailureToStart(t *testing.T) {
 type errStartFailed struct{}
 
 func (errStartFailed) Error() string { return "pane is busy" }
+
+// busyUntil makes agent.start refuse the way herdr does until the nth attempt,
+// with zero meaning a pane that never settles. It returns how many attempts
+// were made.
+func busyUntil(server *herdrtest.Server, succeedOn int) func() int {
+	var attempts atomic.Int64
+	server.Handle("agent.start", func(map[string]any) (any, error) {
+		if n := int(attempts.Add(1)); succeedOn <= 0 || n < succeedOn {
+			return nil, &herdrtest.CodedError{
+				Code: "agent_pane_busy", Message: "agent target pane w2:p1 is not an available shell"}
+		}
+		return map[string]any{"type": "agent_started"}, nil
+	})
+	return func() int { return int(attempts.Load()) }
+}
+
+func staffAction() reconcile.Action {
+	return reconcile.Action{Kind: reconcile.KindStaff, Path: "/repo/wt/a", Branch: "a",
+		WorkspaceID: "w2", PaneID: "w2:p1", AgentName: "a"}
+}
+
+// A worktree seconds old is still running direnv, nix or a login banner, and
+// herdr will not start an agent against it. It was believed that agent.start's
+// timeout_ms covered this — the constant said so — and it does not: measured
+// against protocol 17, agent.start on an occupied pane answers agent_pane_busy
+// in 1.6-3.0ms with timeout_ms unset, 1000, 60000 and 120000 alike. So the
+// waiting happens here.
+func TestStaffWaitsOutAPaneThatIsStillBusy(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+	exec.BusyRetryFor = 5 * time.Second
+	attempts := busyUntil(server, 3)
+
+	result := only(t, exec.Run([]reconcile.Action{staffAction()}))
+	if result.Status != execute.StatusDone {
+		t.Fatalf("a pane that settled was never staffed; got %q: %s", result.Status, result.Detail)
+	}
+	if got := attempts(); got != 3 {
+		t.Errorf("agent.start was attempted %d times, want 3", got)
+	}
+	// A staffing that took two retries and one that took none are not the same
+	// event, and the report is the only place that shows.
+	if !strings.Contains(result.Detail, "after waiting") {
+		t.Errorf("the report should say a wait happened, got %q", result.Detail)
+	}
+}
+
+// The retry is scoped to the one code that a later attempt can change. Every
+// other failure describes something waiting cannot fix, and retrying it would
+// turn a prompt error into a minute of silence.
+func TestStaffDoesNotRetryAFailureThatIsNotABusyPane(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+	exec.BusyRetryFor = time.Minute
+
+	var attempts atomic.Int64
+	server.Handle("agent.start", func(map[string]any) (any, error) {
+		attempts.Add(1)
+		return nil, &herdrtest.CodedError{Code: "agent_name_taken", Message: "that name is in use"}
+	})
+
+	done := make(chan execute.Result, 1)
+	go func() { done <- only(t, exec.Run([]reconcile.Action{staffAction()})) }()
+
+	select {
+	case result := <-done:
+		if result.Status != execute.StatusFailed {
+			t.Fatalf("status = %q, want failed", result.Status)
+		}
+		if got := attempts.Load(); got != 1 {
+			t.Errorf("agent.start was attempted %d times, want 1", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a failure that is not agent_pane_busy was retried")
+	}
+}
+
+// A pane busy for longer than the budget still fails, and says what it waited
+// for — "not an available shell" on its own reads as a bug in the caller.
+func TestStaffGivesUpOnAPaneThatNeverSettles(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+	exec.BusyRetryFor = 700 * time.Millisecond
+	attempts := busyUntil(server, 0) // never succeeds
+
+	result := only(t, exec.Run([]reconcile.Action{staffAction()}))
+	if result.Status != execute.StatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if attempts() < 2 {
+		t.Errorf("gave up after %d attempts without retrying at all", attempts())
+	}
+	for _, want := range []string{"still busy", "direnv", "attempts"} {
+		if !strings.Contains(result.Detail, want) {
+			t.Errorf("the detail should mention %q, got %q", want, result.Detail)
+		}
+	}
+}
+
+// The budget is spent by the run, not by each action in it. Worktrees warm up
+// in wall-clock time and not in turn, and a per-action wait would let a sync
+// over five of them hold the repository lock for five times AgentStartTimeout —
+// which is repolock.MaxHold exactly, so the holder would be evicted mid-pass.
+func TestStaffingSeveralBusyWorktreesDoesNotMultiplyTheWait(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+	exec.BusyRetryFor = time.Second
+	busyUntil(server, 0) // none of them ever settles
+
+	actions := make([]reconcile.Action, 4)
+	for i := range actions {
+		actions[i] = staffAction()
+	}
+
+	start := time.Now()
+	results := exec.Run(actions)
+	elapsed := time.Since(start)
+
+	for _, r := range results {
+		if r.Status != execute.StatusFailed {
+			t.Fatalf("status = %q, want failed: %s", r.Status, r.Detail)
+		}
+	}
+	// One budget, not four. The margin is for the last action's own attempt.
+	if elapsed > 2*exec.BusyRetryFor {
+		t.Errorf("staffing 4 busy worktrees took %s, want about %s", elapsed, exec.BusyRetryFor)
+	}
+}
+
+// Waiting a minute for a pane is a minute in which somebody else can staff the
+// workspace, so the guard the file opens with — never land on a live
+// conversation — is re-read every attempt, not once before the wait.
+func TestStaffRecheckstheWorkspaceGuardWhileItWaits(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	exec, server := fixture(t, repo)
+	exec.BusyRetryFor = 10 * time.Second
+	attempts := busyUntil(server, 0) // the pane stays busy throughout
+
+	// An agent appears in the workspace after the first refusal.
+	var listed atomic.Int64
+	server.Handle("agent.list", func(map[string]any) (any, error) {
+		if listed.Add(1) == 1 {
+			return map[string]any{"type": "agent_list", "agents": []map[string]any{}}, nil
+		}
+		return map[string]any{"type": "agent_list", "agents": []map[string]any{
+			{"terminal_id": "term_1", "agent": "claude", "agent_status": "working",
+				"workspace_id": "w2", "tab_id": "t1", "pane_id": "w2:p1", "focused": false, "revision": 1},
+		}}, nil
+	})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list", "panes": []map[string]any{
+		{"pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "t1", "index": 0},
+	}})
+
+	result := only(t, exec.Run([]reconcile.Action{staffAction()}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: the workspace was staffed while this waited", result.Status)
+	}
+	if attempts() != 1 {
+		t.Errorf("agent.start was attempted %d times after the workspace filled up, want 1", attempts())
+	}
+}
 
 // The slow-direnv case, end to end. A freshly created worktree can still be
 // running direnv or nix when staffing is attempted, which is why agent.start
