@@ -199,6 +199,15 @@ func confirmBriefed(client *herdrapi.Client, pane string) error {
 		}
 
 		status := info.Agent.AgentStatus
+		// `unknown` is waited through here, where gate reads the same value as
+		// the agent having gone away and stops. The difference is when each one
+		// looks. gate looks at an agent it already resolved, so unknown there is
+		// a state herdr had and lost. This looks seconds after agent.start, when
+		// unknown is routinely what herdr reports about a pane whose agent it has
+		// not finished detecting — failing on it would fail every start that
+		// briefed faster than herdr could classify the screen. Nothing is given
+		// away by waiting: an agent that is genuinely gone fails the AgentGet
+		// above, and one that never reacts fails at the deadline below.
 		if status != herdrapi.AgentStatusIdle && status != herdrapi.AgentStatusUnknown {
 			return nil
 		}
