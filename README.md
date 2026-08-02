@@ -70,11 +70,15 @@ Call the binary and the output is just on stdout.
 $ worktender start 42 --repo .
 repository: /Users/you/code/thing
 worktree: 42-fix-the-thing on origin/main (workspace w9, pane w9:p1)
-done  staff  42-fix-the-thing  started claude as 42-fix-the-thing in w9:p1
+done  staff  42-fix-the-thing  started claude as wt-42-fix-the-thing-016aab in w9:p1
 
-briefed 42-fix-the-thing on #42; wait for it with:
-  worktender gate --target 42-fix-the-thing --until done --require-pr
+briefed wt-42-fix-the-thing-016aab on #42; wait for it with:
+  worktender gate --target wt-42-fix-the-thing-016aab --until done --require-pr
 ```
+
+The agent name is not the branch name: herdr's agent namespace spans every
+repository at once, so the name carries a digest of the repository. Copy the
+line `start` prints rather than retyping it.
 
 One command from an issue number to an agent working on it: it reads the issue
 with `gh`, creates a worktree named for it, starts an agent in the new pane, and

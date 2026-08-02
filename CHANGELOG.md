@@ -48,6 +48,33 @@ install` tracks branch HEAD rather than a tag — the version in
   same flag with the same meaning `prune` and `prune-apply` take, and the
   refusal names it.
 
+- **Agent names are now scoped to the repository, so two repositories can be
+  staffed at once.** They were derived from a checkout's directory basename
+  (`sync`) or an issue branch (`start`), and neither is unique across
+  repositories: two repositories with a worktree called `api`, or an issue #12
+  each, produced one name.
+
+  Measured against herdr protocol 18, whose schema says nothing about
+  uniqueness: **herdr enforces it.** `agent.start` answers `agent_name_taken`
+  and names the pane already holding the name. So the second repository got no
+  agent at all, under an error pointing at the first repository's pane — and a
+  `sync` that staffed nothing looked like a `sync` with nothing to do. (The
+  worse possibility, an ambiguous name resolving `gate` onto the wrong
+  repository's worker, does not happen: `agent.get` never sees two.)
+
+  A name now carries a six-character digest of the repository root and the whole
+  basename: `wt-42-fix-the-thing-016aab`. The digest goes last because a
+  truncated head is the second half of the same defect — herdr's 32-character
+  limit made two long branches of *one* repository converge — and a
+  disambiguator at the front is the first thing the limit cuts. The `worktender-`
+  prefix for a name not starting with a letter is now `wt-`, which is where the
+  digest's characters were bought back; issue branches always need it.
+
+  **The name a live agent holds does not change under it.** herdr frees a name
+  when its pane goes away, so the only names that exist are the ones running
+  agents hold, and `sync` re-derives on the next pass either way. Copy the
+  `gate` line `start` prints rather than retyping the branch.
+
 ## [0.7.0] — 2026-08-01
 
 ### Added

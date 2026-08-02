@@ -14,7 +14,9 @@ worktender=$(herdr plugin list --json \
 # --repo because start creates a checkout and is not a herdr action, so nothing
 # tells it which repository unless you do. Flags go on either side of the number.
 "$worktender" start 42 --repo . --model sonnet
-"$worktender" gate --target 42-fix-the-thing --until done --require-pr --timeout 20m
+# The agent name is not the branch: it carries a digest of the repository,
+# because herdr's agent namespace is global. `start` prints this exact line.
+"$worktender" gate --target wt-42-fix-the-thing-016aab --until done --require-pr --timeout 20m
 
 # ...and when it is not, the pieces are still separate. Dispatch, then wait.
 "$worktender" dispatch --pane w22:p1 --name reconcile-split --model sonnet

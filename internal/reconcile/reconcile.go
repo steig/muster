@@ -68,6 +68,10 @@ type Workspace struct {
 
 // State is the whole input to Reconcile.
 type State struct {
+	// Root is the repository's main checkout. Agent names are derived from it
+	// as well as from the checkout, because herdr's agent namespace spans every
+	// repository at once.
+	Root string
 	// Base is the ref new work forks from, e.g. "origin/main".
 	Base string
 	// Worktrees is every worktree herdr knows for this repository.
@@ -186,7 +190,7 @@ func staff(state State) []Action {
 			Branch:      byPath[pathKey(ws.CheckoutPath)].Branch,
 			WorkspaceID: ws.ID,
 			PaneID:      ws.PaneIDs[0],
-			AgentName:   AgentName(Slug(filepath.Base(ws.CheckoutPath))),
+			AgentName:   AgentName(state.Root, filepath.Base(ws.CheckoutPath)),
 			Resume:      resume,
 			Reason:      reason,
 		})

@@ -68,7 +68,7 @@ func (c *Collector) Collect() (State, error) {
 		return State{}, err
 	}
 
-	state := State{Base: base, AgentPanes: map[string]bool{}}
+	state := State{Root: c.Root, Base: base, AgentPanes: map[string]bool{}}
 
 	for _, a := range agents.Agents {
 		state.AgentPanes[a.PaneID] = true
