@@ -169,10 +169,17 @@ Nothing else.
 5. **Silence reads as progress.** A worker that stopped without changing status
    looks exactly like one that is thinking, and `gate` waits out its full timeout
    on both. `ls` carries `agent_status_seq`, herdr's state counter — read it down
-   the column and the worker sitting far below its neighbours is the one that
-   stopped. It is a counter, not a clock: compare it against your own earlier
-   reading, and *you* decide how long counts as stalled. Do not build a poll loop
-   around it — check it when you are already waiting.
+   the column, beside the status. On an `idle` row, far below its neighbours is
+   the worker that stopped, which is the case the counter was added for. On a
+   `working` row it means nothing on its own: the counter stamps state
+   *changes*, and a worker deep in one long turn changes nothing for as long as
+   the turn lasts. Measured: half an hour frozen, twelve dollars spent, entirely
+   healthy. What separates those two is cumulative spend, which herdr has only
+   as text — `herdr pane read <pane_id>` and the agent's own footer. Suspect a
+   `working` worker only when the counter **and** the spend have both held still
+   across an interval you timed. It is a counter, not a clock, and *you* decide
+   how long counts as stalled. Do not build a poll loop around either — check
+   them when you are already waiting.
 
 ## Rules
 

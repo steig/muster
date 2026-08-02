@@ -2,6 +2,7 @@ package wt_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -390,6 +391,42 @@ func TestTheCounterTellsTwoIdleWorkersApart(t *testing.T) {
 	if got[0].AgentStatusSeq == nil || got[1].AgentStatusSeq == nil ||
 		*got[0].AgentStatusSeq == *got[1].AgentStatusSeq {
 		t.Errorf("the two idle rows are still indistinguishable: %+v", got)
+	}
+}
+
+// The same assertion pointed the other way, and the answer is the opposite one
+// (#112). Two `working` rows stuck on one counter — one thinking, one wedged —
+// are the same listing twice over, because the counter stamps state *changes*
+// and neither worker is changing state. Measured on a live agent: fifteen
+// minutes of continuous work, the counter frozen throughout, and every other
+// number herdr has for that pane frozen with it.
+//
+// Pinned rather than fixed, because the fix is not here: nothing in a herdr
+// listing separates those two, and what does — cumulative spend — exists only
+// as characters drawn in the pane. This fails the day a row can tell them
+// apart, which is the day the documented limit stops being true.
+func TestTwoWorkingRowsOnOneCounterAreIndistinguishable(t *testing.T) {
+	frozen := uint64(1213)
+	thinking := wt.Row{Branch: "long-turn", WorkspaceID: "w1", PaneID: "w1:p1",
+		AgentStatus: "working", AgentStatusSeq: &frozen, Dir: "a"}
+	wedged := wt.Row{Branch: "wedged", WorkspaceID: "w2", PaneID: "w2:p1",
+		AgentStatus: "working", AgentStatusSeq: &frozen, Dir: "b"}
+
+	// Everything the two rows do not share is who they are rather than how they
+	// are: blank that, and what is left is everything a consumer could read the
+	// worker's health off.
+	health := func(row wt.Row) string {
+		row.Branch, row.WorkspaceID, row.PaneID, row.Dir = "", "", "", ""
+		raw, err := json.Marshal(wt.JSON([]wt.Row{row}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+
+	if alive, stopped := health(thinking), health(wedged); alive != stopped {
+		t.Errorf("a listing now separates a long turn from a wedge, so docs/json.md"+
+			" and the coordinator skill are wrong:\n%s\n%s", alive, stopped)
 	}
 }
 

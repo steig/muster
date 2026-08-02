@@ -45,11 +45,18 @@ The pane is the one `dispatch --pane` takes.
 The counter is herdr's own, and it is what `idle` cannot tell you: `idle` is the
 same cell for a worker that finished two seconds ago and one that never received
 its brief at all. Read it *down* the column rather than across a row — the third
-worktree above is 240-odd state changes behind the rest, which is the shape of a
-worker that stopped. It is a counter and not a clock because herdr exposes no
-timestamp on an agent at all; two readings and your own clock are what turn it
-into a duration, and what counts as *stalled* stays yours to decide. See
-[Machine-readable output](docs/json.md#agent_status_seq-and-why-it-is-not-a-time).
+worktree above is 240-odd state changes behind the rest, which beside `idle` is
+the shape of a worker that stopped. It is a counter and not a clock because
+herdr exposes no timestamp on an agent at all; two readings and your own clock
+are what turn it into a duration, and what counts as *stalled* stays yours to
+decide.
+
+**Read the status beside it, always.** It counts state *changes*, so a worker
+that stays in one state does not move it — and a worker thinking hard is exactly
+that. Frozen beside `idle` is finished-or-wedged, which is the question this
+column answers; frozen beside `working` is a long turn or a wedge and the column
+cannot say which. See
+[Machine-readable output](docs/json.md#where-it-goes-blind-a-frozen-counter-on-a-working-row).
 
 Add `--pr` for a pull request column, which is off by default because it costs
 one `gh` call per branch:

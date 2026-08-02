@@ -151,6 +151,18 @@ func firstPane(client *herdrapi.Client, workspaceID string) string {
 // Two listings and the caller's own clock are what turn it into a duration, and
 // the caller is the one holding both.
 //
+// And it is a counter of state *changes*, which leaves it blind in one
+// direction: an agent that stays in one state does not move it, and an agent
+// thinking is exactly that. A frozen counter on an `idle` or `done` row is the
+// case this field was built for — finished, or wedged. A frozen counter on a
+// `working` row says nothing at all: long turn and wedged look identical, and
+// nothing else in the listing separates them. Measured against a live herdr
+// 0.7.5 / protocol 18, sampling one continuously working agent, the counter
+// held still for the whole window and so did every other number herdr has for
+// that pane — the agent's `revision`, the pane's, `pane.get`'s `scroll`, and
+// the `revision` on `pane.read`. See docs/json.md for the full measurement and
+// the composite that does work.
+//
 // Keyed by pane, so this is the agent in the row's PaneID — the pane staffing
 // starts an agent in and `dispatch --pane` targets. An agent elsewhere in the
 // workspace leaves the counter nil rather than lending the row its own.
@@ -462,6 +474,12 @@ type RowJSON struct {
 	// readings of it, taken by a caller that has a clock, are what say whether a
 	// worker moved in between; how long a run of no movement has to be before it
 	// counts as stalled is that caller's call and nobody else's.
+	//
+	// Two readings that are equal mean the agent did not change state, which is
+	// not the same fact as it having done nothing. Beside `agent_status` of
+	// `working` that is a long turn or a wedge and this field cannot say which
+	// — the limit is in docs/json.md, and a stall detector built on this field
+	// alone fires on healthy workers.
 	AgentStatusSeq *uint64 `json:"agent_status_seq"`
 	// PR is null when no lookup ran for this row: --pr was not passed, or this
 	// is the main checkout, which is never asked about.
