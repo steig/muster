@@ -24,11 +24,13 @@ worktender=$(herdr plugin list --json \
 "$worktender" start 12 --model sonnet
 
 # 2. Wait on the report, not on a clock. One at a time, after starting them all.
-"$worktender" gate --target 12-the-thing --until done --require-pr --timeout 20m
+"$worktender" gate --target wt-12-the-thing-3f9a1c --until done --require-pr --timeout 20m
 ```
 
 `start` prints the exact `gate` line for what it just started, agent name
-included — do not guess the name.
+included — do not guess the name. **It is not the branch name.** herdr's agent
+namespace spans every repository at once and refuses a duplicate, so the name
+carries a digest of the repository that you cannot derive by eye.
 
 **When the slice is not an issue**, the older four-step path is still there:
 `herdr worktree create`, then `dispatch --pane <pane> --name <agent>`, then

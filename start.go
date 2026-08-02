@@ -97,7 +97,7 @@ func startCommand(args []string, out io.Writer) error {
 
 	// The same KindStaff action `sync` and `dispatch` build, so the pane
 	// re-check in execute.staff() covers this path by construction too.
-	agent := reconcile.AgentName(reconcile.Slug(branch))
+	agent := reconcile.AgentName(s.root, branch)
 	executor := &execute.Executor{Client: s.client, Root: s.root, CallerDir: s.dir}
 	results := executor.Run([]reconcile.Action{{
 		Kind:        reconcile.KindStaff,

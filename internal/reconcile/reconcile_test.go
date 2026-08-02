@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -50,6 +51,7 @@ func TestAdoptsWorktreeWithNoWorkspace(t *testing.T) {
 
 func TestStaffsAgentlessWorkspace(t *testing.T) {
 	state := reconcile.State{
+		Root:      "/repo",
 		Base:      "main",
 		Worktrees: []reconcile.Worktree{{Path: "/repo/wt/a", Branch: "a", IsLinked: true, WorkspaceID: "w2"}},
 		Workspaces: []reconcile.Workspace{
@@ -68,8 +70,38 @@ func TestStaffsAgentlessWorkspace(t *testing.T) {
 	if action.WorkspaceID != "w2" {
 		t.Errorf("WorkspaceID = %q, want w2", action.WorkspaceID)
 	}
-	if action.AgentName != "a" {
-		t.Errorf("AgentName = %q, want a", action.AgentName)
+	if want := reconcile.AgentName("/repo", "a"); action.AgentName != want {
+		t.Errorf("AgentName = %q, want %q", action.AgentName, want)
+	}
+}
+
+// The staffing name must carry the repository, not just the checkout: herdr's
+// agent namespace is global, so two repositories with a worktree called `api`
+// would otherwise ask for one name and the second would be refused.
+func TestStaffingNameSeparatesRepositories(t *testing.T) {
+	nameFor := func(root string) string {
+		state := reconcile.State{
+			Root:      root,
+			Base:      "main",
+			Worktrees: []reconcile.Worktree{{Path: root + "/wt/api", Branch: "api", IsLinked: true, WorkspaceID: "w2"}},
+			Workspaces: []reconcile.Workspace{
+				{ID: "w2", CheckoutPath: root + "/wt/api", IsLinked: true, PaneIDs: []string{"w2:p1"}},
+			},
+			AgentPanes: map[string]bool{},
+		}
+		action := find(reconcile.Reconcile(state), reconcile.KindStaff, root+"/wt/api")
+		if action == nil {
+			t.Fatalf("workspace in %s should be staffed", root)
+		}
+		return action.AgentName
+	}
+
+	first, second := nameFor("/one"), nameFor("/two")
+	if first == second {
+		t.Errorf("both repositories staff an agent called %q; herdr refuses the second with agent_name_taken", first)
+	}
+	if !strings.HasPrefix(first, "api-") || !strings.HasPrefix(second, "api-") {
+		t.Errorf("names %q and %q should still read as the checkout they staff", first, second)
 	}
 }
 
@@ -421,32 +453,83 @@ func TestOnlyKeepsRequestedKindsInOrder(t *testing.T) {
 	}
 }
 
-func TestSlugAndAgentName(t *testing.T) {
-	for _, tc := range []struct{ in, slug, agent string }{
-		{"fix-auth", "fix-auth", "fix-auth"},
-		{"Feat/249-Segments UI", "feat-249-segments-ui", "feat-249-segments-ui"},
-		{"249-segments", "249-segments", "worktender-249-segments"},
-		{"--weird--", "weird", "weird"},
+func TestSlug(t *testing.T) {
+	for _, tc := range []struct{ in, slug string }{
+		{"fix-auth", "fix-auth"},
+		{"Feat/249-Segments UI", "feat-249-segments-ui"},
+		{"249-segments", "249-segments"},
+		{"--weird--", "weird"},
 	} {
 		if got := reconcile.Slug(tc.in); got != tc.slug {
 			t.Errorf("Slug(%q) = %q, want %q", tc.in, got, tc.slug)
 		}
-		if got := reconcile.AgentName(reconcile.Slug(tc.in)); got != tc.agent {
-			t.Errorf("AgentName(Slug(%q)) = %q, want %q", tc.in, got, tc.agent)
+	}
+}
+
+// herdr's pattern for an agent name, which is the whole of what it will accept.
+var herdrAgentName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+func TestAgentNameMatchesWhatHerdrAccepts(t *testing.T) {
+	for _, label := range []string{
+		"fix-auth",
+		"Feat/249-Segments UI",
+		"249-segments",
+		"--weird--",
+		"",
+		"a-really-very-extremely-long-branch-name-that-keeps-going",
+		"1234567890123456789012345678901234567890",
+	} {
+		got := reconcile.AgentName("/repo", label)
+		if !herdrAgentName.MatchString(got) {
+			t.Errorf("AgentName(%q) = %q, which herdr will not accept", label, got)
 		}
 	}
 }
 
-// herdr rejects names longer than 32 characters.
-func TestAgentNameFitsHerdrsLimit(t *testing.T) {
-	long := reconcile.AgentName(reconcile.Slug("a-really-very-extremely-long-branch-name-that-keeps-going"))
-	if len(long) > 32 {
-		t.Errorf("agent name %q is %d chars, want <= 32", long, len(long))
+// The readable half is still the checkout, so a name in `herdr agent list` says
+// which branch it belongs to without being looked up.
+func TestAgentNameLeadsWithTheLabel(t *testing.T) {
+	for _, tc := range []struct{ label, head string }{
+		{"fix-auth", "fix-auth-"},
+		{"Feat/249-Segments UI", "feat-249-segments-ui-"},
+		// An issue branch starts with its number, and herdr demands a letter.
+		{"249-segments", "wt-249-segments-"},
+		{"", "wt-"},
+	} {
+		if got := reconcile.AgentName("/repo", tc.label); !strings.HasPrefix(got, tc.head) {
+			t.Errorf("AgentName(%q) = %q, want it to start with %q", tc.label, got, tc.head)
+		}
 	}
+}
 
-	prefixed := reconcile.AgentName(reconcile.Slug("1234567890123456789012345678901234567890"))
-	if len(prefixed) > 32 {
-		t.Errorf("prefixed agent name %q is %d chars, want <= 32", prefixed, len(prefixed))
+// The collision the name exists to avoid: herdr's agent namespace is global and
+// it refuses a duplicate with agent_name_taken, so a name derived from a
+// checkout basename or an issue number alone loses the second repository.
+func TestAgentNameSeparatesRepositories(t *testing.T) {
+	for _, label := range []string{"api", "12-fix-the-thing"} {
+		one := reconcile.AgentName("/code/one", label)
+		two := reconcile.AgentName("/code/two", label)
+		if one == two {
+			t.Errorf("two repositories both want the agent name %q for %q", one, label)
+		}
+	}
+}
+
+// The other half of the same defect: the 32-character limit truncates, so two
+// long branches of one repository must not converge on one name.
+func TestAgentNameSeparatesBranchesThatShareALongPrefix(t *testing.T) {
+	one := reconcile.AgentName("/repo", "refactor-the-authentication-middleware")
+	two := reconcile.AgentName("/repo", "refactor-the-authentication-later")
+	if one == two {
+		t.Errorf("two branches both want the agent name %q", one)
+	}
+}
+
+// Re-deriving is the only way `sync` can name an existing worktree's agent, so
+// the same worktree must always produce the same name.
+func TestAgentNameIsStable(t *testing.T) {
+	if one, two := reconcile.AgentName("/repo", "fix-auth"), reconcile.AgentName("/repo", "fix-auth"); one != two {
+		t.Errorf("AgentName is not stable: %q then %q", one, two)
 	}
 }
 

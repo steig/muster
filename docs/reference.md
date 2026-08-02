@@ -153,8 +153,19 @@ Errors you are most likely to meet:
   handled without configuration.
 - **`list` is an alias for `ls`.**
 - **Agent names** come from the checkout's directory basename, lowercased to
-  `[a-z0-9-]`, truncated to 32 characters, and prefixed `worktender-` if the
-  result does not start with a letter.
+  `[a-z0-9-]`, prefixed `wt-` if the result does not start with a letter, and
+  suffixed with a six-character digest of the repository root and the full
+  basename — `42-fix-the-thing` in `~/code/thing` becomes
+  `wt-42-fix-the-thing-016aab`. The whole thing is 32 characters or fewer,
+  because that is what herdr accepts.
+
+  **The digest is not decoration.** herdr's agent namespace is global and it
+  refuses a duplicate outright (`agent_name_taken`), so two repositories with a
+  worktree called `api` — or an issue #12 each — would ask for one name and
+  whichever was staffed second would get no agent. It also separates two long
+  branches the 32-character limit would otherwise truncate onto each other. So
+  **do not retype the name from the branch**: `start` prints the exact `gate`
+  line for what it started, and `sync` prints the name it staffed under.
 - **Adoption does not focus the workspace**, so adopting a batch does not drag
   you through every one of them.
 - **The repository lock is fail-open.** It lives under

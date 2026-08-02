@@ -9,6 +9,7 @@ import (
 
 	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrtest"
+	"github.com/steig/worktender/internal/reconcile"
 )
 
 // The brief is typed into a pane as one line, so a body that could open a line
@@ -212,10 +213,16 @@ JSON`)
 	if strings.ContainsAny(text, "\n\r") {
 		t.Errorf("the brief must be one line; got %q", text)
 	}
-	// The gate is the other half and start does not run it: a caller starting
-	// five issues wants five starts and then one wait.
-	if !strings.Contains(out.String(), "gate --target") {
-		t.Errorf("start should say how to wait for what it started:\n%s", out.String())
+	// The gate line is the only handle a caller gets on what was started, so it
+	// has to name the agent herdr was actually asked for — the repository-scoped
+	// name, not the branch. The gate is the other half and start does not run
+	// it: a caller starting five issues wants five starts and then one wait.
+	want := reconcile.AgentName(repo.Root, "42-fix-the-thing")
+	if started["name"] != want {
+		t.Errorf("agent.start name = %v, want %q", started["name"], want)
+	}
+	if !strings.Contains(out.String(), "gate --target "+want) {
+		t.Errorf("start should say how to wait for %s:\n%s", want, out.String())
 	}
 }
 

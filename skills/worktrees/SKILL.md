@@ -102,7 +102,9 @@ transcript under `~/.claude/projects` is picked up with `--continue`.
 **When the work is a GitHub issue, use `start`.** It reads the issue with `gh`,
 creates the worktree on a branch named `<number>-<title-slug>`, starts an agent in the
 new pane, and briefs it. It prints the `gate` line for what it started, agent name
-included — use that rather than guessing the name.
+included — use that rather than guessing the name, which is **not** the branch name:
+herdr's agent namespace spans every repository, so the name carries a repository
+digest you cannot derive by eye.
 
 ```bash
 "$worktender" start 42 [--model sonnet] [--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus]
