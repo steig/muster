@@ -8,6 +8,46 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Fixed
+
+- **`start` submits the brief, and confirms it was taken up.** It typed the
+  brief with a trailing newline and reported "briefed". The newline did not
+  submit: a brief is kilobytes arriving in one burst, the TUI reads a burst as a
+  paste, and a newline inside a paste is a line break. The brief sat in the
+  composer, herdr answered ok for having typed it, `start` exited 0, and the
+  worker showed up in `ls` as `idle` — which reads as "waiting for work" and
+  meant "was never given any". Three for three on real issues.
+
+  Enter is now its own key event through `pane.send_keys`, and `start` then
+  waits up to 15s for herdr to report the agent working before it says
+  "briefed". Anything but `idle` counts — an agent that came straight back
+  asking permission has plainly read its brief. When the wait runs out `start`
+  fails and names the pane to press Enter in, because ok from herdr means it
+  delivered keystrokes and not that an agent received a prompt. This is the
+  read-back `writeReport` already does for a 200-character note; the brief is
+  the entire content of the work and had no confirmation at all.
+
+  `PaneSendText`'s doc comment said a newline submits and that text must be one
+  line for that reason. It does not, and the reason has been rewritten to what
+  was measured. The brief stays one line regardless: whether a newline submits
+  depends on how the TUI classified the burst, and untrusted issue text does not
+  get to make that choice either way.
+
+- **`start` can be run.** Neither documented path worked. Go's `flag` stops at
+  the first non-flag argument, so the order the usage string, the README and the
+  worktrees skill all printed — `start 42 --model sonnet` — counted the flags as
+  issue numbers and was refused by a message repeating the order that had just
+  failed. Flags now parse on either side of the number, so the documented order
+  is the one that works.
+
+  And with the arguments in an order that parsed, `start` refused anyway: it
+  creates a checkout, so it will not guess a repository, and the context it
+  would resolve one from is injected only when herdr invokes a plugin action —
+  which `start` cannot be, since an action is a fixed command array and `start`
+  is nothing without its issue number. It now takes **`--repo <path>`**, the
+  same flag with the same meaning `prune` and `prune-apply` take, and the
+  refusal names it.
+
 ## [0.7.0] — 2026-08-01
 
 ### Added

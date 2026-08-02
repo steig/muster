@@ -1,15 +1,19 @@
 package main
 
 import (
+	"flag"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrtest"
 )
 
-// The brief is typed into a pane with PaneSendText, where a newline submits, so
-// a body that could open a line of its own could also write the sentence after
-// it — which is the whole injection surface this framing exists to close.
+// The brief is typed into a pane as one line, so a body that could open a line
+// of its own could also write the sentence after it — which is the whole
+// injection surface this framing exists to close.
 func TestBriefFlattensAHostileIssueBodyOntoOneLine(t *testing.T) {
 	hostile := issue{
 		Number: 42,
@@ -117,31 +121,60 @@ func TestStartRejectsAnArgumentThatIsNotAnIssueNumber(t *testing.T) {
 	}
 }
 
+// fakeStart wires a fake herdr through one whole `start`: worktree.create
+// answers with a workspace and its root pane, the staffing re-check finds the
+// pane empty, and the agent started there reports `status` when start asks
+// whether its brief was taken up.
+func fakeStart(t *testing.T, repo *herdrtest.Repo, workspace, pane, status string) *herdrtest.Server {
+	t.Helper()
+
+	server := fakeSession(t, repo)
+	server.HandleResult("worktree.create", map[string]any{
+		"type": "workspace_created",
+		"workspace": map[string]any{
+			"workspace_id": workspace, "number": 9, "label": "issue", "focused": false,
+			"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "idle",
+		},
+		"root_pane": map[string]any{"pane_id": pane, "workspace_id": workspace, "tab_id": "t1", "index": 0},
+		"tab":       map[string]any{"tab_id": "t1", "workspace_id": workspace, "index": 0},
+	})
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list", "panes": []map[string]any{
+		{"pane_id": pane, "workspace_id": workspace, "tab_id": "t1", "index": 0},
+	}})
+	server.HandleResult("agent.start", map[string]any{"type": "agent_started"})
+	server.HandleResult("pane.send_text", map[string]any{"type": "ok"})
+	server.HandleResult("pane.send_keys", map[string]any{"type": "ok"})
+	server.HandleResult("agent.get", map[string]any{
+		"type": "agent_info",
+		"agent": map[string]any{
+			"terminal_id": "term_1", "agent": "claude", "agent_status": status,
+			"workspace_id": workspace, "tab_id": "t1", "pane_id": pane,
+			"focused": false, "revision": 1,
+		},
+	})
+	return server
+}
+
+// briefConfirmWithin shortens the confirmation wait, so a test of the path that
+// never confirms does not sit through the interval a human would.
+func briefConfirmWithin(t *testing.T, d time.Duration) {
+	t.Helper()
+
+	previous := briefConfirmWait
+	briefConfirmWait = d
+	t.Cleanup(func() { briefConfirmWait = previous })
+}
+
 // End to end against a fake herdr: the worktree is created on the branch the
 // issue names, the agent is started in the pane herdr answered with, and the
 // brief is typed into that same pane.
 func TestStartCreatesStaffsAndBriefs(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
-	server := fakeSession(t, repo)
+	server := fakeStart(t, repo, "w9", "w9:p1", "working")
 	herdrtest.FakeGh(t, `cat <<'JSON'
 {"number":42,"title":"Fix the thing","body":"it is broken"}
 JSON`)
-
-	server.HandleResult("worktree.create", map[string]any{
-		"type": "workspace_created",
-		"workspace": map[string]any{
-			"workspace_id": "w9", "number": 9, "label": "42-fix-the-thing", "focused": false,
-			"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "idle",
-		},
-		"root_pane": map[string]any{"pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "t1", "index": 0},
-		"tab":       map[string]any{"tab_id": "t1", "workspace_id": "w9", "index": 0},
-	})
-	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
-	server.HandleResult("pane.list", map[string]any{"type": "pane_list", "panes": []map[string]any{
-		{"pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "t1", "index": 0},
-	}})
-	server.HandleResult("agent.start", map[string]any{"type": "agent_started"})
-	server.HandleResult("pane.send_text", map[string]any{"type": "ok"})
 
 	var out strings.Builder
 	if err := startCommand([]string{"42"}, &out); err != nil {
@@ -176,8 +209,8 @@ JSON`)
 	if !strings.Contains(text, "it is broken") || !strings.Contains(text, "UNTRUSTED DATA") {
 		t.Errorf("the brief must carry the issue, framed; got %q", text)
 	}
-	if strings.Count(text, "\n") != 1 || !strings.HasSuffix(text, "\n") {
-		t.Errorf("the brief must be one line plus the newline that submits it; got %q", text)
+	if strings.ContainsAny(text, "\n\r") {
+		t.Errorf("the brief must be one line; got %q", text)
 	}
 	// The gate is the other half and start does not run it: a caller starting
 	// five issues wants five starts and then one wait.
@@ -190,24 +223,8 @@ JSON`)
 // what the agent it creates may do.
 func TestStartPassesNoAgentArgsByDefault(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
-	server := fakeSession(t, repo)
+	server := fakeStart(t, repo, "w5", "w5:p1", "working")
 	herdrtest.FakeGh(t, `echo '{"number":5,"title":"t","body":"b"}'`)
-
-	server.HandleResult("worktree.create", map[string]any{
-		"type": "workspace_created",
-		"workspace": map[string]any{
-			"workspace_id": "w5", "number": 5, "label": "5-t", "focused": false,
-			"pane_count": 1, "tab_count": 1, "active_tab_id": "t1", "agent_status": "idle",
-		},
-		"root_pane": map[string]any{"pane_id": "w5:p1", "workspace_id": "w5", "tab_id": "t1", "index": 0},
-		"tab":       map[string]any{"tab_id": "t1", "workspace_id": "w5", "index": 0},
-	})
-	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
-	server.HandleResult("pane.list", map[string]any{"type": "pane_list", "panes": []map[string]any{
-		{"pane_id": "w5:p1", "workspace_id": "w5", "tab_id": "t1", "index": 0},
-	}})
-	server.HandleResult("agent.start", map[string]any{"type": "agent_started"})
-	server.HandleResult("pane.send_text", map[string]any{"type": "ok"})
 
 	if err := startCommand([]string{"5"}, &strings.Builder{}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -223,5 +240,184 @@ func TestStartPassesNoAgentArgsByDefault(t *testing.T) {
 				t.Errorf("start passed %s without being asked: %v", s, args)
 			}
 		}
+	}
+}
+
+// A newline typed at the end of the brief is not a submit: a payload this size
+// arrives as one burst, the TUI reads a burst as a paste, and the newline lands
+// in the composer as a line break. The Enter has to be its own key event, and
+// it has to come after the text — a submit ahead of what it submits is an empty
+// message and a brief still sitting there.
+func TestStartSubmitsTheBriefAsAKeyEventAfterTypingIt(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	server := fakeStart(t, repo, "w9", "w9:p1", "working")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+
+	if err := startCommand([]string{"42"}, &strings.Builder{}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	typed, submitted := -1, -1
+	var keys []any
+	for i, call := range server.Calls() {
+		switch call.Method {
+		case "pane.send_text":
+			typed = i
+			if text, _ := call.Params["text"].(string); strings.HasSuffix(text, "\n") {
+				t.Error("the brief must not end in a newline; a pasted newline does not submit")
+			}
+		case "pane.send_keys":
+			submitted = i
+			keys, _ = call.Params["keys"].([]any)
+			if call.Params["pane_id"] != "w9:p1" {
+				t.Errorf("the submit went to %v, want the pane the brief was typed into", call.Params["pane_id"])
+			}
+		}
+	}
+
+	if submitted < 0 {
+		t.Fatal("the brief was never submitted: no pane.send_keys")
+	}
+	if submitted < typed {
+		t.Error("the brief was submitted before it was typed")
+	}
+	if len(keys) != 1 || keys[0] != "enter" {
+		t.Errorf("submitted with %v, want [enter]", keys)
+	}
+}
+
+// "briefed" is a claim about an agent, and herdr answering ok says only that it
+// delivered a key. The three workers this failed on sat at `idle` having read
+// nothing, and `start` reported success over every one of them.
+func TestStartFailsWhenTheAgentNeverTakesTheBriefUp(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	fakeStart(t, repo, "w9", "w9:p1", "idle")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+	briefConfirmWithin(t, 0)
+
+	err := startCommand([]string{"42"}, &strings.Builder{})
+	if err == nil {
+		t.Fatal("start must fail when the agent never takes the brief up")
+	}
+	// Nothing here is unrecoverable — the worktree and the agent both exist and
+	// the brief is one keypress from landing — so the error has to say which one.
+	if !strings.Contains(err.Error(), "send-keys w9:p1 enter") {
+		t.Errorf("the error should say how to submit the brief by hand, got %v", err)
+	}
+}
+
+// An agent that came back asking permission for its first tool call has plainly
+// read its brief. Only idle is the state that says nothing arrived.
+func TestStartAcceptsAnAgentThatWentStraightToBlocked(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	fakeStart(t, repo, "w9", "w9:p1", "blocked")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+	briefConfirmWithin(t, 0)
+
+	if err := startCommand([]string{"42"}, &strings.Builder{}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+}
+
+// Go's flag package stops at the first non-flag argument, so the documented
+// order — the number first, which is also the order a person types — used to
+// count the flags as issue numbers and be refused by a message repeating the
+// order that had just failed. Both orders parse to the same run.
+func TestStartTakesFlagsOnEitherSideOfTheIssueNumber(t *testing.T) {
+	for _, args := range [][]string{
+		{"42", "--model", "sonnet", "--permission-mode", "bypassPermissions"},
+		{"--model", "sonnet", "--permission-mode", "bypassPermissions", "42"},
+		{"--model=sonnet", "42", "--permission-mode=bypassPermissions"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			repo := herdrtest.NewRepo(t)
+			server := fakeStart(t, repo, "w9", "w9:p1", "working")
+			herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+
+			if err := startCommand(args, &strings.Builder{}); err != nil {
+				t.Fatalf("start %v: %v", args, err)
+			}
+
+			var started []any
+			for _, call := range server.Calls() {
+				if call.Method == "agent.start" {
+					started, _ = call.Params["args"].([]any)
+				}
+			}
+			if len(started) != 4 || started[0] != "--model" || started[1] != "sonnet" ||
+				started[2] != "--permission-mode" || started[3] != "bypassPermissions" {
+				t.Errorf("agent started with %v, want both flags as given", started)
+			}
+		})
+	}
+}
+
+// The usage string is the one thing a caller reads after being refused, so it
+// must describe an invocation that works.
+func TestStartUsageIsAnOrderThatParses(t *testing.T) {
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.String("model", "", "")
+	fs.String("permission-mode", "", "")
+	fs.String("base", "", "")
+	fs.String("repo", "", "")
+	fs.Bool("focus", false, "")
+
+	// The usage line with its placeholders filled in and its brackets dropped.
+	replacer := strings.NewReplacer(
+		"<model>", "sonnet", "<mode>", "bypassPermissions", "<ref>", "origin/main",
+		"<path>", ".", "<issue>", "42", "[", "", "]", "")
+	fields := strings.Fields(replacer.Replace(strings.TrimPrefix(startUsage, "usage: worktender start ")))
+
+	issues, err := parseAround(fs, fields)
+	if err != nil {
+		t.Fatalf("the usage string does not parse: %v", err)
+	}
+	if len(issues) != 1 || issues[0] != "42" {
+		t.Errorf("parsing the usage string gave issues %v, want [42]", issues)
+	}
+}
+
+// start creates a checkout, so it may not guess a repository — and the context
+// it would otherwise resolve one from is injected only when herdr invokes a
+// plugin action, which start cannot be: an action is a fixed command array and
+// start is nothing without its issue number. --repo is the whole way in from a
+// shell, so the refusal has to name it.
+func TestStartActsOnTheRepositoryItWasGiven(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	server := fakeStart(t, repo, "w9", "w9:p1", "working")
+	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+
+	var out strings.Builder
+	if err := startCommand([]string{"42", "--repo", repo.Root}, &out); err != nil {
+		t.Fatalf("start --repo: %v", err)
+	}
+
+	// Resolved, because that is what a session holds: a temp directory on macOS
+	// is reached through a symlink, and comparing the unresolved path would fail
+	// over the same root spelled two ways.
+	root := gitx.Resolve(repo.Root)
+	for _, call := range server.Calls() {
+		if call.Method == "worktree.create" && call.Params["cwd"] != root {
+			t.Errorf("worktree created in %v, want the repository named by --repo (%s)", call.Params["cwd"], root)
+		}
+	}
+	if !strings.Contains(out.String(), "repository: "+root) {
+		t.Errorf("start must name the repository it resolved:\n%s", out.String())
+	}
+}
+
+func TestStartWithoutAContextSaysHowToNameARepository(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	fakeStart(t, repo, "w9", "w9:p1", "working")
+	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
+
+	err := startCommand([]string{"42"}, &strings.Builder{})
+	if err == nil {
+		t.Fatal("start must refuse to guess which repository to create a worktree in")
+	}
+	if !strings.Contains(err.Error(), "--repo") {
+		t.Errorf("the refusal must name the way past it, got %v", err)
 	}
 }

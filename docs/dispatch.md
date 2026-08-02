@@ -11,7 +11,9 @@ worktender=$(herdr plugin list --json \
   | jq -r '.result.plugins[] | select(.plugin_id == "steig.worktender") | .plugin_root')/bin/worktender
 
 # COORDINATOR — when the slice is a GitHub issue, one command does all of it.
-"$worktender" start 42 --model sonnet
+# --repo because start creates a checkout and is not a herdr action, so nothing
+# tells it which repository unless you do. Flags go on either side of the number.
+"$worktender" start 42 --repo . --model sonnet
 "$worktender" gate --target 42-fix-the-thing --until done --require-pr --timeout 20m
 
 # ...and when it is not, the pieces are still separate. Dispatch, then wait.
@@ -22,8 +24,12 @@ worktender=$(herdr plugin list --json \
 "$worktender" report --status done --pr 42 --note "landed the reconcile split"
 ```
 
-`start` is `worktree.create` + `dispatch` + a briefing, in that order, against
-one issue. It exists because the pane id the middle step needs came from
+`start` is `worktree.create` + `dispatch` + a briefing **it confirms**, in that
+order, against one issue. The briefing is typed and then submitted as a separate
+Enter key event, and `start` waits for herdr to report the agent working before
+it says "briefed": herdr answering ok means it delivered keystrokes, not that an
+agent received a prompt, and a brief left sitting in a composer is a worker with
+nothing to do that a listing reports as `idle`. It exists because the pane id the middle step needs came from
 nowhere: `ls` did not print one, so the documented loop had a `<pane>` in it and
 no command that produced it. `ls` prints panes now, and `start` does not need
 you to look.
@@ -36,7 +42,7 @@ non-zero when the worker reports `blocked`, when the worker dies before
 reporting, and when it times out.
 
 ```sh
-worktender start <issue> [--model <model>] [--permission-mode <mode>] [--base <ref>] [--focus]
+worktender start <issue> [--model <model>] [--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus]
 worktender dispatch --pane <id> --name <agent> [--model <model>] [--permission-mode <mode>] [--resume]
 worktender report --status planned|blocked|done [--pr N] --note <text>
 worktender gate --target <agent|pane> [--until done] [--require-pr] [--timeout 15m]

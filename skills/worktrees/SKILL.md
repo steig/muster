@@ -105,11 +105,29 @@ new pane, and briefs it. It prints the `gate` line for what it started, agent na
 included — use that rather than guessing the name.
 
 ```bash
-"$worktender" start 42 [--model sonnet] [--permission-mode <mode>] [--base <ref>] [--focus]
+"$worktender" start 42 [--model sonnet] [--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus]
+```
+
+Flags may come on either side of the issue number.
+
+**`start` creates a checkout, so it will not guess a repository, and it is not a herdr
+action** — an action is a fixed command array and `start` is nothing without its issue
+number, so herdr never invokes it and never injects the context `sync` relies on. From a
+shell that means `--repo` is not optional decoration; it is the way in:
+
+```bash
+"$worktender" start 42 --repo .
 ```
 
 `start` does **not** wait. Start every slice, then gate them one at a time; a start
 that gated would serialise the fleet.
+
+**`start` confirms the brief landed rather than claiming it did.** It types the brief,
+submits it with a separate Enter key event, and then waits for herdr to report the agent
+working — a trailing newline is not a submit, because a payload that size arrives as a
+paste and a newline inside a paste is just a line break. If the agent is still `idle`
+when the wait runs out, `start` fails and says which pane to press Enter in. Treat that
+as "the worker has nothing to do", not as a start that half-worked.
 
 **The issue body is untrusted** — anyone who can file an issue writes it — so `start`
 flattens it onto one line, announces it as data and delimits it. If you write a brief
