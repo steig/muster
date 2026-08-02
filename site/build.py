@@ -45,7 +45,10 @@ FOOTER = re.compile(r"\n---\s*\n+\[← README\]\(\.\./README\.md\)\s*$")
 def rewrite_links(html):
     html = html.replace('href="../README.md"', 'href="index.html"')
     html = html.replace('href="../SECURITY.md"', f'href="{GITHUB}/SECURITY.md"')
-    html = re.sub(r'href="(?:\./)?([a-z-]+)\.md"', r'href="\1.html"', html)
+    # The fragment is optional and has to survive: a cross-document link that
+    # points at a section — docs/reference.md and docs/json.md both have one —
+    # otherwise keeps its .md and lands nowhere on the site.
+    html = re.sub(r'href="(?:\./)?([a-z-]+)\.md(#[^"]*)?"', r'href="\1.html\2"', html)
     return html
 
 

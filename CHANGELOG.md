@@ -213,6 +213,51 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Fixed
 
+- **The counter's guidance invited a stall detector that fires on healthy
+  workers.** (#112) `agent_status_seq` stamps a *state change*, so a worker that
+  stays in one state does not move it — and a worker thinking hard is exactly
+  that. Beside `idle` a frozen counter is finished-or-wedged, which is the
+  question #90 added it to answer and it still answers. Beside `working` it says
+  nothing at all: a long turn and a wedge are the same frozen number, and three
+  documents recommended reading the column without saying so. Measured on a
+  worker of this repository's own: 213 state changes behind the fleet, frozen
+  there for over half an hour, twelve dollars spent in the window, and it
+  renamed its own branch to the fix it had settled on.
+
+  The second option the issue raised — surface something that moves during a
+  turn — is closed, and closed by measurement rather than by argument. Sampled
+  ninety times across fourteen minutes of continuous work on a live herdr
+  0.7.5 / protocol 18, every number herdr has for a pane held at one value:
+  `state_change_seq`, the agent's `revision`, the pane's `revision`, the
+  `revision` on `pane.read`, and `pane.get`'s `scroll`, which never left `0` in
+  either of two panes producing output throughout and is a scrollback position
+  rather than an output count. `pane.process_info` carries pids and no CPU time.
+  Neither free-form map on an agent record is a counter either: `state_labels`
+  was empty on all sixteen agents in the session, and the `tokens` that were set
+  are worktender's own report envelope, written when a worker calls `report` and
+  therefore at the end of the work rather than during it.
+
+  The only thing that moved was the pane's rendered text, where the agent's own
+  footer took 58 distinct values on the way from `$2.15` to `$13.21` — zero
+  movements against 57, same worker, same window. That is cumulative spend,
+  which herdr offers only as characters an agent chose to draw, so it is
+  documented as the second signal rather than scraped into a JSON field.
+
+  No behaviour changed and the field is unaltered. `docs/json.md` gains the
+  table of what a frozen counter means beside each status and the composite that
+  works — alert only when the counter **and** spend have both held still —
+  `README.md` and the coordinator skill carry the caveat where they make the
+  recommendation, and the claim is a test rather than a sentence: two `working`
+  rows on one counter are asserted to be byte-identical, so the day a listing
+  can tell a long turn from a wedge, the documents that say it cannot are what
+  fails.
+
+- **A docs link that named a section kept its `.md` on the site.** The site's
+  link rewriter matched `href="thing.md"` and nothing after it, so a
+  cross-document link carrying a `#fragment` — `docs/reference.md` had one, and
+  the counter guidance above adds another — was published pointing at a file
+  that does not exist there. The fragment now survives the rewrite.
+
 - **`start` pressed Enter once, into an agent that was not yet reading keys.**
   (#108) The brief arrived whole and sat unsubmitted, and an identical `herdr
   pane send-keys <pane> enter` typed by hand seconds later started the agent —

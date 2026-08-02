@@ -108,29 +108,104 @@ schema, which documents none of it:
 - **Null** when herdr has no agent in that pane. Never `0` for a live agent —
   a zero would read as one that has never done anything.
 
+#### Where it goes blind: a frozen counter on a `working` row
+
+It counts state *changes*, so an agent that stays in one state does not move it
+— and **an agent thinking hard is exactly that.** A long turn is not an unusual
+case for a worker doing careful empirical work; it is the normal one, and it is
+when a coordinator most wants to know the worker is fine.
+
+So what a frozen counter means depends entirely on the status beside it:
+
+| Counter, between two of your reads | `agent_status` | What it says |
+| --- | --- | --- |
+| Moved | any | **Alive**, and herdr saw it move. |
+| Frozen | `idle`, `done` | Finished, or wedged. This is the pair #90 exists to separate, and it does. |
+| Frozen | `working` | **Nothing.** Deep in one turn, or completely stopped — the counter cannot tell you which. |
+| Frozen | `blocked` | Waiting for a person. The status already said so; the counter adds nothing. |
+
+The `working` row is the one that bites, because it is the row an obvious stall
+detector fires on. Measured on a worker of this repository's own: 213 state
+changes behind the fleet and frozen there for over half an hour, which by the
+counter alone was the most obviously stalled agent in the session. Over the same
+window it spent twelve dollars, filled twelve percent more context, and renamed
+its own branch to the fix it had settled on.
+
+**Nothing else in this document separates the two, and nothing else herdr has
+does either.** Measured against a live herdr 0.7.5 / protocol 18, sampling one
+continuously working agent ninety times across fourteen minutes: its
+`state_change_seq` held at one value throughout, and so did every other number
+herdr exposes
+for that pane — the agent's `revision`, the pane's `revision`, the `revision` on
+`pane.read`, or `pane.get`'s `scroll`, which never left `0` in either of two
+panes producing output throughout and is a scrollback position rather than an
+output count. `pane.process_info` carries pids and no CPU time.
+
+Nor is either of the two free-form maps on an agent record, which are the only
+place something could publish a counter of its own. `state_labels` was empty on all
+sixteen agents in the session, and the `tokens` that were set are [worktender's
+own report envelope](dispatch.md#how-a-report-actually-reaches-a-gate) —
+`worktender_status`, `worktender_seq` and the rest — written when a worker calls
+`report`, which is to say at the end of the work rather than during it.
+
+The only thing that moved was the pane's rendered text, in which the agent's own
+footer took 58 distinct values on the way from `$2.15` to `$13.21`. **Zero
+movements against 57, over the same worker, in the same window.**
+
+That is the signal that separates thinking from wedged — **cumulative spend** —
+and it is deliberately not in this document. herdr offers it only as characters
+drawn in a terminal, by an agent that chose that footer and can restyle it
+tomorrow; putting a scraped dollar figure in a JSON field would give it a
+schema it has not earned. It is also the worse signal for the case the counter
+handles well: a finished worker's spend is frozen too, so `done` and dead look
+alike on it.
+
+**The two are complementary and neither is sufficient.** A watcher that wants
+both reads the counter here and the footer from `pane.read` itself, and alerts
+only when *both* have been frozen across the interval it timed:
+
+```sh
+# the second signal for a `working` row, out of the pane this listing named
+herdr pane read w22:p1 --source visible | grep -o '\$[0-9]*\.[0-9]*' | tail -1
+```
+
+That is a scrape and it should be treated as one — the figure belongs to the
+agent, not to herdr, and an agent that restyles its footer breaks it silently.
+A watcher reading nothing there has learned nothing, which is not the same as
+having read a frozen number.
+
 What it is not is elapsed time, and nothing here converts it into any: the rate
 depends on how busy the rest of the session is, so seconds cannot be recovered
 from one reading. Two readings can, because **the caller has a clock and this
 plugin does not run.** A counter that has not moved between two of your own
-polls is a worker that has not moved in that interval — an interval you timed:
+polls is a worker that did not change state in that interval — an interval you
+timed. Carry the status through the comparison, because it is what turns that
+into a verdict:
 
 ```sh
-# stalled = the counter has not moved since the last poll, whatever "since" was
+# workers that did not change state since the last poll, whatever "since" was
 "$worktender" ls --all-repos --json \
   | jq -c '[.repositories[] | .root as $r | .worktrees[]?
-            | select(.agent_status_seq) | {r:$r, b:.branch, s:.agent_status_seq}]' > now.json
+            | select(.agent_status_seq)
+            | {r:$r, b:.branch, st:.agent_status, s:.agent_status_seq}]' > now.json
 diff <(jq -c '.[]' was.json) <(jq -c '.[]' now.json)
 ```
+
+A row that is unchanged and `idle` is finished or wedged. A row that is
+unchanged and `working` is the blind spot above, and needs the second signal
+before anybody is paged about it.
 
 How long a run of no movement has to be before it counts as stalled is a policy
 call, and it stays with you. A `stalled_for_seconds` field would have made it
 this plugin's, on a duration it cannot measure.
 
 Read down a single listing the counter also answers the one-shot question: the
-row furthest below its neighbours is the worker herdr last saw do anything.
+row furthest below its neighbours is the worker herdr last saw *change*. Which
+is why the status is printed beside it — on a `working` row that is a question
+and not an answer.
 
 ```sh
-# the three stalest workers anywhere, whatever their status says
+# the three herdr saw change least recently, with the status that qualifies it
 "$worktender" ls --all-repos --json \
   | jq -r '[.repositories[] | .root as $r | .worktrees[]?
             | select(.agent_status_seq)] | sort_by(.agent_status_seq)
