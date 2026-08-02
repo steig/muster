@@ -82,10 +82,14 @@ func startCommand(args []string, out io.Writer) error {
 	}
 
 	branch := issueBranch(issue)
+	baseRef := gitx.BaseRef(s.root)
 	forkFrom := *base
 	if forkFrom == "" {
-		forkFrom = gitx.BaseRef(s.root)
+		forkFrom = baseRef
 	}
+	// Read before the create, so what is printed is the commit the fork was
+	// asked for rather than whatever the ref names by the time anyone looks.
+	forkPoint := gitx.Commit(s.root, forkFrom)
 
 	created, err := s.client.WorktreeCreate(s.root, branch, forkFrom, branch, *focus)
 	if err != nil {
@@ -93,6 +97,7 @@ func startCommand(args []string, out io.Writer) error {
 	}
 	workspace, pane := created.Workspace.WorkspaceID, created.RootPane.PaneID
 	fmt.Fprintf(out, "worktree: %s on %s (workspace %s, pane %s)\n", branch, forkFrom, workspace, pane)
+	printForkPoint(out, forkFrom, forkPoint, baseRef, gitx.Commit(s.root, baseRef))
 
 	// The same KindStaff action `sync` and `dispatch` build, so the pane
 	// re-check in execute.staff() covers this path by construction too.
@@ -118,6 +123,38 @@ func startCommand(args []string, out io.Writer) error {
 	fmt.Fprintf(out, "\nbriefed %s on #%d; wait for it with:\n  %s gate --target %s --until done --require-pr\n",
 		agent, number, selfPath(), agent)
 	return nil
+}
+
+// printForkPoint records the commit the worktree was forked from, and says what
+// to do about it when that commit is not one the base branch already has.
+//
+// The line exists because `worktree: <branch> on <base>` names a ref, and a ref
+// moves. Forking from a branch with an open pull request is a reasonable thing
+// to do — it is how a second slice proceeds while the first is in review — and
+// it survives a merge commit untouched. It does not survive a squash merge: that
+// puts one new commit on the base and none of the branch's own, so the stacked
+// branch is left sitting on commits the base's history has never contained, and
+// its own pull request renders the base's entire diff as its own.
+//
+// The repair replays only the child's commits, and it needs the commit the child
+// was forked from. After the base merges, the branch's reflog is the only place
+// that commit survives — and a worker that force-pushed has probably lost it. So
+// it is printed at fork time, when it is free, rather than being something the
+// caller had to have thought of in advance.
+//
+// Nothing is refused and nothing is warned about: stacking is not a mistake, and
+// this is the one thing to know before doing it.
+func printForkPoint(out io.Writer, forkFrom, forkPoint, baseRef, basePoint string) {
+	if forkPoint == "" {
+		return
+	}
+	fmt.Fprintf(out, "fork point: %s is %s\n", forkFrom, forkPoint)
+	if forkPoint == basePoint {
+		return
+	}
+	fmt.Fprintf(out, "  stacked: %s holds commits %s does not. A squash merge lands\n", forkFrom, baseRef)
+	fmt.Fprintf(out, "           none of them there, and this branch's PR would then show its diff too.\n")
+	fmt.Fprintf(out, "  repair:  rebase before it merges, or after: git rebase --onto %s %s\n", baseRef, forkPoint)
 }
 
 const startUsage = "usage: worktender start <issue> [--model <model>] " +

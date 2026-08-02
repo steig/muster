@@ -89,6 +89,26 @@ func BaseRef(root string) string {
 	return base
 }
 
+// Commit resolves a ref to the full commit it names right now, or "" when there
+// is nothing to resolve.
+//
+// A ref name is not a fixed point, which is why the name alone does not record
+// where a worktree was forked from. A base branch that is squash-merged puts one
+// new commit on the trunk and none of its own, so the commit a stacked branch
+// was forked from afterwards exists nowhere in the trunk's history — and
+// replaying that branch needs the commit, not the name.
+//
+// Empty rather than an error: this annotates work that has already happened, and
+// a ref git cannot resolve fails the worktree create with a better message than
+// this could produce.
+func Commit(root, ref string) string {
+	out, err := run(root, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
 // IsDirty reports whether a checkout has uncommitted changes, including
 // untracked files. Work that exists nowhere else must never be pruned.
 func IsDirty(checkout string) bool {

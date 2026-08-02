@@ -49,6 +49,38 @@ func TestBaseRefFollowsOriginHead(t *testing.T) {
 	}
 }
 
+// A ref is not a fixed point and a commit is. Commit is what makes a fork point
+// recordable, so it must resolve every spelling of one and answer nothing at all
+// for a ref that names none — never a plausible-looking substitute.
+func TestCommitResolvesRefsAndOnlyRefs(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.SetOriginHead("main")
+	head := repo.Git("rev-parse", "HEAD")
+
+	for _, ref := range []string{"HEAD", "main", "origin/main", head, head[:7]} {
+		if got := gitx.Commit(repo.Root, ref); got != head {
+			t.Errorf("Commit(%q) = %q, want %q", ref, got, head)
+		}
+	}
+	for _, ref := range []string{"no/such/ref", "", "  "} {
+		if got := gitx.Commit(repo.Root, ref); got != "" {
+			t.Errorf("Commit(%q) = %q, want nothing", ref, got)
+		}
+	}
+}
+
+// An annotated tag is an object of its own, and the commit it points at is what
+// a rebase needs. `^{commit}` is doing that work and dropping it would print an
+// object `git rebase --onto` cannot use.
+func TestCommitPeelsAnAnnotatedTag(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.Git("tag", "-a", "v1", "-m", "release")
+
+	if got, want := gitx.Commit(repo.Root, "v1"), repo.Git("rev-parse", "HEAD"); got != want {
+		t.Errorf("Commit(v1) = %q, want the commit it points at (%q)", got, want)
+	}
+}
+
 func TestIsDirty(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 	checkout := repo.AddWorktree("feature", "feature")
