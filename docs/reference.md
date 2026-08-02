@@ -162,6 +162,12 @@ Errors you are most likely to meet:
 - **`base` is `origin/HEAD`, not `main`.** It falls back to `main` only when
   origin cannot be asked, so a repository defaulting to `master` or `develop` is
   handled without configuration.
+- **`start` prints the commit it forked from, not just the ref.** A ref moves; a
+  squash merge of the base leaves none of its commits on the trunk, and the
+  fork point is what `git rebase --onto` needs to replay a stacked branch. An
+  unresolvable ref prints no fork point rather than a guess — the worktree
+  create reports that failure better than this line could. See
+  [Stacking on a branch that is still in review](dispatch.md#stacking-on-a-branch-that-is-still-in-review).
 - **`list` is an alias for `ls`.**
 - **Agent names** come from the checkout's directory basename, lowercased to
   `[a-z0-9-]`, prefixed `wt-` if the result does not start with a letter, and

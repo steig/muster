@@ -66,6 +66,33 @@ isolated worktree.
   resolution needs both sides' intent, and a worker has one.
 - **All verification.** See below.
 
+## Stacking a slice on one that is still in review
+
+`start --base <ref>` forks the worker's worktree from any ref, so the second
+slice can start while the first is still in review. **Prefer not to.** A slice
+that can wait for its parent to land avoids all of the below, and you are the
+only party who can see that both slices exist.
+
+When you do stack, know what a squash merge does: it puts one new commit on
+`origin/main` and none of the base branch's own. The moment the parent lands,
+the stacked branch is on commits the trunk has never contained and its pull
+request shows the parent's entire diff as its own.
+
+```bash
+"$worktender" start 43 --base 42-fix-the-thing
+# fork point: 42-fix-the-thing is 31db5d1c9b7e...   <- keep this
+```
+
+- **Keep the fork point.** `start` prints it, and it is the argument the repair
+  needs: `git rebase --onto origin/main <fork-point>` replays only the child's
+  own commits. After the parent merges, that commit survives in the child's
+  reflog and nowhere else — and a worker that force-pushed has lost it.
+- **Rebase the child before the parent merges** where you can. Afterwards is
+  `--onto`; before is an ordinary rebase.
+- **Do not let the worker discover this from its own PR diff.** Say it in the
+  brief, with the fork point in it, at dispatch time.
+- **Merge order is yours, not the workers'.** Neither of them can see the other.
+
 ## Verify, do not relay
 
 **Never read a worker's diff.** A full file read costs 2000+ tokens; the check

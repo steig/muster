@@ -316,6 +316,83 @@ JSON`)
 	}
 }
 
+// The ref a worktree was forked from is not a fixed point, and the commit is —
+// so the commit is printed. It is free at fork time and unrecoverable later: a
+// branch whose base has since been squash-merged and force-pushed over has its
+// own reflog and nothing else.
+func TestStartPrintsTheCommitItForkedFrom(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.SetOriginHead("main")
+	fakeStart(t, repo, "w9", "w9:p1", "working")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+
+	var out strings.Builder
+	if err := startCommand([]string{"42"}, &out); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	head := repo.Git("rev-parse", "HEAD")
+	if !strings.Contains(out.String(), "fork point: origin/main is "+head) {
+		t.Errorf("start must print the commit it forked from (%s):\n%s", head, out.String())
+	}
+	// Forking from the base is the ordinary case and carries none of this.
+	if strings.Contains(out.String(), "stacked:") {
+		t.Errorf("a fork from the base is not stacked:\n%s", out.String())
+	}
+}
+
+// --base makes it easy to stack a worker on a branch that has an open pull
+// request. That is a useful thing to do and this does not refuse it — it says
+// the one thing that bites, and pre-fills the repair with the commit, because
+// after the base is squash-merged that commit is the part nobody has.
+func TestStartSaysHowToRepairAStackedBranch(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.SetOriginHead("main")
+	repo.Git("checkout", "-b", "feat/76-machine-readable")
+	repo.Write("stacked.txt", "first slice\n")
+	repo.Git("add", ".")
+	repo.Git("commit", "-m", "first slice")
+	tip := repo.Git("rev-parse", "HEAD")
+	repo.Git("checkout", "main")
+
+	fakeStart(t, repo, "w9", "w9:p1", "working")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+
+	var out strings.Builder
+	if err := startCommand([]string{"42", "--base", "feat/76-machine-readable"}, &out); err != nil {
+		t.Fatalf("start --base: %v", err)
+	}
+
+	printed := out.String()
+	if !strings.Contains(printed, "fork point: feat/76-machine-readable is "+tip) {
+		t.Errorf("the fork point must be the base's tip (%s):\n%s", tip, printed)
+	}
+	if !strings.Contains(printed, "squash merge") {
+		t.Errorf("stacking on a branch that may be squash-merged must be said:\n%s", printed)
+	}
+	// The whole point of printing the commit: the command that repairs the
+	// branch is in the scrollback already, filled in.
+	if !strings.Contains(printed, "git rebase --onto origin/main "+tip) {
+		t.Errorf("the repair must name the commit, not the ref:\n%s", printed)
+	}
+}
+
+// A ref git cannot resolve is the worktree create's failure to report, not this
+// line's. Losing the annotation must not lose the start.
+func TestStartSurvivesABaseItCannotResolve(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	fakeStart(t, repo, "w9", "w9:p1", "working")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing","body":"it is broken"}'`)
+
+	var out strings.Builder
+	if err := startCommand([]string{"42", "--base", "no/such/ref"}, &out); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if strings.Contains(out.String(), "fork point:") {
+		t.Errorf("nothing resolved, so nothing may be claimed:\n%s", out.String())
+	}
+}
+
 // Nothing is defaulted. Without --permission-mode, start changes nothing about
 // what the agent it creates may do.
 func TestStartPassesNoAgentArgsByDefault(t *testing.T) {

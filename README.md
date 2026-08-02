@@ -109,6 +109,7 @@ Call the binary and the output is just on stdout.
 $ worktender start 42 --repo .
 repository: /Users/you/code/thing
 worktree: 42-fix-the-thing on origin/main (workspace w9, pane w9:p1)
+fork point: origin/main is 31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10
 done  staff  42-fix-the-thing  started claude as wt-42-fix-the-thing-016aab in w9:p1
 
 briefed wt-42-fix-the-thing-016aab on #42; wait for it with:
@@ -147,6 +148,15 @@ paste. An agent still `idle` when that wait runs out fails the command.
 
 Start several, then wait on the lot of them. `start` deliberately does not wait;
 `gate` is the other half.
+
+**`--base <ref>` forks from something other than the trunk**, which is how a
+second slice starts while the first is still in review. The fork point is
+printed because a ref name is not a fixed point: this repository squash-merges,
+and a squash merge puts one new commit on the trunk and none of the base
+branch's own — so a stacked branch outlives its base only if someone kept the
+commit it was forked from. `start` prints it, and says so when the fork is not
+something the trunk already has. See
+[Stacking on a branch that is still in review](docs/dispatch.md#stacking-on-a-branch-that-is-still-in-review).
 
 **The brief does not carry the issue.** It names it and tells the worker to run
 `gh issue view`, which reads the same text as tool output rather than as prose

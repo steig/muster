@@ -126,6 +126,20 @@ shell that means `--repo` is not optional decoration; it is the way in:
 `start` does **not** wait. Start every slice, then gate on all of them with `--any`;
 a start that gated would serialise the fleet.
 
+**`--base <ref>` forks from any ref, which is how you stack a slice on a branch whose
+pull request is still open.** That is allowed and often right. What it costs is this:
+a squash merge puts *one new commit* on the trunk and none of the base branch's own,
+so once the base lands the stacked branch sits on commits the trunk has never had, and
+its pull request shows the base's whole diff as its own. Rebase the child before the
+parent merges where you can; afterwards it takes
+`git rebase --onto origin/main <fork-point>`, which replays only the child's commits.
+
+**`start` prints that fork point** — `fork point: <ref> is <sha>` — and adds the
+`stacked:` and `repair:` lines when the fork is not something the base already has.
+Keep the sha. After the base merges it survives only in the branch's reflog, and a
+worker that force-pushed has probably lost it. Do not substitute the ref name: it has
+moved or been deleted by the time you need it.
+
 **`start` confirms the brief landed rather than claiming it did.** It types the brief,
 submits it with a separate Enter key event, and then waits for herdr to report the agent
 working — a trailing newline is not a submit, because a payload that size arrives as a

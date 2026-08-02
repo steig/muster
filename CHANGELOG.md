@@ -76,6 +76,25 @@ install` tracks branch HEAD rather than a tag — the version in
   to appear as an empty group: *asked, and none* versus *not asked* is the
   distinction the JSON exists to keep. See [docs/json.md](docs/json.md).
 
+- **`start` prints the commit it forked from, and says when that is stacked
+  work.** `worktree: <branch> on <base>` named a ref, and a ref is not a fixed
+  point. `--base <ref>` makes it easy to fork from a branch whose pull request is
+  still open — a useful thing to do, and the way a second slice proceeds while
+  the first is in review — but this repository squash-merges, and a squash merge
+  puts one new commit on the trunk and none of the base branch's own. So the
+  moment the base lands, the stacked branch is on commits the trunk has never
+  contained and its pull request shows the base's entire diff as its own.
+
+  Repairing that is `git rebase --onto origin/main <fork-point>`, which needs the
+  commit the branch was forked from — and afterwards that commit survives in the
+  branch's reflog and nowhere else, which a worker that force-pushed has probably
+  lost. It is now in the scrollback by default, alongside `stacked:` and
+  `repair:` lines when the fork is not something the base already has. An
+  unresolvable ref prints no fork point at all rather than a guess.
+
+  Stacking is documented rather than discouraged: [dispatch.md](docs/dispatch.md)
+  covers it end to end, and both skills carry the short form.
+
 - **`--json` on `ls`, `doctor`, `sync`, `prune` and `prune-apply`.** Every output
   path went through `text/tabwriter` and nothing else, so anything that wanted to
   *consume* worktender — a status line, a TUI, a fleet view, a coordinating agent

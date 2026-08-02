@@ -58,6 +58,51 @@ worktender report --status planned|blocked|done [--pr N] --note <text>
 worktender gate --target <agent|pane> | --any <a,b,c> [--until done] [--require-pr] [--timeout 15m]
 ```
 
+## Stacking on a branch that is still in review
+
+`start --base <ref>` forks the new worktree from any ref, not just the trunk. So
+a second slice can proceed on top of the first while the first is still in
+review, which is a genuinely useful thing to do and nothing here refuses it.
+**One thing about it is worth knowing first.**
+
+A squash merge does not put the base branch's commits on the trunk; it puts one
+new commit there. So the moment the base lands, the branch stacked on it is
+sitting on commits that exist nowhere in the trunk's history — and its own pull
+request shows **the base's entire diff as its own**.
+
+`start` prints the commit it forked from, and when that commit is not one the
+base branch already has, it says so:
+
+```
+worktree: 42-fix-the-thing on feat/76-machine-readable-output (workspace w22, pane w22:p1)
+fork point: feat/76-machine-readable-output is 31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10
+  stacked: feat/76-machine-readable-output holds commits origin/main does not. A squash merge lands
+           none of them there, and this branch's PR would then show its diff too.
+  repair:  rebase before it merges, or after: git rebase --onto origin/main 31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10
+```
+
+In order of preference:
+
+- **Do not stack unless the base is about to land.** A slice that can wait for
+  its parent to merge has none of this.
+- **Rebase the child before the parent merges.** While the parent's commits are
+  still the ones on its branch, an ordinary `git rebase origin/main` is enough
+  — the child's own commits are the only ones it has to replay.
+- **`--onto` afterwards.** `git rebase --onto origin/main <fork-point>` replays
+  only the commits after the fork point, which is what makes the base's diff
+  stop being the child's.
+
+**The fork point is the part that goes missing**, and it is why `start` prints
+it. `--onto` needs the commit the branch was forked from — not the ref name,
+which by then has moved or been deleted. Afterwards the branch's own reflog is
+the only place that commit survives, and a worker that force-pushed has probably
+lost it. At fork time it costs a line; later it can cost the branch.
+
+The line prints on any fork the base does not already have, because how a pull
+request will be merged is not knowable at fork time. Under a merge-commit
+workflow it costs you nothing: the base's own commits reach the trunk, so the
+child's diff stays the child's. This repository squash-merges.
+
 ## Waiting on a fleet
 
 `--any` takes several workers and releases on the **first** of them to satisfy
