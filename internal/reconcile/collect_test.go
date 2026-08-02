@@ -1,6 +1,7 @@
 package reconcile_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -363,27 +364,62 @@ func TestGhPRLookupPrefersTheOpenPullRequest(t *testing.T) {
 func TestGhPRLookupPicksTheLatestPullRequest(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 
-	merged := `{"state":"MERGED","createdAt":"2026-01-05T10:00:00Z"}`
-	closed := `{"state":"CLOSED","createdAt":"2026-03-09T10:00:00Z"}`
+	// When each state's pull request was opened: the first attempt in January,
+	// the reuse — closed unmerged — in March. OPEN dates with the first, so a
+	// subtest can pit it against a newer CLOSED.
+	createdAt := map[string]string{
+		"MERGED": "2026-01-05T10:00:00Z",
+		"OPEN":   "2026-01-05T10:00:00Z",
+		"CLOSED": "2026-03-09T10:00:00Z",
+	}
+
+	// fakeDated is FakeGhPRStates with the timestamps left in.
+	fakeDated := func(t *testing.T, states ...string) {
+		t.Helper()
+
+		rows := make([]string, len(states))
+		for i, state := range states {
+			rows[i] = fmt.Sprintf(`{"state":%q,"createdAt":%q}`, state, createdAt[state])
+		}
+		herdrtest.FakeGh(t, "echo '["+strings.Join(rows, ",")+"]'")
+	}
+
+	wantClosed := func(t *testing.T) {
+		t.Helper()
+
+		state, err := reconcile.GhPRLookup(repo.Root, "fix/reused")
+		if err != nil {
+			t.Fatalf("GhPRLookup: %v", err)
+		}
+		if state != reconcile.PRClosed {
+			t.Errorf("state = %q, want PRClosed: the branch's latest pull request "+
+				"was closed unmerged and its commits exist nowhere else", state)
+		}
+	}
 
 	for _, tc := range []struct {
-		name string
-		list string
+		name   string
+		states []string
 	}{
-		{"merged first", "[" + merged + "," + closed + "]"},
-		{"closed first", "[" + closed + "," + merged + "]"},
+		{"merged first", []string{"MERGED", "CLOSED"}},
+		{"closed first", []string{"CLOSED", "MERGED"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			herdrtest.FakeGh(t, `echo '`+tc.list+`'`)
+			t.Run("dated", func(t *testing.T) {
+				fakeDated(t, tc.states...)
 
-			state, err := reconcile.GhPRLookup(repo.Root, "fix/reused")
-			if err != nil {
-				t.Fatalf("GhPRLookup: %v", err)
-			}
-			if state != reconcile.PRClosed {
-				t.Errorf("state = %q, want PRClosed: the branch's latest pull request "+
-					"was closed unmerged and its commits exist nowhere else", state)
-			}
+				wantClosed(t)
+			})
+
+			// With the field gone the tie-break carries the verdict alone, so
+			// it has to carry it in both orders too: one order would pass on a
+			// tie-break that had gone back to trusting gh's list order. Same
+			// table as the dated case, so the two cannot drift apart.
+			t.Run("no timestamps", func(t *testing.T) {
+				herdrtest.FakeGhPRStates(t, tc.states...)
+
+				wantClosed(t)
+			})
 		})
 	}
 
@@ -406,24 +442,10 @@ func TestGhPRLookupPicksTheLatestPullRequest(t *testing.T) {
 		}
 	})
 
-	// And with the field gone, the tie goes to the state that keeps the
-	// worktree rather than back to the array order.
-	t.Run("no timestamps", func(t *testing.T) {
-		herdrtest.FakeGh(t, `echo '[{"state":"MERGED"},{"state":"CLOSED"}]'`)
-
-		state, err := reconcile.GhPRLookup(repo.Root, "fix/reused")
-		if err != nil {
-			t.Fatalf("GhPRLookup: %v", err)
-		}
-		if state != reconcile.PRClosed {
-			t.Errorf("state = %q, want PRClosed", state)
-		}
-	})
-
 	// An open pull request is still the answer even when an older one, because
 	// it is what someone is working on now.
 	t.Run("open outranks a newer closed", func(t *testing.T) {
-		herdrtest.FakeGh(t, `echo '[{"state":"OPEN","createdAt":"2026-01-05T10:00:00Z"},`+closed+`]'`)
+		fakeDated(t, "OPEN", "CLOSED")
 
 		state, err := reconcile.GhPRLookup(repo.Root, "fix/reused")
 		if err != nil {
