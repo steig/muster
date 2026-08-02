@@ -87,8 +87,12 @@ request shows the parent's entire diff as its own.
   needs: `git rebase --onto origin/main <fork-point>` replays only the child's
   own commits. After the parent merges, that commit survives in the child's
   reflog and nowhere else — and a worker that force-pushed has lost it.
-- **Rebase the child before the parent merges** where you can. Afterwards is
-  `--onto`; before is an ordinary rebase.
+- **Before the parent merges, restack rather than rebase.** Rebase the parent
+  onto the trunk, then on the child run
+  `git rebase --onto <parent-branch> <fork-point>`. A plain `git rebase
+  origin/main` on the child replays the parent's unmerged commits too, and the
+  conflicts land on the child's worker in code it did not write. The fork point
+  for the next restack is the parent's new tip.
 - **Do not let the worker discover this from its own PR diff.** Say it in the
   brief, with the fork point in it, at dispatch time.
 - **Merge order is yours, not the workers'.** Neither of them can see the other.

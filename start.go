@@ -154,7 +154,8 @@ func printForkPoint(out io.Writer, forkFrom, forkPoint, baseRef, basePoint strin
 	}
 	fmt.Fprintf(out, "  stacked: %s holds commits %s does not. A squash merge lands\n", forkFrom, baseRef)
 	fmt.Fprintf(out, "           none of them there, and this branch's PR would then show its diff too.\n")
-	fmt.Fprintf(out, "  repair:  rebase before it merges, or after: git rebase --onto %s %s\n", baseRef, forkPoint)
+	fmt.Fprintf(out, "  repair:  git rebase --onto %s %s\n", baseRef, forkPoint)
+	fmt.Fprintf(out, "           once it merges. Before that, --onto %s, having rebased that first.\n", forkFrom)
 }
 
 const startUsage = "usage: worktender start <issue> [--model <model>] " +

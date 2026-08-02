@@ -78,19 +78,33 @@ worktree: 42-fix-the-thing on feat/76-machine-readable-output (workspace w22, pa
 fork point: feat/76-machine-readable-output is 31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10
   stacked: feat/76-machine-readable-output holds commits origin/main does not. A squash merge lands
            none of them there, and this branch's PR would then show its diff too.
-  repair:  rebase before it merges, or after: git rebase --onto origin/main 31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10
+  repair:  git rebase --onto origin/main 31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10
+           once it merges. Before that, --onto feat/76-machine-readable-output, having rebased that first.
 ```
 
 In order of preference:
 
 - **Do not stack unless the base is about to land.** A slice that can wait for
   its parent to merge has none of this.
-- **Rebase the child before the parent merges.** While the parent's commits are
-  still the ones on its branch, an ordinary `git rebase origin/main` is enough
-  — the child's own commits are the only ones it has to replay.
+- **Restack the child while the base's pull request is still open.** Two
+  commands, in this order: rebase the base branch onto the trunk, then on the
+  child `git rebase --onto <base-branch> <fork-point>`. The fork point is where
+  the child's own commits start, and naming it is what holds the replay to
+  those — the child ends up on the base's actual tip with its own commit on top.
+
+  **A plain `git rebase origin/main` on the child is not the lighter version of
+  that.** It replays every commit the child has and the trunk does not, and
+  while the base is unmerged that is the base's commits as well as the child's.
+  They come back rewritten under the child's name, and a conflict in one of them
+  lands on whoever ran the rebase, in code they did not write.
 - **`--onto` afterwards.** `git rebase --onto origin/main <fork-point>` replays
   only the commits after the fork point, which is what makes the base's diff
   stop being the child's.
+
+Both repairs are the same command with a different target. The fork point is
+not fixed, though: after a restack it is the base branch's new tip, not the sha
+`start` printed. Give `--onto` the old one and it replays the base's commits all
+over again, which is the thing being avoided.
 
 **The fork point is the part that goes missing**, and it is why `start` prints
 it. `--onto` needs the commit the branch was forked from — not the ref name,

@@ -181,6 +181,34 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Fixed
 
+- **The stacking guidance told agents to run the wrong rebase.** (#109) It said
+  that while the parent's pull request is still open, "an ordinary `git rebase
+  origin/main` is enough — the child's own commits are the only ones it has to
+  replay". `git rebase <trunk>` replays every commit the child has that the
+  trunk does not, and while the parent is unmerged that is the parent's commits
+  too. Measured in a scratch repository, trunk → parent (2 commits) → child
+  (1 commit), trunk then moved on: `git rebase main` on the child reported
+  `Rebasing (1/3)` and rewrote all three, two of which the child did not write.
+  Any conflict in those lands on whoever ran it, in code they never touched.
+
+  The replacement is one shape for both sides of the merge —
+  `git rebase --onto <target> <fork-point>`, where the fork point is what holds
+  the replay to the child's own commits. After the parent lands the target is
+  `origin/main`, which is what the guidance already said and is unchanged.
+  Before it lands the target is the parent's branch, after rebasing that branch
+  onto the trunk: `Rebasing (1/1)`, and the child ends up on the parent's actual
+  tip rather than on copies of it. Bare `git rebase <parent-branch>` is not the
+  same instruction — it survives only while git can still match the rewritten
+  patches, and stops inside a commit the parent wrote as soon as the parent's
+  own rebase resolved a conflict. The fork point also moves: after a restack it
+  is the parent's new tip, not the sha `start` printed.
+
+  `start`'s `repair:` line said "rebase before it merges", which is the same
+  advice compressed; it now names the target for each side. The claim is a test
+  rather than a sentence now (`stacking_test.go`) — it builds that scratch
+  repository and counts what git replays, because this shipped past both an
+  author and a reviewer who checked it by reading.
+
 - **The brief no longer carries the issue; it says to go and read it.** (#94)
   The body used to be flattened onto one line, capped at 4000 runes and pasted
   between markers, and the result arrived at the worker **twice and cut
