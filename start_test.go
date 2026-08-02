@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -157,13 +156,12 @@ func TestStartRejectsAnArgumentThatIsNotAnIssueNumber(t *testing.T) {
 
 // fakeStart wires a fake herdr through one whole `start`: worktree.create
 // answers with a workspace and its root pane, the staffing re-check finds the
-// pane empty, the pane echoes back whatever was typed into it, and the agent
-// started there reports `status` when start asks whether its brief was taken up.
+// pane empty, and the agent started there reports `status` when start asks
+// whether its brief was taken up.
 func fakeStart(t *testing.T, repo *herdrtest.Repo, workspace, pane, status string) *herdrtest.Server {
 	t.Helper()
 
 	server := fakeSession(t, repo)
-	echoPane(t, server, pane)
 	server.HandleResult("worktree.create", map[string]any{
 		"type": "workspace_created",
 		"workspace": map[string]any{
@@ -178,6 +176,7 @@ func fakeStart(t *testing.T, repo *herdrtest.Repo, workspace, pane, status strin
 		{"pane_id": pane, "workspace_id": workspace, "tab_id": "t1", "index": 0},
 	}})
 	server.HandleResult("agent.start", map[string]any{"type": "agent_started"})
+	server.HandleResult("pane.send_text", map[string]any{"type": "ok"})
 	server.HandleResult("pane.send_keys", map[string]any{"type": "ok"})
 	server.HandleResult("agent.get", map[string]any{
 		"type": "agent_info",
@@ -190,53 +189,6 @@ func fakeStart(t *testing.T, repo *herdrtest.Repo, workspace, pane, status strin
 	return server
 }
 
-// echoPane makes the fake pane behave like a composer: pane.send_text is
-// remembered and pane.read hands it straight back, wrapped the way a TUI would
-// — a bordered box that breaks the line wherever it likes.
-//
-// The wrapping is the point. A real composer reflows the brief, so the
-// read-back has to survive that or it never matches anything.
-func echoPane(t *testing.T, server *herdrtest.Server, pane string) {
-	t.Helper()
-
-	var mu sync.Mutex
-	var typed string
-
-	server.Handle("pane.send_text", func(params map[string]any) (any, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		typed, _ = params["text"].(string)
-		return map[string]any{"type": "ok"}, nil
-	})
-	server.Handle("pane.read", func(params map[string]any) (any, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return paneRead(pane, boxed(typed, 37)), nil
-	})
-}
-
-// boxed renders text the way a TUI composer would: broken every width columns
-// and fenced with a border, so nothing of any length survives as a substring.
-func boxed(text string, width int) string {
-	var b strings.Builder
-	b.WriteString("╭───────────────────────────────────╮\n")
-	for rest := []rune(text); len(rest) > 0; {
-		n := min(width, len(rest))
-		fmt.Fprintf(&b, "│ %s │\n", string(rest[:n]))
-		rest = rest[n:]
-	}
-	b.WriteString("╰───────────────────────────────────╯")
-	return b.String()
-}
-
-// paneRead is one pane.read reply carrying text.
-func paneRead(pane, text string) map[string]any {
-	return map[string]any{"type": "pane_read", "read": map[string]any{
-		"pane_id": pane, "workspace_id": "w9", "tab_id": "t1", "source": "recent_unwrapped",
-		"format": "text", "revision": 1, "truncated": false, "text": text,
-	}}
-}
-
 // briefConfirmWithin shortens the confirmation wait, so a test of the path that
 // never confirms does not sit through the interval a human would.
 func briefConfirmWithin(t *testing.T, d time.Duration) {
@@ -247,14 +199,49 @@ func briefConfirmWithin(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { briefConfirmWait = previous })
 }
 
-// briefEchoWithin shortens the wait for the composer to show the brief, for the
-// tests about a pane that never does.
-func briefEchoWithin(t *testing.T, d time.Duration) {
+// briefSubmitRetryOf shortens the pause between keypresses, so a test of the
+// retry does not sit through the seconds a real TUI takes to start.
+func briefSubmitRetryOf(t *testing.T, d time.Duration) {
 	t.Helper()
 
-	previous := briefEchoWait
-	briefEchoWait = d
-	t.Cleanup(func() { briefEchoWait = previous })
+	previous := briefSubmitRetry
+	briefSubmitRetry = d
+	t.Cleanup(func() { briefSubmitRetry = previous })
+}
+
+// idleThenBusy makes agent.get answer `idle` for the first idle calls and
+// `working` from then on: an agent that is up but not yet reading its input,
+// which is the state a fresh Claude Code is in for some seconds after herdr
+// says it started.
+func idleThenBusy(server *herdrtest.Server, workspace, pane string, idle int) {
+	var mu sync.Mutex
+	calls := 0
+
+	server.Handle("agent.get", func(map[string]any) (any, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		status := "working"
+		if calls <= idle {
+			status = "idle"
+		}
+		return map[string]any{"type": "agent_info", "agent": map[string]any{
+			"terminal_id": "term_1", "agent": "claude", "agent_status": status,
+			"workspace_id": workspace, "tab_id": "t1", "pane_id": pane,
+			"focused": false, "revision": 1,
+		}}, nil
+	})
+}
+
+// pressCount is how many times the brief was submitted.
+func pressCount(server *herdrtest.Server) int {
+	n := 0
+	for _, call := range server.Calls() {
+		if call.Method == "pane.send_keys" {
+			n++
+		}
+	}
+	return n
 }
 
 // End to end against a fake herdr: the worktree is created on the branch the
@@ -467,93 +454,64 @@ func TestStartSubmitsTheBriefAsAKeyEventAfterTypingIt(t *testing.T) {
 	}
 }
 
-// The submit used to follow the text by 10µs — measured against protocol 17,
-// where a pane delivers text in reads of at most 1022 bytes and the Enter
-// arrived in its own read a hair behind the last of them. That is no separation
-// at all for a TUI batching its input, which then takes the Enter as part of
-// the paste and inserts it instead of acting on it. The pane is read back in
-// between so the separation is observed rather than assumed.
-func TestStartWaitsForTheBriefToShowInThePaneBeforeSubmitting(t *testing.T) {
+// #108: one press is not enough. herdr's agent.start returns when it recognises
+// the agent's prompt box, which Claude Code draws seconds before it will act on
+// a submit, and every key sent in that window is discarded — measured, five
+// runs out of five, with the brief left sitting whole in the composer. The
+// press has to be offered again until the agent shows a sign of life.
+func TestStartPressesEnterAgainWhileTheAgentStaysIdle(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
-	server := fakeStart(t, repo, "w9", "w9:p1", "working")
+	server := fakeStart(t, repo, "w9", "w9:p1", "idle")
+	idleThenBusy(server, "w9", "w9:p1", 3)
 	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing"}'`)
+	briefSubmitRetryOf(t, 0)
 
 	if err := startCommand([]string{"42"}, &strings.Builder{}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	typed, read, submitted := -1, -1, -1
-	for i, call := range server.Calls() {
-		switch call.Method {
-		case "pane.send_text":
-			typed = i
-		case "pane.read":
-			if read < 0 {
-				read = i
-			}
-		case "pane.send_keys":
-			submitted = i
-		}
-	}
-
-	if read < 0 {
-		t.Fatal("the pane was never read back: the submit still races the text it submits")
-	}
-	if !(typed < read && read < submitted) {
-		t.Errorf("want send_text(%d) then read(%d) then send_keys(%d), in that order", typed, read, submitted)
+	if presses := pressCount(server); presses < 2 {
+		t.Errorf("the brief was submitted %d time(s); an agent that stayed idle must be offered it again", presses)
 	}
 }
 
-// The read-back has to find the brief after a composer has reflowed it, which
-// leaves no substring of any length intact. Comparing only the letters and
-// digits survives that, because wrapping and borders are inserted between
-// characters and never reorder them.
-func TestTheBriefIsRecognisedThroughAComposersWrapping(t *testing.T) {
-	line := brief(42, "42-fix-the-thing")
+// And it stops at the first sign of life. A press that arrives after the brief
+// has gone is harmless — Claude Code will not send an empty composer, measured
+// — but pressing on regardless would be spending keys on an agent already
+// working, and would hide a submit that landed behind a run of ones that did
+// not.
+func TestStartStopsPressingOnceTheAgentReacts(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	server := fakeStart(t, repo, "w9", "w9:p1", "working")
+	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing"}'`)
+	briefSubmitRetryOf(t, 0)
 
-	for _, width := range []int{9, 20, 37, 200} {
-		if !strings.Contains(signature(boxed(line, width)), signature(line)) {
-			t.Errorf("the brief was not recognised once wrapped at %d columns", width)
-		}
+	if err := startCommand([]string{"42"}, &strings.Builder{}); err != nil {
+		t.Fatalf("start: %v", err)
 	}
-	// And it is a signature, not a match-anything: a brief for another issue
-	// must not satisfy this one.
-	if strings.Contains(signature(boxed(brief(43, "43-other"), 37)), signature(line)) {
-		t.Error("a different brief satisfied the read-back")
+
+	if presses := pressCount(server); presses != 1 {
+		t.Errorf("the brief was submitted %d times; an agent that took it up on the first press needs no second", presses)
 	}
 }
 
-// A pane that never shows the brief is not proof the brief is absent — a TUI
-// may collapse a paste into a placeholder — so the submit still happens and
-// confirmBriefed stays the judge. What changes is the advice afterwards.
-func TestStartStillSubmitsWhenThePaneNeverShowsTheBrief(t *testing.T) {
+// The retry is a retry and not a burst: an agent still starting up is left
+// alone between presses. Measured against Claude Code 2.1.220, the press that
+// lands is the third at 4.3-5.7s, so a loop that pressed on every 250ms poll
+// would send twenty keys to reach the same place.
+func TestStartLeavesTheAgentAloneBetweenPresses(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 	server := fakeStart(t, repo, "w9", "w9:p1", "idle")
-	server.HandleResult("pane.read", paneRead("w9:p1", "a pane showing something else entirely"))
 	herdrtest.FakeGh(t, `echo '{"number":42,"title":"Fix the thing"}'`)
-	briefEchoWithin(t, 0)
-	briefConfirmWithin(t, 0)
+	briefConfirmWithin(t, 300*time.Millisecond)
+	briefSubmitRetryOf(t, time.Hour)
 
-	err := startCommand([]string{"42"}, &strings.Builder{})
-	if err == nil {
+	if err := startCommand([]string{"42"}, &strings.Builder{}); err == nil {
 		t.Fatal("start must fail when the agent never takes the brief up")
 	}
-	// The old message named `send-keys enter` whatever had happened, which is
-	// the advice #94 followed into a composer that held a mangled brief rather
-	// than an unsubmitted one.
-	if strings.Contains(err.Error(), "send-keys w9:p1 enter") {
-		t.Errorf("pressing enter again cannot fix a brief that never arrived, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "never appeared") {
-		t.Errorf("the error must say the brief was not seen in the pane, got %v", err)
-	}
 
-	var submitted bool
-	for _, call := range server.Calls() {
-		submitted = submitted || call.Method == "pane.send_keys"
-	}
-	if !submitted {
-		t.Error("the submit must happen anyway: not seeing the text is not evidence it is absent")
+	if presses := pressCount(server); presses != 1 {
+		t.Errorf("pressed %d times inside one retry interval, want 1", presses)
 	}
 }
 
@@ -574,6 +532,11 @@ func TestStartFailsWhenTheAgentNeverTakesTheBriefUp(t *testing.T) {
 	// the brief is one keypress from landing — so the error has to say which one.
 	if !strings.Contains(err.Error(), "send-keys w9:p1 enter") {
 		t.Errorf("the error should say how to submit the brief by hand, got %v", err)
+	}
+	// And it has to say the press was already tried, or the advice reads as the
+	// obvious thing nobody thought of rather than the thing that did not work.
+	if !strings.Contains(err.Error(), "was pressed once") {
+		t.Errorf("the error should say how many times enter was already pressed, got %v", err)
 	}
 }
 

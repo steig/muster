@@ -150,12 +150,15 @@ repository — and unlike the reconcile commands it has no herdr action to be
 invoked through, because an action carries no arguments and `start` is nothing
 without its issue number. Flags may be written on either side of the number.
 
-**The brief is confirmed, not claimed.** It is typed, read back out of the pane,
-then submitted with a separate Enter key event, and `start` waits for herdr to
-report the agent working. herdr answering ok means it delivered keystrokes, not
-that an agent received a prompt — and the read-back in the middle is what stops
-the Enter arriving so close behind the text that the TUI takes it as part of the
-paste. An agent still `idle` when that wait runs out fails the command.
+**The brief is confirmed, not claimed.** It is typed, then submitted with a
+separate Enter key event, and `start` waits for herdr to report the agent
+working. herdr answering ok means it delivered keystrokes, not that an agent
+received a prompt — and one Enter is not enough on its own, because herdr
+reports an agent started as soon as it recognises its prompt box, which a TUI
+draws seconds before it will act on a submit. Keys sent in that gap are
+discarded, so `start` offers the submit again every couple of seconds for as
+long as the agent stays `idle`. An agent still `idle` when that wait runs out
+fails the command.
 
 Start several, then wait on the lot of them. `start` deliberately does not wait;
 `gate` is the other half.

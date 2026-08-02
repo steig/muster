@@ -213,6 +213,39 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Fixed
 
+- **`start` pressed Enter once, into an agent that was not yet reading keys.**
+  (#108) The brief arrived whole and sat unsubmitted, and an identical `herdr
+  pane send-keys <pane> enter` typed by hand seconds later started the agent —
+  the reporter's own finding, and the shape of the answer. herdr's
+  `agent.start` returns when it recognises the agent's prompt box — measured at
+  3.02-3.05s across three runs, and reliably so — but Claude Code draws that
+  box several seconds before it will act on a submit, and every key sent in the
+  gap is discarded. Measured against Claude Code 2.1.220 in a scratch
+  workspace: one press briefed nothing in five runs out of five, and the
+  composer held the brief with no stray line break in it, so the key was
+  dropped rather than inserted. Pressing again lands it on the third press,
+  4.3-5.7s later, three runs out of three. `start` now offers the submit every
+  two seconds until the agent shows a sign of life, which end to end takes it
+  from 0/3 briefed to 3/3 in about five seconds.
+
+  **The wait that #105 added has gone, because it was measuring the wrong
+  thing and reading it backwards.** It waited for the brief to appear in the
+  pane before pressing, on the theory that the Enter was landing inside an
+  unfinished paste. Both halves are false: against a settled composer an Enter
+  6.7ms behind the text submits, and against an unsettled one no delay helps
+  at all. Worse, the read-back was inverted. A composer still starting up
+  renders the paste as raw text, so it matched and reported the brief as seen —
+  the state in which the submit is about to be lost. Once Claude Code has
+  started it collapses the paste to `[Pasted text #1]`, which no snapshot
+  source contains, so it matched nothing and reported the brief as missing —
+  the state in which the submit works. `start` was paying five seconds for a
+  readiness signal it then read the wrong way round, and the failure message it
+  produced named the wrong repair.
+
+  A press that arrives after the brief has already gone is harmless — measured
+  twice over: Claude Code will not send an empty composer — and the loop stops
+  at the first sign of life regardless.
+
 - **The stacking guidance told agents to run the wrong rebase.** (#109) It said
   that while the parent's pull request is still open, "an ordinary `git rebase
   origin/main` is enough — the child's own commits are the only ones it has to
