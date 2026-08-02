@@ -253,7 +253,7 @@ func TestEventHandlerNeverPrunes(t *testing.T) {
 	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
 
 	// An authoritative merged verdict — the one thing that CAN justify a prune.
-	herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+	herdrtest.FakeGh(t, `echo '[{"state":"MERGED"}]'`)
 
 	server := fakeSession(t, repo)
 	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "done", ""))
@@ -284,7 +284,7 @@ func TestEventHandlerMakesNoGhCalls(t *testing.T) {
 	repo, checkout, _ := unadoptedRepo(t)
 
 	sentinel := filepath.Join(t.TempDir(), "gh-was-called")
-	herdrtest.FakeGh(t, "touch "+sentinel+"; echo '{\"state\":\"OPEN\"}'")
+	herdrtest.FakeGh(t, "touch "+sentinel+"; echo '[{\"state\":\"OPEN\"}]'")
 
 	armEvent(t, checkout, "wip", repo.RealRoot, "")
 	t.Setenv("WORKTENDER_EVENTS", "1")

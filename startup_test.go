@@ -281,7 +281,7 @@ func TestStartupMakesNoGhCalls(t *testing.T) {
 	startupSession(t, r)
 
 	sentinel := filepath.Join(t.TempDir(), "gh-was-called")
-	herdrtest.FakeGh(t, "touch "+sentinel+"; echo '{\"state\":\"OPEN\"}'")
+	herdrtest.FakeGh(t, "touch "+sentinel+"; echo '[{\"state\":\"OPEN\"}]'")
 	t.Setenv(eventsEnv, "1")
 
 	if err := startupCommand(io.Discard); err != nil {
@@ -302,7 +302,7 @@ func TestStartupNeverPrunes(t *testing.T) {
 	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
 
 	// An authoritative merged verdict — the one thing that CAN justify a prune.
-	herdrtest.FakeGh(t, `echo '{"state":"MERGED"}'`)
+	herdrtest.FakeGh(t, `echo '[{"state":"MERGED"}]'`)
 
 	r := restoredRepo{repo: repo, checkout: checkout, workspaceID: "w1"}
 	server := startupSession(t, r)

@@ -171,13 +171,15 @@ func GhPRState(root, branch string) PRState {
 // and "this branch was never opened as a pull request" call for opposite next
 // steps.
 //
-// gh exits non-zero for "there is no pull request" exactly as it does for "you
-// are not logged in", so the two are told apart by gh's own words for the first
-// and nothing else. Anything unrecognised is reported as unanswered rather than
-// as absent: a wrong "no pull request" is the silent failure worth ending, and a
-// wrong "could not ask" is only noise.
+// The question is asked with `gh pr list --head`, not `gh pr view`, because
+// that puts the distinction in gh's exit status rather than in its prose: a
+// branch with no pull request is an empty array and a success, and only a gh
+// that could not look fails. `gh pr view` fails for both and they can be told
+// apart only by matching gh's English, which is not an interface and can be
+// reworded in a minor release without anything here noticing. Measured against
+// gh 2.96.0.
 func GhPRLookup(root, branch string) (PRState, error) {
-	args := []string{"pr", "view", branch, "--json", "state"}
+	args := []string{"pr", "list", "--head", branch, "--state", "all", "--json", "state"}
 	if origin := gitx.RemoteURL(root); origin != "" {
 		args = append(args, "--repo", origin)
 	}
@@ -187,43 +189,36 @@ func GhPRLookup(root, branch string) (PRState, error) {
 
 	out, err := cmd.Output()
 	if err != nil {
-		if isNoPullRequest(err) {
-			return PRNone, nil
-		}
-		return PRNone, fmt.Errorf("gh pr view %s: %s", branch, ghMessage(err))
+		return PRNone, fmt.Errorf("gh pr list %s: %s", branch, ghMessage(err))
 	}
 
-	var payload struct {
+	var payload []struct {
 		State string `json:"state"`
 	}
 	if err := json.Unmarshal(out, &payload); err != nil {
-		return PRNone, fmt.Errorf("gh pr view %s: unreadable answer: %w", branch, err)
+		return PRNone, fmt.Errorf("gh pr list %s: unreadable answer: %w", branch, err)
+	}
+	if len(payload) == 0 {
+		return PRNone, nil
 	}
 
-	switch PRState(payload.State) {
-	case PRMerged:
-		return PRMerged, nil
-	case PRClosed:
-		return PRClosed, nil
-	case PROpen:
-		return PROpen, nil
+	// A branch can carry more than one pull request — close one, push again,
+	// open another — and an open one is the answer whichever order gh returns
+	// them in. Reading the closed one would prune a worktree with live work.
+	state := PRState(payload[0].State)
+	for _, pr := range payload {
+		if PRState(pr.State) == PROpen {
+			state = PROpen
+			break
+		}
+	}
+
+	switch state {
+	case PRMerged, PRClosed, PROpen:
+		return state, nil
 	default:
-		return PRNone, fmt.Errorf("gh pr view %s: unknown state %q", branch, payload.State)
+		return PRNone, fmt.Errorf("gh pr list %s: unknown state %q", branch, state)
 	}
-}
-
-// ghNoPullRequest is gh's own phrasing when the branch simply has no pull
-// request. It covers both spellings gh uses — "no pull requests found for
-// branch" and the "no open pull requests found for branch" of a filtered
-// lookup — and it is the only thing separating that from "I could not look".
-const ghNoPullRequest = "pull requests found for branch"
-
-func isNoPullRequest(err error) bool {
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) {
-		return false
-	}
-	return strings.Contains(string(exit.Stderr), ghNoPullRequest)
 }
 
 // ghMessage is what gh said, because its exit status alone names nothing a
