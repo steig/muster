@@ -8,6 +8,10 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.9.0] — 2026-08-03
+
 ### Added
 
 - **`ls`, `prune` and `prune-apply` now run with herdr absent.** (#122) Every
@@ -31,7 +35,7 @@ install` tracks branch HEAD rather than a tag — the version in
   starts and not into the user's own terminal, so its absence there says nothing
   about whether herdr is running. Read as absence, a terminal beside a live
   herdr reports no workspaces and no agents, the guard sparing a checkout an
-  agent is standing in never fires, and `prune-apply` force-removes it. The
+  agent is standing in never fires, and `prune-apply` force-removes it.
   The endpoint is `$HERDR_SOCKET_PATH` when herdr named one, and otherwise every
   endpoint a herdr could be on: the default session at
   `$XDG_CONFIG_HOME/herdr/herdr.sock` and one per named session under
