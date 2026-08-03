@@ -293,10 +293,18 @@ func newGateFleet(t *testing.T, specs ...workerSpec) *gateFleet {
 		// let a worker append its report while the baseline read was still in
 		// flight, so the report BECAME the baseline and the gate then had
 		// nothing new to release on.
+		//
+		// The look is signalled BEFORE the fleet opens, so that a worker waking
+		// on `opened` finds the baseline's own signal already waiting and
+		// forgetLooks drops it. Opening first left one signal unaccounted for,
+		// and the first awaitLook spent it on the baseline instead of on the
+		// look that read the report — so the worker ran a report ahead of the
+		// gate, both channels landed in a single look, and every test asserting
+		// an intermediate "still waiting" line failed on a loaded runner.
 		defer func() {
 			w.mu.Unlock()
-			f.baseline(w.spec.pane)
 			signal(w.reads)
+			f.baseline(w.spec.pane)
 		}()
 		return map[string]any{
 			"type": "pane_read",
