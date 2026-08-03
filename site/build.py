@@ -24,7 +24,7 @@ OUT = ROOT / "_site"
 # Order is the nav order. A markdown source means docs/<slug>.md; None means a
 # hand-written fragment at site/pages/<slug>.html.
 PAGES = [
-    ("index", "Overview", None, "Git worktrees for parallel coding agents — adopted, staffed, and removed once the work has landed."),
+    ("index", "Overview", None, "A fleet of coding agents, one git worktree each: started on a GitHub issue, watched while they run, and cleaned up once the work has landed."),
     ("patterns", "Patterns", None, "Handing work to another agent and knowing whether it actually happened: verify don't relay, fixed-slot reports, and what stays in your own head."),
     ("examples", "Examples", None, "Five fan-outs end to end — a Sentry backlog, an issue burn-down, a wide mechanical change, a flaky test, and the case for not fanning out at all."),
     ("dispatch", "Dispatch", "dispatch.md", "Handing a slice of work to another agent and knowing when it is done."),

@@ -1,9 +1,10 @@
 <section class="hero">
-  <p class="eyebrow">herdr plugin &middot; worktrees for a herd of agents</p>
-  <h1>Eleven checkouts.<br>Nobody deletes anything.</h1>
+  <p class="eyebrow">herdr plugin &middot; a fleet of coding agents, one worktree each</p>
+  <h1>Eleven agents.<br>One command each.</h1>
   <p class="lede">
-    <strong>worktender</strong> adopts the worktrees herdr does not know about,
-    staffs the empty ones, and removes what has actually landed.
+    <strong>worktender</strong> starts a coding agent on a GitHub issue in a
+    checkout of its own, tells you which of them have stopped moving, and
+    removes what has actually landed.
   </p>
   <p class="orient">
     <a href="https://github.com/herdrdev/herdr">herdr</a> is the terminal
@@ -20,11 +21,26 @@
 <h2>Is this for you?</h2>
 
 <ul class="qualify">
-  <li>You run <strong>more than one agent at a time</strong>, so you run more than one worktree.</li>
+  <li>You want <strong>several agents working at once</strong>, on real issues, without them colliding.</li>
+  <li>You need to know <strong>which of them has stopped</strong> — and a status that says <code>idle</code> cannot tell you.</li>
   <li>You have checkouts you are <strong>not confident enough to delete</strong>.</li>
   <li>You use herdr, or are willing to.</li>
   <li class="no">One agent in one checkout? You do not need this yet.</li>
 </ul>
+
+<div class="callout">
+  <span class="label">Your coding agent can already spawn agents</span>
+  <p>
+    Claude Code's own subagents take a worktree each, and for a fan-out that
+    fits in one sitting they are the better tool — no install, nothing to run.
+    They are also <em>ephemeral</em>: they live inside one turn, they are a black
+    box while they run, and <strong>everything they find comes back into the
+    parent's context</strong>, which is the ceiling on how many you can have.
+    A worktender worker is a session you can attach to, rescue, and leave running
+    overnight — and it hands back <strong>three slots and a pull request number</strong>,
+    so the work product is in git rather than in anyone's context window.
+  </p>
+</div>
 
 <h2>You will not be typing any of this</h2>
 
@@ -137,7 +153,18 @@ briefed wt-42-fix-the-thing-016aab on #42; wait for it with:
   <a href="dispatch.html">Dispatch</a> has the mechanics.
 </p>
 
-<h2>What it refuses to do</h2>
+<h2>Eleven checkouts, and nobody deletes anything</h2>
+
+<p>
+  That is the state this ends. A few weeks in there are eleven checkouts on
+  disk, some with a herdr workspace and some without, some still holding an
+  agent and some ghosts — and the one you are least certain about is the one you
+  least want to delete. The honest reason nobody cleans up is that
+  <strong>no cleanup script has ever been trustworthy enough to run without
+  reading its output line by line first.</strong>
+</p>
+
+<p>So this one is built to be refused rather than trusted.</p>
 
 <div class="cards">
   <div class="card">

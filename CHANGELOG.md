@@ -175,6 +175,33 @@ install` tracks branch HEAD rather than a tag — the version in
   naming one worker twice — an agent name and its own pane id both resolve — is
   refused rather than watched twice.
 
+- **The homepage and both descriptions now lead with what the plugin does, not
+  with what annoyed its author.** The hero was *"Eleven checkouts. Nobody
+  deletes anything."* — a good line answering the wrong question, and by then
+  contradicting the page beneath it, which documents the `start` → `gate` round
+  trip.
+
+  Both of its claims had also been overtaken. Worktrees are no longer a
+  differentiator: Claude Code's own subagents take `isolation: "worktree"`. And
+  cleanup is the end of the funnel — nobody goes looking for a worktree cleaner
+  until they are already drowning.
+
+  What survives comparison with an ephemeral subagent is not the worktree. It is
+  that a worker is a **session you can attach to, rescue, and leave running**,
+  and that it hands back three slots and a pull request number rather than a
+  context window full of findings — which is the ceiling on how many subagents
+  you can fan out to. The homepage says that now, in a callout that credits
+  subagents for the case where they are the better tool.
+
+  The line was not deleted. It opens the pruning section, where it sets up the
+  argument it was always making.
+
+  The GitHub About field and `herdr-plugin.toml` said something different again,
+  at 133 and 172 characters — and the plugin directory card cuts at about 94, so
+  the payoff never rendered and `start` was invisible. All four surfaces —
+  card, manifest, README subtitle, site meta — now make one claim, and the
+  shortest is 84 characters so nothing truncates.
+
 - **`ls --reports`: what each worker last told its coordinator.** The
   coordinator skill instructs a handoff "before your own context is cleared",
   and there was nowhere structured to write one. The tempting fix was a

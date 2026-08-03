@@ -11,7 +11,7 @@ min_herdr_version = "0.7.5"
 # they will read. `start` creates a worktree, and it is the only thing here that
 # does: the reconcile commands still adopt what they find rather than making
 # any, so "start work on an issue" and "adopt" are named separately.
-description = "Drive git worktrees as herdr workspaces: start an agent on a GitHub issue, then list, adopt, staff and tear down worktrees with their workspace and agent state in one view."
+description = "One command from a GitHub issue to a coding agent working on it in its own worktree."
 platforms = ["linux", "macos", "windows"]
 
 # Build the binary at install time. herdr runs this once, after the install is
