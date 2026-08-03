@@ -794,3 +794,81 @@ func TestGoneUpstreamNeverOverridesPRState(t *testing.T) {
 		})
 	}
 }
+
+// A workspace can outlive its checkout: someone removes the directory, or a
+// `git worktree remove` runs while herdr goes on holding the workspace open.
+//
+// Before this, nothing visited that state. adopt and prune both walk
+// state.Worktrees, and staff walks workspaces but only ever reads through to a
+// worktree — so the workspace was in no pass's iteration and `prune` reported
+// nothing, which reads as "you are clean" on exactly the state this plugin
+// exists to name. It is the mirror of the workspace that vanished underneath
+// the collector; this one stayed while its checkout went.
+func TestGhostWorkspaceWhoseCheckoutHasVanishedIsReported(t *testing.T) {
+	state := reconcile.State{
+		Root:      "/repo",
+		Base:      "main",
+		Worktrees: []reconcile.Worktree{{Path: "/repo/wt/live", Branch: "live", IsLinked: true, WorkspaceID: "w2"}},
+		Workspaces: []reconcile.Workspace{
+			{ID: "w2", CheckoutPath: "/repo/wt/live", IsLinked: true, PaneIDs: []string{"w2:p1"}},
+			{ID: "w35", CheckoutPath: "/repo/wt/gone", IsLinked: true, PaneIDs: []string{"w35:p1"}},
+		},
+		AgentPanes: map[string]reconcile.AgentState{"w2:p1": reconcile.AgentWorking},
+	}
+
+	actions := reconcile.Reconcile(state)
+
+	ghost := find(actions, reconcile.KindGhost, "/repo/wt/gone")
+	if ghost == nil {
+		t.Fatal("a workspace whose checkout is gone should be reported")
+	}
+	if ghost.WorkspaceID != "w35" {
+		t.Errorf("the report must name the workspace to close, got %q", ghost.WorkspaceID)
+	}
+	if ghost.Reason == "" {
+		t.Error("a ghost must say what it is; the reason is the whole point of the verdict")
+	}
+	if find(actions, reconcile.KindGhost, "/repo/wt/live") != nil {
+		t.Error("a workspace whose checkout is right there is not a ghost")
+	}
+}
+
+// Diagnosis only. There is no checkout left to test for uncommitted work, so
+// the strongest guard this plugin has is not unsatisfied but unavailable — and
+// a ghost can still host a live agent whose conversation closing the workspace
+// would destroy. A removal, if one is ever added, wants its own command.
+func TestGhostIsNeverPruned(t *testing.T) {
+	state := reconcile.State{
+		Root: "/repo",
+		Base: "main",
+		Workspaces: []reconcile.Workspace{
+			{ID: "w35", CheckoutPath: "/repo/wt/gone", IsLinked: true, PaneIDs: []string{"w35:p1"}},
+		},
+		AgentPanes:    map[string]reconcile.AgentState{},
+		ReleaseAgents: true,
+	}
+
+	for _, a := range reconcile.Reconcile(state) {
+		if a.Kind == reconcile.KindPrune {
+			t.Errorf("a ghost must never be planned for removal, got %+v", a)
+		}
+	}
+}
+
+// The join that missed did not merely hide the workspace: staff read through it
+// to a zero Worktree, so an empty-paned ghost was planned an agent on an empty
+// branch in a directory that is not there.
+func TestGhostIsNeverStaffed(t *testing.T) {
+	state := reconcile.State{
+		Root: "/repo",
+		Base: "main",
+		Workspaces: []reconcile.Workspace{
+			{ID: "w35", CheckoutPath: "/repo/wt/gone", IsLinked: true, PaneIDs: []string{"w35:p1"}},
+		},
+		AgentPanes: map[string]reconcile.AgentState{},
+	}
+
+	if a := find(reconcile.Reconcile(state), reconcile.KindStaff, "/repo/wt/gone"); a != nil {
+		t.Errorf("there is no directory to start an agent in, got %+v", a)
+	}
+}

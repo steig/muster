@@ -111,9 +111,10 @@ func (e *Executor) Run(actions []reconcile.Action) []Result {
 	results := make([]Result, 0, len(actions))
 	for _, action := range actions {
 		switch action.Kind {
-		case reconcile.KindKeep:
-			// Explanatory only: it lets the report say why a worktree was
-			// spared instead of silently omitting it.
+		case reconcile.KindKeep, reconcile.KindGhost:
+			// Explanatory only: they let the report say why a worktree was
+			// spared, and name a workspace whose checkout is gone, instead of
+			// silently omitting either.
 			results = append(results, Result{action, StatusSkipped, action.Reason})
 		case reconcile.KindAdopt:
 			results = append(results, e.adopt(action))

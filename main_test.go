@@ -592,3 +592,51 @@ func TestLsRefusesPullRequestStateAcrossRepositories(t *testing.T) {
 		t.Errorf("the error must name the combination, got: %v", err)
 	}
 }
+
+// End to end over the wire, which is where this was found: herdr held three
+// workspaces pointing into a directory that no longer existed, `worktender ls`
+// printed one row, and `prune` reported nothing. "Nothing to do" is the same
+// output a clean repository gets, so the tool that exists to say which of the
+// things on disk are real was the one thing that could not see them.
+//
+// The shape the fake can express exactly: a workspace.list entry whose
+// checkout_path no worktree.list entry mentions.
+func TestPruneNamesAWorkspaceWhoseCheckoutHasVanished(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	gone := filepath.Join(repo.Root, "..", "vanished")
+
+	server := fakeSession(t, repo)
+	server.HandleResult("worktree.list", map[string]any{
+		"type": "worktree_list",
+		"source": map[string]any{"repo_key": "k", "repo_name": "repo",
+			"repo_root": repo.Root, "source_checkout_path": repo.Root},
+		"worktrees": []map[string]any{},
+	})
+	server.HandleResult("workspace.list", workspaceListReply(repo, gone, "w35"))
+	server.HandleResult("agent.list", map[string]any{"type": "agent_list", "agents": []map[string]any{}})
+	server.HandleResult("pane.list", map[string]any{"type": "pane_list",
+		"panes": []map[string]any{{"pane_id": "w35:p1"}}})
+
+	var out strings.Builder
+	if err := pruneCommand(nil, &out, false); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, "nothing to do") {
+		t.Errorf("a ghost workspace read as a clean repository:\n%s", got)
+	}
+	if !strings.Contains(got, "ghost") {
+		t.Errorf("prune should name the verdict, got:\n%s", got)
+	}
+	if !strings.Contains(got, "vanished") {
+		t.Errorf("prune should name the checkout herdr is holding open, got:\n%s", got)
+	}
+	// Diagnosis only: naming it must not start anything or close anything.
+	for _, call := range server.Calls() {
+		switch call.Method {
+		case "worktree.remove", "workspace.close", "agent.start":
+			t.Errorf("a ghost is diagnosis only; prune called %s", call.Method)
+		}
+	}
+}

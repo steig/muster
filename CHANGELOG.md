@@ -8,6 +8,36 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Added
+
+- **`ls` and `prune` now report a workspace whose checkout has vanished.** (#75)
+  herdr can hold a workspace open on a directory git no longer lists — what
+  removing a checkout out from under it leaves behind. Nothing visited that
+  state: `adopt` and `prune` both walk worktrees, and `staff` walks workspaces
+  but only ever reads through to a worktree, so a workspace that outlived its
+  checkout was in no pass's iteration. Found live against 0.7.0, where herdr
+  held three workspaces pointing into a directory that did not exist, `ls`
+  printed one row, and `prune` reported nothing — which is the output a clean
+  repository gets, on precisely the question this plugin exists to answer.
+
+  `ls` marks such a row `?` and `prune` reports a `ghost` verdict; `--json`
+  carries `"ghost": true` on the entry, with `branch` null because there is no
+  checkout left to have one. It is the mirror of #66 — that was a workspace
+  vanishing underneath the collector, this is one outliving its checkout.
+
+  **Diagnosis only, deliberately.** Closing a workspace is a different authority
+  from removing a worktree and does not inherit the prune guards: there is no
+  checkout left to test for uncommitted work, so the strongest guard this plugin
+  has is not unsatisfied but unavailable, and a ghost's panes can still hold a
+  live agent whose conversation closing the workspace would destroy. Nothing
+  here removes or closes anything. If a removal is added later it wants its own
+  command rather than a widening of `prune-apply`.
+
+  Staffing also no longer plans an agent for a ghost. The join that hid these
+  workspaces did not merely omit them — `staff` read through to a zero worktree,
+  so an agentless ghost was planned an agent on an empty branch in a directory
+  that is not there.
+
 ### Changed
 
 - **`ls` no longer prints the branch name twice.** (#133) `start` names a

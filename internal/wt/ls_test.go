@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -676,5 +677,105 @@ func TestLsFailsWhenWorkspaceListFails(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("no listing should be printed when the status is unknown:\n%s", buf.String())
+	}
+}
+
+// worktreeList and workspaceList build the two herdr replies Rows joins.
+func worktreeList(root string, paths ...string) *herdrapi.WorktreeListResponse {
+	resp := &herdrapi.WorktreeListResponse{
+		Source: herdrapi.WorktreeSourceInfo{RepoRoot: root, SourceCheckoutPath: root},
+	}
+	for _, p := range paths {
+		branch := filepath.Base(p)
+		resp.Worktrees = append(resp.Worktrees, herdrapi.WorktreeInfo{
+			Path: p, Branch: &branch, IsLinkedWorktree: true,
+		})
+	}
+	return resp
+}
+
+func workspaceOn(id, repoRoot, checkout string) herdrapi.WorkspaceInfo {
+	return herdrapi.WorkspaceInfo{
+		WorkspaceID: id, AgentStatus: "unknown",
+		Worktree: &herdrapi.WorkspaceWorktreeInfo{
+			RepoRoot: repoRoot, CheckoutPath: checkout, IsLinkedWorktree: true,
+		},
+	}
+}
+
+// A workspace can outlive its checkout, and a listing built only from git's
+// worktrees cannot see that: the row is simply absent, which is the output a
+// clean repository gets. This listing exists to say which of the things on disk
+// are real, so the one state it could not name was the one it is for.
+func TestRowsReportsAWorkspaceWhoseCheckoutIsGone(t *testing.T) {
+	rows := wt.Rows(
+		worktreeList("/repo", "/repo/wt/live"),
+		&herdrapi.WorkspaceListResponse{Workspaces: []herdrapi.WorkspaceInfo{
+			workspaceOn("w2", "/repo", "/repo/wt/live"),
+			workspaceOn("w35", "/repo", "/repo/wt/gone"),
+		}},
+	)
+
+	if len(rows) != 2 {
+		t.Fatalf("want the live worktree and the ghost, got %d: %+v", len(rows), rows)
+	}
+	ghost := rows[1]
+	if !ghost.Ghost {
+		t.Errorf("the workspace with no worktree should be a ghost row: %+v", ghost)
+	}
+	if ghost.WorkspaceID != "w35" {
+		t.Errorf("the row must name the workspace, got %q", ghost.WorkspaceID)
+	}
+	if ghost.Branch != "" {
+		t.Errorf("there is no checkout left to have a branch, got %q", ghost.Branch)
+	}
+	if ghost.Dir != "gone" {
+		t.Errorf("the row should name the path herdr still believes in, got %q", ghost.Dir)
+	}
+	if rows[0].Ghost {
+		t.Error("a worktree that is right there is not a ghost")
+	}
+}
+
+// workspace.list is session-wide. Without the repository filter every other
+// repository's worktrees arrive as ghosts of this one, which would turn a
+// listing that missed three rows into one that invents a dozen.
+func TestRowsDoesNotReportAnotherRepositorysWorkspacesAsGhosts(t *testing.T) {
+	rows := wt.Rows(
+		worktreeList("/repo", "/repo/wt/live"),
+		&herdrapi.WorkspaceListResponse{Workspaces: []herdrapi.WorkspaceInfo{
+			workspaceOn("w2", "/repo", "/repo/wt/live"),
+			workspaceOn("w9", "/elsewhere", "/elsewhere/wt/other"),
+		}},
+	)
+
+	for _, row := range rows {
+		if row.Ghost {
+			t.Errorf("another repository's workspace is not this one's ghost: %+v", row)
+		}
+	}
+}
+
+// The marker column carries it, because the table is already the widest thing
+// this tool prints and a seventh column blank on every ordinary listing earns
+// nothing.
+func TestRenderMarksAGhostRow(t *testing.T) {
+	var buf bytes.Buffer
+	if err := wt.Render(&buf, []wt.Row{
+		{Main: true, Branch: "main", Dir: "repo"},
+		{WorkspaceID: "w35", AgentStatus: "unknown", Dir: "gone", Ghost: true},
+	}, wt.Columns{}); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if !strings.HasPrefix(lines[0], "*") {
+		t.Errorf("main checkout should still be marked with *, got %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "?") {
+		t.Errorf("a ghost row should be marked, got %q", lines[1])
+	}
+	if !strings.Contains(lines[1], "gone") {
+		t.Errorf("the ghost row must name the checkout herdr holds open, got %q", lines[1])
 	}
 }
