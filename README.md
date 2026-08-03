@@ -1,7 +1,7 @@
 # worktender
 
-**Git worktrees for parallel coding agents — adopted, staffed, and removed once
-the work has landed.**
+**A fleet of coding agents, one git worktree each — started on a GitHub issue,
+watched while they run, and cleaned up once the work has landed.**
 
 A [herdr](https://github.com/herdrdev/herdr) plugin. herdr is the terminal
 multiplexer coding agents run in; this plugin keeps its workspaces and your git
