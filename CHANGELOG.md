@@ -8,6 +8,10 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.8.1] — 2026-08-02
+
 ### Fixed
 
 - **The report column was documented as printing an empty cell, and prints a
