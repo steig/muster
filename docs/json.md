@@ -44,6 +44,12 @@ branch nobody opened a pull request for, and the verdict that follows is *keep*,
 so prune keeps everything while every reason it prints reads as ordinary.
 `doctor` exists to explain that in prose. The JSON says it in a field.
 
+The directory column spends the same `-` on something that is not an absence at
+all: it prints one when the directory is named after the branch, which is every
+worktree `start` made. The table would otherwise put the widest name in it
+twice. Nothing is lost — `dir` is populated in the JSON on every row, whether or
+not the table drew it.
+
 ## `ls --json`
 
 ```sh

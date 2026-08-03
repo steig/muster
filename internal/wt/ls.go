@@ -341,7 +341,7 @@ func renderRows(w io.Writer, rows []Row, cols Columns, indent string) {
 		if cols.PR {
 			cells = append(cells, cell(prCell(row.PR)))
 		}
-		cells = append(cells, cell(row.Dir))
+		cells = append(cells, cell(dirCell(row)))
 		fmt.Fprintln(w, strings.Join(cells, "\t"))
 	}
 }
@@ -393,6 +393,24 @@ func RenderRepos(w io.Writer, repos []Repo, opts Options) error {
 		fmt.Fprintf(w, "no blocked agents in %d %s\n", len(repos), noun)
 	}
 	return nil
+}
+
+// dirCell is the directory column, empty when the directory is named after the
+// branch — which is every worktree `start` made, since it derives one from the
+// other. Printing both put the widest name in the table twice and pushed the
+// default listing past 120 columns before any optional column was asked for.
+//
+// The column earns its place on the rows where it disagrees: a checkout herdr
+// adopted rather than created sits in a directory with no relation to its
+// branch, and that is the row a reader most needs the path for.
+//
+// Only the table collapses. `--json` carries both fields populated always, so
+// nothing reading this listing as data has to reassemble the name.
+func dirCell(row Row) string {
+	if row.Dir == row.Branch {
+		return ""
+	}
+	return row.Dir
 }
 
 // cell is one column's text: escaped, and a dash when there is nothing to show.

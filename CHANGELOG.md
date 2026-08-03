@@ -8,7 +8,26 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **`ls` no longer prints the branch name twice.** (#133) `start` names a
+  worktree's directory after its branch, so on every worktree this plugin
+  created the `branch` and `dir` columns held the same string — and it is the
+  widest string in the table. The default six-column listing reached 133
+  characters on a realistic fleet, overflowing a 120-column terminal before
+  `--pr` or `--reports` were asked for, and roughly 50 of those characters were
+  the duplication.
+
+  `dir` now prints `-` when it matches the branch. The column keeps its place on
+  the rows where it disagrees, which is the case it exists for: a checkout
+  adopted rather than created — `worktree/brave-valley` sitting in
+  `brave-valley-66f8` — still prints its directory, and that is the row a reader
+  most needs it for. Dropping the column outright would have lost that.
+
+  This is the table only. `--json` carries `dir` populated on every row exactly
+  as before, so nothing reading the listing as data has to reassemble the name.
+  `README.md` and `docs/json.md` both say what the new `-` means, since the
+  directory column is now the one place a dash is not an absence.
 
 ## [0.8.1] — 2026-08-02
 

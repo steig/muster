@@ -44,6 +44,12 @@ directory. `*` marks the repository's main checkout; `-` means herdr has nothing
 for that worktree — the last row is a checkout with no workspace and no agent,
 which is exactly what `sync` picks up.
 
+The directory column is the exception to that reading: it prints `-` when the
+directory is named after the branch, which is every worktree `start` made. It
+has something to say on the rows above, where it disagrees — a checkout adopted
+rather than created sits somewhere with no relation to its branch. `--json`
+carries both fields populated either way.
+
 The pane is the one `dispatch --pane` takes.
 
 The counter is herdr's own, and it is what `idle` cannot tell you: `idle` is the
