@@ -117,6 +117,55 @@ func TestRenderAlignsColumns(t *testing.T) {
 	}
 }
 
+// `start` derives the directory from the branch, so for every worktree this
+// plugin made the two columns held the same string — and it is the widest
+// string in the table. The default listing overflowed 120 columns on the
+// duplication alone, before any optional column was asked for.
+func TestRenderDoesNotPrintTheBranchNameTwice(t *testing.T) {
+	branch := "133-ls-prints-the-branch-name-twice"
+
+	var buf bytes.Buffer
+	if err := wt.Render(&buf, []wt.Row{
+		{Branch: branch, WorkspaceID: "w2", PaneID: "w2:p1", AgentStatus: "working", Dir: branch},
+	}, wt.Columns{}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if strings.Count(out, branch) != 1 {
+		t.Errorf("the branch name should appear once, got %d:\n%s",
+			strings.Count(out, branch), out)
+	}
+	if !strings.Contains(out, branch) {
+		t.Errorf("the row must still say which branch it is:\n%s", out)
+	}
+}
+
+// The column earns its place on exactly the rows where it disagrees with the
+// branch. A checkout herdr adopted rather than created sits in a directory with
+// no relation to its branch, and that is the row a reader most needs it for —
+// so the collapse is per row, never a dropped column.
+func TestRenderKeepsADirectoryThatIsNotTheBranch(t *testing.T) {
+	var buf bytes.Buffer
+	if err := wt.Render(&buf, []wt.Row{
+		{Branch: "133-ls-prints-the-branch-name-twice", Dir: "133-ls-prints-the-branch-name-twice"},
+		{Branch: "worktree/brave-valley", Dir: "brave-valley-66f8"},
+	}, wt.Columns{}); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d: %q", len(lines), buf.String())
+	}
+	if !strings.Contains(lines[1], "brave-valley-66f8") {
+		t.Errorf("an adopted checkout must still print its directory: %q", lines[1])
+	}
+	if !strings.HasSuffix(strings.TrimRight(lines[0], " "), "-") {
+		t.Errorf("the collapsed row should end in the absent-cell dash: %q", lines[0])
+	}
+}
+
 // git refuses ASCII control characters in a ref name but accepts a bidi
 // override, so `evil<U+202E>hctap` is a branch anyone who can open a pull
 // request can create — and a terminal draws it as `evilpatch`. The row is
