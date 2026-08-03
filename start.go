@@ -61,9 +61,9 @@ func startCommand(args []string, out io.Writer) error {
 	// repositories open is routinely not the one the caller means.
 	var s *session
 	if *repo != "" {
-		s, err = newSessionIn(*repo)
+		s, err = newSessionIn(*repo, herdrRequired)
 	} else {
-		s, err = newSession(false)
+		s, err = newSession(false, herdrRequired)
 		// The context is injected only when herdr invokes a plugin action, and
 		// `start` cannot be one — it is nothing without its issue number. So a
 		// shell reaching this has no way forward that the error does not name.

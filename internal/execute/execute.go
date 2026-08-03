@@ -327,6 +327,18 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason st
 // checkout open in, empty when there is none. Paths are compared normalised, or
 // re-asking herdr buys nothing.
 func (e *Executor) workspaceHolding(checkout string) (string, error) {
+	// A nil client means the dial found nothing listening, so there are no
+	// workspaces and nothing holds anything.
+	//
+	// This is the guard that runs closest to the removal, and what makes the
+	// answer true is the probe rather than the nil: "we were not told where
+	// herdr is" would be the same nil and would not license it, because a plain
+	// shell is exactly where herdr goes unnamed while it runs. See
+	// herdrapi.Probe — nothing may set this nil without dialling first.
+	if e.Client == nil {
+		return "", nil
+	}
+
 	workspaces, err := e.Client.WorkspaceList()
 	if err != nil {
 		return "", err

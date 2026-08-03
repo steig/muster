@@ -308,13 +308,138 @@ A few things worth knowing before step 5 surprises you:
 - **herdr 0.7.0+** — this is a plugin; it talks to herdr over its local socket.
   Every measured behaviour behind `report` and `gate` was tested against **0.7.5**
   and nothing checks the running version, so prefer 0.7.5+ if you intend to use
-  the hand-off pair.
+  the hand-off pair. **`ls`, `prune` and `prune-apply` do not need it** — see
+  [Without herdr](#without-herdr).
 - **git**
 - **jq** — for reading action output out of the plugin log, as above.
 - **gh**, *authenticated* *(optional)* — only used to read pull request state.
   Without it, the only removals left are the ones a deleted upstream authorises
   (see [How removal is decided](docs/pruning.md)), and a
   repository that uses pull requests will prune almost nothing.
+
+## Without herdr
+
+The removal rules are entirely git and gh — uncommitted work, commits base does
+not have, a deleted upstream, a merged pull request. None of them is a herdr
+question. So the commands built on them run with herdr absent:
+
+```sh
+$ worktender ls
+*  main                    -  -  -  -  worktender
+   120-json-stops-here     -  -  -  -  -
+   worktree/brave-valley   -  -  -  -  brave-valley-66f8
+```
+
+The workspace, pane, agent and counter columns are empty because **those facts
+do not exist**, not because they could not be read — with no herdr there are no
+workspaces and no agents. `prune` and `prune-apply` reach exactly the verdicts
+they would otherwise, and `prune-apply` removes what it says it will.
+
+The commands whose whole job is herdr — `start`, `dispatch`, `sync`, `gate` —
+exit **2**, the environment class, and say what is missing. Not a usage error:
+the command was spelled correctly and the machine could not answer it. So do
+`ls --blocked` and `ls --reports`: both ask what agents are doing, and an empty
+answer would read as *no agent is blocked* rather than as *no way to tell*.
+`ls --all-repos` is the same — its scope is herdr's open workspaces.
+
+### How absence is established
+
+By **dialling herdr's socket**, not by looking at `HERDR_SOCKET_PATH`.
+
+The distinction is the one this whole section rests on. herdr exports that
+variable into the plugin commands and panes it starts, and **not** into your own
+terminal — so its absence is the normal state of a shell whether or not herdr is
+running behind it. Treating that as "no herdr" in your terminal would report a
+repository as having no workspaces and no agents while herdr held four of them,
+and `prune-apply` would then delete a checkout an agent was working in.
+
+So worktender connects to `$HERDR_SOCKET_PATH` when herdr named one, and
+otherwise to every endpoint a herdr on this machine could be listening on — the
+default session at `$XDG_CONFIG_HOME/herdr/herdr.sock` (`~/.config/herdr/`), and
+one per named session at `.../herdr/sessions/<name>/herdr.sock`. This costs one
+connect per invocation — microseconds against a live socket, an immediate "no
+such file" against none — and it buys the guarantee that degrading is never a
+guess.
+
+Enumerating the named sessions matters for the same reason dialling does. A
+plain shell beside `herdr --session work`, with no default session running,
+would otherwise find nothing at the default path and call that proof — and
+`prune-apply` would delete a checkout that session's agent was working in. The
+mirror reaches it too: a stale `HERDR_SOCKET_PATH` from a session that has
+exited, while another herdr runs. A name that resolves to nothing is evidence
+about the name, so worktender falls through it and keeps looking.
+
+**Exactly one outcome counts as proof that herdr is gone: there is no socket at
+any of them.** A running herdr always has its socket on disk, and none anywhere
+is the ordinary state of a machine that does not run herdr — the case this
+exists for.
+
+If **two** sessions are running and nothing says which, worktender stops and
+asks you to set `HERDR_SOCKET_PATH`. Guessing is not the smaller error: the
+wrong session lists the wrong workspaces, so a checkout with a live agent in it
+reads as held by nobody — the same failure through a different door.
+
+Every other failure is "cannot tell", and worktender stops with exit 2 rather
+than assume, because "cannot tell" resolving to "not there" is how the guard
+gets disarmed.
+
+That includes a **refused connection**, which is the tempting one: a socket file
+with nobody accepting reads as a herdr that died. It is not proof, because it is
+not only produced by a dead herdr. Dialling, measured on both platforms:
+
+| what is at the path | macOS | Linux |
+| --- | --- | --- |
+| nothing | `ENOENT` | `ENOENT` |
+| a directory or an ordinary file | `ENOTSOCK` | `ECONNREFUSED` |
+| a socket, no listener | `ECONNREFUSED` | `ECONNREFUSED` |
+| **a live listener whose accept queue is full** | **`ECONNREFUSED`** | timeout |
+
+The last row settles it. On macOS a herdr that is running, listening and merely
+backed up refuses the connection, and nothing cheap tells that apart from a
+socket with nobody behind it — so treating `ECONNREFUSED` as proof would let a
+busy herdr read as gone, which is the whole failure this section exists to
+prevent. Retrying does not help: a herdr under sustained load stays refused.
+`ENOENT` is also the only rule that gives the same verdict on both platforms for
+every row, so the destructive path cannot unlock on one and not the other.
+
+The cost is the third row: a herdr killed without cleaning up leaves its socket
+behind, and worktender then refuses rather than degrading. That is the right way
+round — refusing prints an error you can act on, degrading wrongly deletes a
+checkout — and the error names the stale socket to remove.
+
+Two consequences worth knowing:
+
+- Run worktender from your terminal while herdr is up — default session or
+  named — and you get the **full** listing, workspace and agent columns
+  included, without exporting anything.
+- On **Windows** herdr is addressed by a named pipe rather than a socket under a
+  config directory, and worktender does not know how that pipe is named. So it
+  cannot establish absence there and refuses instead of degrading: `ls`, `prune`
+  and `prune-apply` need `HERDR_SOCKET_PATH`, which herdr sets for the commands
+  it runs. Run as a herdr plugin, Windows is unaffected. Making the degraded
+  path work from a bare Windows shell needs pipe discovery and is not done here.
+
+### The one guard that cannot run
+
+With herdr running, `prune` refuses a worktree whose pane hosts a working agent.
+With herdr genuinely down that guard cannot run — and there is then nothing for
+it to protect, because an agent lives in a pane inside a workspace, and both are
+herdr's. That argument is only sound because absence is established by a dial:
+it is reasoning about a herdr that is *not there*, and it would be worthless as
+reasoning about a herdr that merely went unnamed. The guards that matter to
+*your* work — uncommitted changes, unmerged commits — are git's, and they are
+untouched either way.
+
+One more thing that is not a guard but is worth stating: run from a plain shell,
+`prune-apply` holds no repository lock, because the lock lives in the plugin
+state directory herdr provides. Two prune-applies at once, or one racing a
+herdr-driven reconcile, are not serialised against each other. Every guard is
+re-checked at the moment of removal regardless, so the cost is repeated work
+rather than lost work.
+
+Note this is about herdr not *running*. Installed as a herdr plugin, herdr is
+present by definition; what this covers is the binary invoked from a plain
+shell.
 
 ## Actions
 

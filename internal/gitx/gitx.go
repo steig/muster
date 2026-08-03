@@ -252,3 +252,74 @@ func RemoteURL(root string) string {
 	}
 	return out
 }
+
+// Worktree is one checkout as `git worktree list --porcelain` describes it.
+//
+// It is deliberately the subset herdr's own worktree.list carries, so the two
+// sources can fill the same reconcile input rather than one of them being a
+// second shape the decision layer has to know about.
+type Worktree struct {
+	Path   string
+	Branch string
+	// IsLinked is false for the repository's main checkout, which porcelain
+	// always lists first.
+	IsLinked bool
+	IsBare   bool
+}
+
+// Worktrees enumerates the repository's checkouts from git rather than herdr.
+//
+// herdr's worktree.list is the source whenever herdr is there, because it also
+// answers which workspace holds each checkout open — a question git cannot be
+// asked. This exists for the case where herdr is not running at all: every
+// prune guard is git or gh, so the verdicts do not need herdr, and only the
+// enumeration did.
+//
+// The porcelain format is stanzas separated by blank lines, one `worktree`
+// line each, and it is the stable interface — the human-readable form is not.
+// A detached checkout has no `branch` line, so its branch stays empty, which is
+// the same absence herdr reports as a null.
+func Worktrees(root string) ([]Worktree, error) {
+	out, err := run(root, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		list    []Worktree
+		current *Worktree
+	)
+	flush := func() {
+		if current != nil {
+			// Porcelain lists the main checkout first and linked ones after,
+			// which is the only signal in the format for which is which.
+			current.IsLinked = len(list) > 0
+			list = append(list, *current)
+			current = nil
+		}
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			current = &Worktree{Path: Resolve(strings.TrimPrefix(line, "worktree "))}
+		case current == nil:
+			// A stanza key before any `worktree` line is not a shape git
+			// produces; ignoring it keeps a future key from being read as a
+			// checkout.
+		case line == "bare":
+			current.IsBare = true
+		case strings.HasPrefix(line, "branch "):
+			current.Branch = strings.TrimPrefix(
+				strings.TrimPrefix(line, "branch "), "refs/heads/")
+		}
+	}
+	flush()
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read git worktree list in %s: %w", root, err)
+	}
+	return list, nil
+}

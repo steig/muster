@@ -121,6 +121,62 @@ type session struct {
 	dir    string
 }
 
+// herdrNeed says whether a command can do its job with herdr absent. A named
+// type rather than a second bool: `newSession(true, false)` at a call site says
+// nothing about which switch is which, and these two are easy to swap.
+type herdrNeed bool
+
+const (
+	// herdrRequired is for the commands whose whole job is herdr — opening
+	// workspaces, starting agents, reading a pane.
+	herdrRequired herdrNeed = true
+	// herdrOptional is for the commands whose guards are entirely git and gh.
+	// They run with herdr absent, reporting empty workspace, pane and agent
+	// columns, because those facts do not exist rather than could not be read.
+	herdrOptional herdrNeed = false
+)
+
+// dialHerdrIfPresent returns a live client, or a nil one when herdr is not
+// running and the caller said it could manage without.
+//
+// A nil client is the signal the layers below read: reconcile.Collector sources
+// the checkouts from git instead, and wt.Ls leaves the herdr columns empty. It
+// is deliberately nil rather than a stub that errors, so a caller that forgets
+// to handle it panics in a test rather than degrading in front of a user.
+//
+// It is herdrapi.Probe behind this and not herdrapi.New, and the difference is
+// the whole safety argument. New reads HERDR_SOCKET_PATH, which answers whether
+// herdr *started us* — false in the user's own terminal, where herdr may be
+// running behind it with agents in panes. Degrading on that reading disarms the
+// guard sparing a checkout an agent is standing in, and `prune-apply` then
+// force-removes it. Probe dials, so absence means absence.
+//
+// Exit 2 restates the class an untagged error would already land in — see
+// exitCode — and is written out because this site knows which class it is
+// rather than inheriting the catch-all. Not a usage error: the command was
+// spelled correctly and the machine could not answer it.
+func dialHerdrIfPresent(need herdrNeed) (*herdrapi.Client, error) {
+	client, err := herdrapi.Probe()
+	switch {
+	case err == nil:
+		return client, nil
+
+	// A dial that did not finish establishes nothing, and only proof of absence
+	// licenses degrading — see herdrapi.ErrHerdrUnknown. Fatal even for the
+	// commands that can manage without herdr, because "cannot tell" resolving
+	// to "not there" is how a checkout an agent is standing in gets removed.
+	case errors.Is(err, herdrapi.ErrHerdrUnknown):
+		return nil, withCode(exitEnvironment, fmt.Errorf(
+			"%w; refusing to assume it is not, because that would disarm the guard "+
+				"protecting a checkout an agent is working in", err))
+
+	case need == herdrRequired:
+		return nil, withCode(exitEnvironment, fmt.Errorf(
+			"%w; this command needs herdr running. `ls`, `prune` and `prune-apply` do not", err))
+	}
+	return nil, nil
+}
+
 // newSession resolves which repository to work on.
 //
 // allowFallback decides what happens when herdr supplied no invocation context.
@@ -130,10 +186,25 @@ type session struct {
 //
 // A malformed context is fatal either way: it is a bug to surface, not a state
 // to default around.
-func newSession(allowFallback bool) (*session, error) {
-	client, err := herdrapi.New()
+//
+// With herdr absent there is never a context, so the fallback is the only path
+// that resolves anything at all — which is why the two axes are separate: a
+// command can require a named repository and still not require herdr. A
+// herdr-free `prune-apply` therefore falls back even though it changes things:
+// the hazard the refusal exists for is herdr's, and with no herdr there is no
+// herdr to invoke us from the plugin root.
+func newSession(allowFallback bool, need herdrNeed) (*session, error) {
+	client, err := dialHerdrIfPresent(need)
 	if err != nil {
 		return nil, err
+	}
+	// The refusal below guards against herdr running the command with cwd set
+	// to the plugin root, which is itself a git repository — so a destructive
+	// command falling back to cwd would target this plugin's own checkout. That
+	// is a hazard herdr creates by invoking us, and a probe that found no herdr
+	// has ruled it out: the working directory is the user's shell's.
+	if client == nil {
+		allowFallback = true
 	}
 
 	ctx, err := herdrapi.LoadContext()
@@ -181,8 +252,8 @@ func newSession(allowFallback bool) (*session, error) {
 // .` from a subdirectory behaves the same as naming the root. Nothing here falls
 // back: a path that is not a repository is an error, because the whole point of
 // naming one is to stop the resolution from wandering.
-func newSessionIn(repo string) (*session, error) {
-	client, err := herdrapi.New()
+func newSessionIn(repo string, need herdrNeed) (*session, error) {
+	client, err := dialHerdrIfPresent(need)
 	if err != nil {
 		return nil, err
 	}
@@ -345,8 +416,10 @@ func lsCommand(args []string, out io.Writer) error {
 			return usagef("--pr cannot be combined with --all-repos: the lookup is one `gh` call per branch in series, and it is scoped to one repository, so across several it would be slow and asking the wrong repository; run `ls --pr` in the one you care about")
 		}
 		// No session: the scope is herdr's open worktree workspaces, so this
-		// answers from outside a repository the same way `doctor` does.
-		client, err := herdrapi.New()
+		// answers from outside a repository the same way `doctor` does — and
+		// for the same reason it is the one `ls` that herdr's absence leaves
+		// nothing to answer. An empty listing would be a lie about the fleet.
+		client, err := dialHerdrIfPresent(herdrRequired)
 		if err != nil {
 			return err
 		}
@@ -358,9 +431,28 @@ func lsCommand(args []string, out io.Writer) error {
 	}
 
 	// Read-only: usable from a plain shell.
-	s, err := newSession(true)
+	s, err := newSession(true, herdrOptional)
 	if err != nil {
 		return err
+	}
+
+	// Both of these are questions about agents, and with no herdr there is
+	// nothing that could answer them. Refused rather than answered emptily:
+	// `--blocked` would print "no blocked agents", and `--reports` a column of
+	// dashes that reads as "nobody has reported" — each a claim about a fleet
+	// this process cannot see. It is the degradation listRows refuses for a
+	// workspace list that failed, arriving through the flags instead.
+	if s.client == nil {
+		switch {
+		case *blocked:
+			return withCode(exitEnvironment, fmt.Errorf(
+				"%w; --blocked filters on herdr's agent status, and an empty listing would read as "+
+					"no blocked agents rather than as no way to tell", herdrapi.ErrNoHerdr))
+		case *reports:
+			return withCode(exitEnvironment, fmt.Errorf(
+				"%w; --reports reads each worker's last report off its pane, and herdr owns the panes",
+				herdrapi.ErrNoHerdr))
+		}
 	}
 
 	// Opt-in, because it is one `gh` invocation per branch and they run in
@@ -392,7 +484,7 @@ func syncCommand(args []string, out io.Writer) error {
 	}
 
 	// Opens workspaces and starts agents, so it must be told where.
-	s, err := newSession(false)
+	s, err := newSession(false, herdrRequired)
 	if err != nil {
 		return err
 	}
@@ -471,9 +563,9 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	var s *session
 	var err error
 	if *repo != "" {
-		s, err = newSessionIn(*repo)
+		s, err = newSessionIn(*repo, herdrOptional)
 	} else {
-		s, err = newSession(!apply)
+		s, err = newSession(!apply, herdrOptional)
 	}
 	if err != nil {
 		return err

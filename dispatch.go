@@ -51,7 +51,7 @@ func dispatchCommand(args []string, out io.Writer) error {
 
 	// Dispatch reads herdr and starts an agent; it changes no worktree and
 	// removes nothing, so it needs no repository and takes no lock.
-	s, err := newSession(true)
+	s, err := newSession(true, herdrRequired)
 	if err != nil {
 		return err
 	}

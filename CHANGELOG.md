@@ -8,6 +8,83 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Added
+
+- **`ls`, `prune` and `prune-apply` now run with herdr absent.** (#122) Every
+  removal guard is already entirely git and gh — uncommitted work, commits base
+  does not have, a deleted upstream, a merged pull request — so the verdicts
+  never needed herdr. The one fact that did was the enumeration, which came from
+  herdr's `worktree.list`; `gitx.Worktrees` now answers it from
+  `git worktree list --porcelain` when there is no herdr to ask.
+
+  The workspace, pane, agent and counter columns come back empty, and that is
+  the honest answer rather than a degraded one: with no herdr those facts do not
+  exist, where a herdr that failed to answer has them and will not say which.
+  The distinction is recorded as `State.HerdrAbsent` rather than inferred from
+  an empty workspace list, because a repository whose checkouts herdr has simply
+  not opened yet is exactly what `adopt` exists for — reading that as "herdr is
+  gone" would stop the plugin working on first run.
+
+  Absence is established by **dialling** herdr's socket, not by reading
+  `HERDR_SOCKET_PATH`. Those are different facts and the difference is the whole
+  safety argument: herdr exports that variable into the commands and panes it
+  starts and not into the user's own terminal, so its absence there says nothing
+  about whether herdr is running. Read as absence, a terminal beside a live
+  herdr reports no workspaces and no agents, the guard sparing a checkout an
+  agent is standing in never fires, and `prune-apply` force-removes it. The
+  The endpoint is `$HERDR_SOCKET_PATH` when herdr named one, and otherwise every
+  endpoint a herdr could be on: the default session at
+  `$XDG_CONFIG_HOME/herdr/herdr.sock` and one per named session under
+  `.../herdr/sessions/`. Absence means nothing answering at any of them —
+  enumerating the named ones is the same inference error one level down, since a
+  plain shell beside `herdr --session work` would otherwise find nothing at the
+  default path and call that proof. A stale `HERDR_SOCKET_PATH` naming a socket
+  that is gone falls through to the search rather than ending it, for the same
+  reason. Two sessions running and nothing saying which is refused rather than
+  guessed: the wrong session lists the wrong workspaces, which is the original
+  failure through a different door. A pleasant side effect: run from a plain
+  shell beside a running herdr, default or named, `ls` now shows the workspace
+  and agent columns populated rather than empty.
+
+  On Windows herdr is a named pipe rather than a socket under a config
+  directory, and worktender does not know its name — so absence cannot be
+  established and is not assumed. It refuses there unless `HERDR_SOCKET_PATH`
+  is set, which herdr sets for the commands it runs, leaving the plugin path
+  unaffected. Previously the unix layout was used on every platform, so a path
+  that never exists on Windows returned ENOENT and unlocked the degraded path
+  unconditionally.
+
+  Exactly one dial outcome counts as proof: no socket at the path. A running
+  herdr always has one on disk. Every other failure is fatal for every command
+  rather than degraded through, because "cannot tell" resolving to "not there"
+  would reopen the same hole one layer down.
+
+  A refused connection is explicitly *not* proof, and that is measured rather
+  than assumed: on macOS a live listener whose accept queue is full refuses the
+  connection with the same `ECONNREFUSED` a socket with nobody behind it gives,
+  so degrading on it would let a busy herdr read as gone. It is also the only
+  classification that agrees across platforms — dialling a directory gives
+  `ENOTSOCK` on macOS and `ECONNREFUSED` on Linux, so any broader rule unlocks
+  the destructive path on one platform and not the other. The cost is that a
+  herdr killed without unlinking its socket makes worktender refuse rather than
+  degrade; the error names the socket to remove.
+
+  `start`, `dispatch`, `sync` and `gate` exit **2**, the environment class, and
+  name what is missing. Not a usage error: the command was spelled correctly and
+  the machine could not answer it. `ls --blocked`, `ls --reports` and
+  `ls --all-repos` join them: each asks what agents are doing, and an empty
+  answer would read as "no agent is blocked" rather than "no way to tell".
+
+  One guard genuinely cannot run: the one sparing a checkout an agent is
+  standing in. There is nothing for it to protect — an agent lives in a pane
+  inside a workspace, and both are herdr's — and the guards protecting *work*
+  are git's and untouched. That holds only because absence is dialled for;
+  `README.md` says both parts rather than leaving either implied.
+
+  This is about herdr not *running*. Installed as a plugin herdr is present by
+  definition, so a way to install the binary without herdr is what would make
+  this reachable by anyone new; that part is not in this change.
+
 ### Fixed
 
 - **`on-event` and `startup` no longer accept arguments silently.** (#69) They

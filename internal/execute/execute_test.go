@@ -1086,3 +1086,46 @@ func TestPruneKeepsABranchThatGainedACommitAfterThePlan(t *testing.T) {
 		t.Errorf("keeping the branch has to be reported, got %q", result.Detail)
 	}
 }
+
+// The executor with no herdr to ask. Nothing else in the suite runs an action
+// through pruneBlocked with a nil client, which is the path a plain-shell
+// prune-apply takes end to end: the re-check that would ask herdr which
+// workspace holds the checkout has nobody to ask, and falls through to git.
+func TestPruneWithoutHerdrRemovesThroughGit(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+
+	exec := &execute.Executor{Client: nil, Root: repo.Root, ApplyPrune: true}
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", Reason: "merged into main"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusDone {
+		t.Fatalf("status = %q, want done: %s", result.Status, result.Detail)
+	}
+	if repo.Exists(checkout) {
+		t.Error("the worktree should be gone")
+	}
+}
+
+// The guards that protect work are git's, and a nil client does not reach them.
+// This is the claim the README makes when it says the guards that matter are
+// untouched, and it is the one that keeps the degraded path from being a way to
+// delete uncommitted work.
+func TestPruneWithoutHerdrStillRefusesADirtyCheckout(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := mergedWorktree(t, repo, "done")
+	herdrtest.WriteFile(t, filepath.Join(checkout, "scratch.txt"), "unsaved")
+
+	exec := &execute.Executor{Client: nil, Root: repo.Root, ApplyPrune: true}
+	action := reconcile.Action{Kind: reconcile.KindPrune, Path: checkout,
+		Branch: "done", Reason: "merged into main"}
+
+	result := only(t, exec.Run([]reconcile.Action{action}))
+	if result.Status != execute.StatusSkipped {
+		t.Fatalf("status = %q, want skipped: %s", result.Status, result.Detail)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("uncommitted work was removed")
+	}
+}

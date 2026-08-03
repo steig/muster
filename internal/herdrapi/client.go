@@ -13,7 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -47,14 +51,242 @@ type Client struct {
 	socketPath string
 }
 
+// SocketEnv is the environment variable herdr injects into plugin commands and
+// into the panes it opens, naming the endpoint of the session that started them.
+const SocketEnv = "HERDR_SOCKET_PATH"
+
 // New builds a Client from HERDR_SOCKET_PATH. It fails when the process is not
 // running inside herdr.
+//
+// This answers "did herdr start us", which is not the same question as "is
+// herdr running" — it never dials. Anything deciding whether herdr is *there*
+// wants Probe.
 func New() (*Client, error) {
-	path := os.Getenv("HERDR_SOCKET_PATH")
+	path := os.Getenv(SocketEnv)
 	if path == "" {
-		return nil, errors.New("HERDR_SOCKET_PATH is not set; are you running inside herdr?")
+		return nil, errors.New(SocketEnv + " is not set; are you running inside herdr?")
 	}
 	return &Client{socketPath: path}, nil
+}
+
+// DefaultSocketPath is where herdr's default session listens when nothing named
+// an endpoint: $XDG_CONFIG_HOME/herdr/herdr.sock, falling back to
+// ~/.config/herdr. Empty when the layout is not known — see herdrHome.
+//
+// This is the one place worktender knows herdr's file layout rather than its
+// wire protocol.
+func DefaultSocketPath() string {
+	home := herdrHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "herdr.sock")
+}
+
+// SocketPath is the endpoint herdr named, or the default session's when it
+// named none. Empty when neither can be determined.
+//
+// It answers "which one endpoint" and is therefore not enough on its own to
+// conclude that herdr is absent — see SessionSocketPaths and Probe.
+func SocketPath() string {
+	if path := os.Getenv(SocketEnv); path != "" {
+		return path
+	}
+	return DefaultSocketPath()
+}
+
+// SessionSocketPaths is every endpoint a herdr on this machine could be
+// listening on: the default session's, then one per named session, sorted.
+//
+// Named sessions are real and they are not at the default path. Verified
+// against herdr 0.7.5: `herdr --session work status` reports
+// $XDG_CONFIG_HOME/herdr/sessions/work/herdr.sock, alongside the default
+// session's socket in the same tree.
+//
+// Enumerating them is what stops "the endpoint I know about is missing" from
+// being read as "herdr is not running" — the same inference error as trusting
+// the environment variable, one level down. A plain shell beside
+// `herdr --session work`, with no default session, dials the default path,
+// gets ENOENT, and would otherwise call that proof and let prune-apply remove a
+// checkout that session's agent is standing in.
+//
+// Only session sockets, not every socket in the tree: herdr keeps a
+// herdr-client.sock beside the server's, and a plugin checkout can hold
+// unrelated sockets of its own — git's fsmonitor daemon leaves one. Treating
+// those as evidence of a running herdr would make worktender refuse for ever on
+// a machine that has none.
+func SessionSocketPaths() []string {
+	home := herdrHome()
+	if home == "" {
+		return nil
+	}
+
+	paths := []string{filepath.Join(home, "herdr.sock")}
+	entries, err := os.ReadDir(filepath.Join(home, "sessions"))
+	if err != nil {
+		// No named sessions is the ordinary case and reads as an unreadable
+		// directory; either way there is nothing more to enumerate.
+		return paths
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			paths = append(paths, filepath.Join(home, "sessions", e.Name(), "herdr.sock"))
+		}
+	}
+	sort.Strings(paths[1:])
+	return paths
+}
+
+// ErrNoHerdr reports that nothing is listening on herdr's endpoint.
+//
+// It is deliberately a different fact from New's error. New says herdr did not
+// start this process, which is the ordinary state of a plain shell and says
+// nothing about whether herdr is running. This says the socket was dialled and
+// answered definitively: there is no herdr.
+var ErrNoHerdr = errors.New("herdr is not running")
+
+// ErrHerdrUnknown reports a dial that failed without establishing anything —
+// a timeout, a permission denial, an endpoint that cannot be addressed.
+//
+// Kept apart from ErrNoHerdr because only one of them may be degraded on. The
+// degraded path disarms the guard sparing a checkout an agent is standing in,
+// and what licenses that is proof of absence, not failure to find. A herdr
+// whose accept queue is briefly full would otherwise read as gone, and
+// `prune-apply` would remove the ground out from under a live agent — the same
+// hole as trusting the environment variable, one layer down. So this is fatal
+// for every caller, degradable or not.
+var ErrHerdrUnknown = errors.New("cannot tell whether herdr is running")
+
+// absent reports whether a dial failure proves nothing is there.
+//
+// Exactly one errno is proof: ENOENT. There is no socket at the path, so
+// nothing ever bound one — and a running herdr always has its socket on disk.
+// That is the ordinary state of a machine that does not run herdr, which is the
+// case this whole path exists for.
+//
+// Everything else is ErrHerdrUnknown, and ECONNREFUSED most deliberately of
+// all. It is tempting — a socket file with nobody accepting reads as a herdr
+// that exited — and it is wrong, because it is not the only thing that produces
+// it. Measured on both platforms, dialling:
+//
+//	                          darwin        linux
+//	no socket at the path     ENOENT        ENOENT
+//	a directory or a file     ENOTSOCK      ECONNREFUSED
+//	a socket, no listener     ECONNREFUSED  ECONNREFUSED
+//	a LIVE listener, queue full   ECONNREFUSED  timeout
+//
+// The last row is the one that settles it. On darwin a herdr that is running,
+// listening and merely backed up refuses the connection, and no cheaper check
+// tells that apart from a socket nobody is behind. Treating ECONNREFUSED as
+// proof would let a busy herdr read as gone — and proof of absence is what
+// re-enables removing a checkout an agent is standing in. Retrying does not
+// help: a herdr under sustained load stays refused.
+//
+// ENOENT alone also happens to be the only classification that gives the same
+// answer on both platforms for every row above, so the destructive path cannot
+// unlock on one and not the other.
+//
+// What this costs: a herdr killed without cleaning up leaves its socket behind,
+// and worktender then refuses rather than degrading. That is the right way
+// round — refusing prints an error a person can act on, degrading wrongly
+// deletes an agent's checkout — and Probe says how to clear it.
+func absent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+// Probe establishes whether herdr is actually there, by dialling and hanging up.
+//
+// This is the check that has to stand behind any decision to degrade. Reading
+// SocketEnv cannot: the variable is unset in the user's own terminal while herdr
+// runs behind it holding workspaces and agents, and it is left set in a shell
+// that outlived the herdr that exported it. Both readings are wrong, and the
+// second is wrong in the direction that removes a checkout.
+//
+// A connect, not a request: it separates running from not-running, which is the
+// only distinction the caller is making, and it costs a syscall pair on a live
+// socket and an immediate ENOENT on a dead one. dialHerdr's 2s timeout only
+// applies to a socket that exists with a listener too backed up to accept, and
+// no cheaper check tells that apart from a healthy one — which is why that case
+// comes back as ErrHerdrUnknown rather than as absence.
+//
+// When herdr named an endpoint, that endpoint is the whole question: herdr told
+// us where it is, so a live one is it and a broken one is a broken herdr. The
+// single exception is ENOENT, which means the variable is stale rather than
+// authoritative — a shell outliving the session that exported it — and a stale
+// name is no evidence about the machine, so the search falls through to it.
+//
+// With nothing named, absence has to be established against every endpoint a
+// herdr could be listening on, not just the default one. See SessionSocketPaths.
+func Probe() (*Client, error) {
+	if named := os.Getenv(SocketEnv); named != "" {
+		conn, err := dialHerdr(named)
+		if err == nil {
+			_ = conn.Close()
+			return &Client{socketPath: named}, nil
+		}
+		if !absent(err) {
+			// The endpoint is there and would not talk. Naming the way out
+			// matters here in a way it does not for a timeout: the likeliest
+			// cause is a herdr that died without unlinking its socket, and that
+			// state persists until somebody clears it.
+			return nil, fmt.Errorf("%w: %w; if herdr is not running, remove %s and try again",
+				ErrHerdrUnknown, err, named)
+		}
+	}
+	return probeSessions()
+}
+
+// probeSessions dials every endpoint a herdr could be on and insists the answer
+// be unambiguous.
+//
+// Absence is proven only by having looked everywhere and found nothing at all:
+// at least one endpoint examined, and every one of them missing. Nothing to
+// examine is not an empty search — it is not knowing where to look, which is
+// windows, and it refuses.
+//
+// Two live sessions refuse as well, and that is the point rather than an
+// awkwardness. Guessing between them is not a smaller error than guessing that
+// herdr is absent: connecting to the wrong session lists the wrong workspaces,
+// so the checkout an agent is standing in reads as held by nobody and
+// prune-apply removes it. Same failure, different door.
+func probeSessions() (*Client, error) {
+	paths := SessionSocketPaths()
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("%w: no %s is set and herdr's endpoint cannot be located on this platform",
+			ErrHerdrUnknown, SocketEnv)
+	}
+
+	var (
+		live      []string
+		firstErr  error
+		allAbsent = true
+	)
+	for _, path := range paths {
+		conn, err := dialHerdr(path)
+		if err == nil {
+			_ = conn.Close()
+			live = append(live, path)
+			continue
+		}
+		if !absent(err) {
+			allAbsent = false
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	switch {
+	case len(live) == 1:
+		return &Client{socketPath: live[0]}, nil
+	case len(live) > 1:
+		return nil, fmt.Errorf("%w: %d herdr sessions are running (%s); set %s to say which one",
+			ErrHerdrUnknown, len(live), strings.Join(live, ", "), SocketEnv)
+	case !allAbsent:
+		return nil, fmt.Errorf("%w: %w; if herdr is not running, remove the stale socket and try again",
+			ErrHerdrUnknown, firstErr)
+	}
+	return nil, fmt.Errorf("%w: nothing is listening on %s", ErrNoHerdr, strings.Join(paths, " or "))
 }
 
 // NewWithSocket points a Client at an explicit endpoint. Tests use it to talk

@@ -148,7 +148,11 @@ func gateCommand(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	client, err := herdrapi.New()
+	// Required, and said so through the shared dial: a gate reads panes, which
+	// only herdr has. Routed here rather than left to reach exit 2 through
+	// exitCode's catch-all, so the documented code is asserted by this call
+	// site instead of inherited from the default for anything unclassified.
+	client, err := dialHerdrIfPresent(herdrRequired)
 	if err != nil {
 		return err
 	}
