@@ -1232,3 +1232,59 @@ func TestRunGateFailsOnAMalformedInvocation(t *testing.T) {
 		t.Fatal("run returned nil for a gate with no target; the failure must reach the exit code")
 	}
 }
+
+// The gate is the command the exit taxonomy exists for: it is the one whose
+// failures a coordinator must tell apart without a human reading them. Blocked
+// and timed-out and mistyped are three different next actions — escalate,
+// redispatch, fix the call — and before #121 all three were exit 1.
+func TestGateFailuresCarryDistinctExitCodes(t *testing.T) {
+	t.Run("a blocked worker needs a human", func(t *testing.T) {
+		f := newGateWorkers(t, "a", "b")
+		go f.worker("b").prints(report{status: "blocked", note: "needs a decision"})
+
+		_, err, _ := f.gate(t, "--any", "a,b", "--timeout", "30s")
+		if err == nil {
+			t.Fatal("the gate released on a blocked worker")
+		}
+		if got := exitCode(err); got != exitNeedsHuman {
+			t.Errorf("blocked = exit %d, want exitNeedsHuman (%d); redispatching a blocked worker just blocks again", got, exitNeedsHuman)
+		}
+	})
+
+	t.Run("a timeout is no answer, not an escalation", func(t *testing.T) {
+		f := newGateWorkers(t, "a")
+
+		_, err, _ := f.gate(t, "--target", "a", "--timeout", "300ms")
+		if err == nil {
+			t.Fatal("the gate released without a report")
+		}
+		if got := exitCode(err); got != exitNoAnswer {
+			t.Errorf("timeout = exit %d, want exitNoAnswer (%d); a slow worker must not read as one needing a person", got, exitNoAnswer)
+		}
+	})
+
+	t.Run("a pane that ended is no answer", func(t *testing.T) {
+		f := newGateWorkers(t, "a", "b")
+		go f.worker("b").paneEnds(herdrapi.StreamEventPaneExited)
+
+		_, err, _ := f.gate(t, "--any", "a,b", "--timeout", "30s")
+		if err == nil {
+			t.Fatal("the gate released on a dead pane")
+		}
+		if got := exitCode(err); got != exitNoAnswer {
+			t.Errorf("dead pane = exit %d, want exitNoAnswer (%d)", got, exitNoAnswer)
+		}
+	})
+
+	t.Run("a target that cannot report is the caller's mistake", func(t *testing.T) {
+		f := newGateWorkers(t, "a")
+
+		_, err, _ := f.gate(t, "--any", "a,ghost", "--timeout", "30s")
+		if err == nil {
+			t.Fatal("the gate waited on a target that cannot report")
+		}
+		if got := exitCode(err); got != exitUsage {
+			t.Errorf("unresolvable target = exit %d, want exitUsage (%d); retrying a mistyped name never resolves it", got, exitUsage)
+		}
+	})
+}

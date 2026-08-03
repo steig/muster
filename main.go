@@ -44,7 +44,7 @@ func releaseLock(lock *repolock.Lock, out io.Writer) {
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "worktender:", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
@@ -52,7 +52,7 @@ func main() {
 // process exit code: herdr records a plugin action that exits 0 as "succeeded".
 func run(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%s", usage)
+		return usagef("%s", usage)
 	}
 
 	switch args[0] {
@@ -95,7 +95,7 @@ func run(args []string, out io.Writer) error {
 		// Invoked once by herdr after the server is ready. Off unless opted in.
 		return startupCommand(out)
 	default:
-		return fmt.Errorf("unknown command %q; %s", args[0], usage)
+		return usagef("unknown command %q; %s", args[0], usage)
 	}
 }
 
@@ -142,14 +142,14 @@ func newSession(allowFallback bool) (*session, error) {
 			return nil, err
 		}
 		if !allowFallback {
-			return nil, fmt.Errorf("%w; refusing to guess which repository to change", err)
+			return nil, withCode(exitUsage, fmt.Errorf("%w; refusing to guess which repository to change", err))
 		}
 	}
 
 	dir := ctx.LaunchDir()
 	if dir == "" {
 		if !allowFallback {
-			return nil, errors.New("herdr supplied no launch directory; refusing to guess which repository to change")
+			return nil, usagef("herdr supplied no launch directory; refusing to guess which repository to change")
 		}
 		if dir, err = os.Getwd(); err != nil {
 			return nil, err
@@ -189,7 +189,7 @@ func newSessionIn(repo string) (*session, error) {
 
 	root, err := gitx.RepoRoot(repo)
 	if err != nil {
-		return nil, fmt.Errorf("--repo: %w", err)
+		return nil, usagef("--repo: %w", err)
 	}
 
 	resolved := gitx.Resolve(root)
@@ -326,16 +326,16 @@ func lsCommand(args []string, out io.Writer) error {
 	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%v; %s", err, lsUsage)
+		return usagef("%v; %s", err, lsUsage)
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), lsUsage)
+		return usagef("unexpected argument %q; %s", fs.Arg(0), lsUsage)
 	}
 	opts := wt.Options{Blocked: *blocked, JSON: *asJSON}
 
 	if *allRepos {
 		if *withPR {
-			return errors.New("--pr cannot be combined with --all-repos: the lookup is one `gh` call per branch in series, and it is scoped to one repository, so across several it would be slow and asking the wrong repository; run `ls --pr` in the one you care about")
+			return usagef("--pr cannot be combined with --all-repos: the lookup is one `gh` call per branch in series, and it is scoped to one repository, so across several it would be slow and asking the wrong repository; run `ls --pr` in the one you care about")
 		}
 		// No session: the scope is herdr's open worktree workspaces, so this
 		// answers from outside a repository the same way `doctor` does.
@@ -378,10 +378,10 @@ func syncCommand(args []string, out io.Writer) error {
 	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%v; %s", err, syncUsage)
+		return usagef("%v; %s", err, syncUsage)
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), syncUsage)
+		return usagef("unexpected argument %q; %s", fs.Arg(0), syncUsage)
 	}
 
 	// Opens workspaces and starts agents, so it must be told where.
@@ -453,10 +453,10 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%v; %s", err, pruneUsage(apply))
+		return usagef("%v; %s", err, pruneUsage(apply))
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), pruneUsage(apply))
+		return usagef("unexpected argument %q; %s", fs.Arg(0), pruneUsage(apply))
 	}
 
 	// Named repository wins outright. Listing is otherwise read-only and may

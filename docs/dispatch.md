@@ -48,9 +48,18 @@ you to look.
 **`start` does not wait.** Starting five issues and then waiting on all five is
 the point; a start that gated would serialise the fleet.
 
-The gate prints the report and exits 0 when the predicate holds. It exits
-non-zero when the worker reports `blocked`, when the worker dies before
-reporting, and when it times out.
+The gate prints the report and exits 0 when the predicate holds. Its failures
+carry different codes, because they need different answers:
+
+| Code | When | What you do |
+| --- | --- | --- |
+| **3** | the worker reported `blocked` | Escalate. It will not reach `done` on its own, and retrying blocks again. |
+| **4** | it timed out, or the worker's pane died before reporting | No answer arrived. Redispatching is reasonable. |
+| **1** | a target could not be resolved | Drop it from the list. herdr answers the same for a mistyped name and for an agent that has since exited. |
+| **2** | herdr's socket was unreachable | The machine, not the wait. |
+
+Branch on the code, not on the message. The full table is in
+[Reference](reference.md#exit-codes-and-errors).
 
 ```sh
 worktender start <issue> [--model <model>] [--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus]

@@ -263,8 +263,11 @@ clock.
 "$worktender" gate --any <a,b,c> --until done [--require-pr] [--timeout 15m]
 ```
 
-It prints the report and exits 0 when the predicate holds. It exits non-zero when the
-worker reports `blocked`, when the worker dies before reporting, and when it times out.
+It prints the report and exits 0 when the predicate holds. Otherwise the exit code says
+which: **3** the worker reported `blocked` (escalate — retrying blocks again), **4** it
+timed out or the pane died before reporting (no answer; redispatch is reasonable), **1** a
+target could not be resolved (drop it), **2** herdr was unreachable. Branch on the code,
+not on the message.
 `--until` defaults to `done` and is repeatable — pass it more than once to release on
 any of several statuses. The timeout defaults to 15 minutes and there is no
 wait-forever option. Dispatch first, then gate — the gate ignores whatever was already

@@ -47,7 +47,7 @@ const fetchTimeout = 60 * time.Second
 
 func updateCommand(args []string, out io.Writer) error {
 	if len(args) > 0 {
-		return fmt.Errorf("unexpected argument %q; %s", args[0], updateUsage)
+		return usagef("unexpected argument %q; %s", args[0], updateUsage)
 	}
 	root, err := installRoot()
 	if err != nil {

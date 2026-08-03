@@ -32,10 +32,10 @@ func doctorCommand(args []string, out io.Writer) error {
 	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%v; %s", err, doctorUsage)
+		return usagef("%v; %s", err, doctorUsage)
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), doctorUsage)
+		return usagef("unexpected argument %q; %s", fs.Arg(0), doctorUsage)
 	}
 
 	client, clientErr := herdrapi.New()

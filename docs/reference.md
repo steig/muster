@@ -123,13 +123,32 @@ This is once per install rather than a standing tax. Any install carrying
 
 ## Exit codes and errors
 
-There are exactly two exit codes: **0**, or **1** with `worktender: <error>` on
-stderr.
+Every failure prints `worktender: <error>` on stderr and exits non-zero. The
+code says **what to do next**, not what went wrong — a coordinating agent has
+four responses available, and one code per response is what lets it pick without
+matching on the message.
+
+| Code | Meaning | What the caller does |
+| --- | --- | --- |
+| **0** | It happened. | Proceed. |
+| **1** | Usage: an unknown flag, a missing argument, a repository you declined to name, a target that cannot report. | Fix the invocation. Retrying unchanged fails identically. |
+| **2** | Environment: herdr's socket unreachable, git failing, `gh` unauthenticated. **Also every unclassified failure.** | Fix the machine, then retry. |
+| **3** | Needs a human: a worker reported `blocked`, or `start` briefed an agent that never took it up. | Escalate. No retry clears it. |
+| **4** | No answer arrived: a gate timed out, a pane died before reporting. | The work may simply be unfinished; redispatching is reasonable. |
+
+**2 is the catch-all on purpose.** The alternatives are worse: defaulting to
+**1** tells a coordinator to rewrite a correct invocation, and defaulting to
+**3** wakes somebody for a bug. An unrecognised failure routed to **2** costs at
+most a retry.
+
+The distinction **3** and **4** draw is the one this replaced two codes for. A
+gate returning **1** used to mean the worker is blocked and needs a person *or*
+that herdr's socket had died, and those demand opposite actions.
 
 Everything fails loudly on purpose. herdr records a plugin action that exits 0
 as "succeeded", so a command that reports a problem and exits 0 is a silent
-failure — which is why `sync` and `prune` exit 1 with `%d of %d action(s)
-failed` rather than printing a warning and returning success.
+failure — which is why `sync` and `prune` exit non-zero with `%d of %d
+action(s) failed` rather than printing a warning and returning success.
 
 Errors you are most likely to meet:
 

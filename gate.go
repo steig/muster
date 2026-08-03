@@ -109,16 +109,16 @@ func parseGate(args []string) (gateOptions, error) {
 	flags.Var(&until, "until", "release on this status; repeat for more than one")
 
 	if err := flags.Parse(args); err != nil {
-		return gateOptions{}, fmt.Errorf("%w; %s", err, gateUsage)
+		return gateOptions{}, usagef("%w; %s", err, gateUsage)
 	}
 	if rest := flags.Args(); len(rest) > 0 {
-		return gateOptions{}, fmt.Errorf("unexpected argument %q; %s", rest[0], gateUsage)
+		return gateOptions{}, usagef("unexpected argument %q; %s", rest[0], gateUsage)
 	}
 	if len(targets) == 0 {
-		return gateOptions{}, fmt.Errorf("--target or --any is required; %s", gateUsage)
+		return gateOptions{}, usagef("--target or --any is required; %s", gateUsage)
 	}
 	if *timeout <= 0 {
-		return gateOptions{}, fmt.Errorf("--timeout must be positive; a gate that cannot expire is the wedge this command exists to avoid")
+		return gateOptions{}, usagef("--timeout must be positive; a gate that cannot expire is the wedge this command exists to avoid")
 	}
 	if len(until) == 0 {
 		// The gate's reason for existing is completion, so that is the default.
@@ -247,7 +247,7 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 		// unblocks it is the coordinator sitting in this wait.
 		if i := slices.IndexFunc(fresh, func(f gateFresh) bool { return isBlocked(f.report) }); i >= 0 {
 			fmt.Fprint(out, renderReport(fresh[i].report))
-			return fmt.Errorf("gate %s: the worker reported blocked after %s; it will not reach %s without you",
+			return codef(exitNeedsHuman, "gate %s: the worker reported blocked after %s; it will not reach %s without you",
 				targets[fresh[i].target].name, time.Since(started).Round(time.Second), strings.Join(opts.until, "|"))
 		}
 		for _, f := range fresh {
@@ -261,7 +261,7 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 		// deadline, which is the failure the gate exists to convert into a fast
 		// one.
 		if gone >= 0 {
-			return fmt.Errorf("gate %s: %s before it reported %s",
+			return codef(exitNoAnswer, "gate %s: %s before it reported %s",
 				targets[gone].name, goneWhy, strings.Join(opts.until, "|"))
 		}
 	}
@@ -276,16 +276,29 @@ func resolveTargets(client *herdrapi.Client, names []string) ([]gateTarget, erro
 	for _, name := range names {
 		info, err := client.AgentGet(name)
 		if err != nil {
+			// agent_not_found is the caller's target list being wrong, which no
+			// retry of the same command fixes — as against a socket that died,
+			// which is the environment and may well work next time.
+			//
+			// herdr answers agent_not_found for a name that never existed and for
+			// one whose agent has since exited, and does not say which. Both leave
+			// the caller doing the same thing — drop that target — so the pair
+			// share a code even though only the first is literally a mistyped
+			// argument.
+			var herdrErr *herdrapi.Error
+			if errors.As(err, &herdrErr) && herdrErr.Code == "agent_not_found" {
+				return nil, usagef("gate %s: %w", name, err)
+			}
 			return nil, fmt.Errorf("gate %s: %w", name, err)
 		}
 		t := gateTarget{name: name, pane: info.Agent.PaneID, workspace: info.Agent.WorkspaceID}
 		if info.Agent.AgentStatus == herdrapi.AgentStatusUnknown {
-			return nil, fmt.Errorf("gate %s: herdr reports no agent state for pane %s; there is nothing to wait on", name, t.pane)
+			return nil, usagef("gate %s: herdr reports no agent state for pane %s; there is nothing to wait on", name, t.pane)
 		}
 		// An agent and its own pane id are two names for one worker, and herdr
 		// resolves both. Waiting on both would count one worker as two.
 		if i := slices.IndexFunc(targets, func(o gateTarget) bool { return o.pane == t.pane }); i >= 0 {
-			return nil, fmt.Errorf("gate %s: %s is the same worker (pane %s); name it once", name, targets[i].name, t.pane)
+			return nil, usagef("gate %s: %s is the same worker (pane %s); name it once", name, targets[i].name, t.pane)
 		}
 		targets = append(targets, t)
 	}
@@ -411,7 +424,7 @@ func gateExpired(opts gateOptions, targets []gateTarget, waited time.Duration) e
 		}
 		details = append(details, detail)
 	}
-	return fmt.Errorf("gate %s: no new report reached status %s within %s; %s",
+	return codef(exitNoAnswer, "gate %s: no new report reached status %s within %s; %s",
 		opts.names(), strings.Join(opts.until, "|"), waited.Round(time.Second), strings.Join(details, "; "))
 }
 

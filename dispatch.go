@@ -33,16 +33,16 @@ func dispatchCommand(args []string, out io.Writer) error {
 	resume := fs.Bool("resume", false, "continue the pane's existing transcript")
 
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%v; %s", err, dispatchUsage)
+		return usagef("%v; %s", err, dispatchUsage)
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), dispatchUsage)
+		return usagef("unexpected argument %q; %s", fs.Arg(0), dispatchUsage)
 	}
 	if *pane == "" {
-		return fmt.Errorf("--pane is required; %s", dispatchUsage)
+		return usagef("--pane is required; %s", dispatchUsage)
 	}
 	if *name == "" {
-		return fmt.Errorf("--name is required; %s", dispatchUsage)
+		return usagef("--name is required; %s", dispatchUsage)
 	}
 
 	agentArgs := agentArgsFor(*model, *permissionMode, os.Stderr)
@@ -131,7 +131,7 @@ func workspaceForPane(s *session, pane string) (string, error) {
 	}
 	if info.Pane.WorkspaceID == "" {
 		// An unverifiable guard is not a satisfied one.
-		return "", fmt.Errorf("herdr reports no workspace for pane %s; refusing to start an agent there", pane)
+		return "", usagef("herdr reports no workspace for pane %s; refusing to start an agent there", pane)
 	}
 	return info.Pane.WorkspaceID, nil
 }

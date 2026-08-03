@@ -177,6 +177,32 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Changed
 
+- **Five exit codes instead of two, keyed to what the caller does next.**
+  ⚠️ **Breaking:** `1` narrows from *any failure* to *usage error*. Anything
+  checking `!= 0` is unaffected; anything checking `== 1` changes meaning.
+
+  There were two codes, so `gate` returning `1` could mean the worker reported
+  `blocked` and needs a person, or that herdr's socket had died — and those
+  demand opposite responses. Five outcomes shared one code, separable only by
+  matching on stderr prose, which is the same trap `gh pr view` set for the
+  pull request lookup below.
+
+  The codes name a response rather than a cause, because a coordinating agent
+  has four available and needs to pick one: **1** usage, fix the invocation and
+  do not retry; **2** environment, the machine rather than the call; **3** needs
+  a human, escalate because no retry clears it; **4** no answer arrived, so
+  redispatching is reasonable. `gate` is fully classified — `blocked` is **3**,
+  a timeout or a dead pane is **4**, an unresolvable target is **1**.
+
+  **`2` is also the catch-all for anything unclassified**, deliberately.
+  Defaulting to `1` would tell a coordinator to rewrite a correct invocation;
+  defaulting to `3` would wake somebody for a bug. An unrecognised failure
+  routed to `2` costs at most a retry.
+
+  Taken now rather than additively: with no known dependents this is the
+  cheapest the renumbering will ever be, and leaving `1` as a catch-all would
+  have shipped the ambiguity being removed.
+
 - **The pull request lookup asks `gh pr list --head`, not `gh pr view`.** Both
   answer the same question; only one answers it in a way that is not English.
   `gh pr view` exits non-zero for "this branch has no pull request" exactly as it

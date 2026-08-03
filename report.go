@@ -97,12 +97,12 @@ func parseReport(args []string) (report, error) {
 	note := flags.String("note", "", fmt.Sprintf("at most %d characters", noteLimit))
 
 	if err := flags.Parse(args); err != nil {
-		return report{}, fmt.Errorf("%w; %s", err, reportUsage)
+		return report{}, usagef("%w; %s", err, reportUsage)
 	}
 	// flag stops at the first non-flag argument, so leftovers are the shape of
 	// an unquoted note.
 	if rest := flags.Args(); len(rest) > 0 {
-		return report{}, fmt.Errorf("unexpected argument %q; %s", rest[0], reportUsage)
+		return report{}, usagef("unexpected argument %q; %s", rest[0], reportUsage)
 	}
 
 	r := report{status: *status, note: *note}
@@ -142,7 +142,7 @@ func parseReport(args []string) (report, error) {
 // cannot be re-sent the way a note can.
 func reportNote(note string) error {
 	if strings.TrimSpace(note) == "" {
-		return fmt.Errorf("--note is required; %s", reportUsage)
+		return usagef("--note is required; %s", reportUsage)
 	}
 	if !utf8.ValidString(note) {
 		return fmt.Errorf("--note is not valid UTF-8")

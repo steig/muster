@@ -41,14 +41,14 @@ func startCommand(args []string, out io.Writer) error {
 
 	issues, err := parseAround(fs, args)
 	if err != nil {
-		return fmt.Errorf("%v; %s", err, startUsage)
+		return usagef("%v; %s", err, startUsage)
 	}
 	if len(issues) != 1 {
-		return fmt.Errorf("want exactly one issue number; %s", startUsage)
+		return usagef("want exactly one issue number; %s", startUsage)
 	}
 	number, err := strconv.Atoi(strings.TrimPrefix(issues[0], "#"))
 	if err != nil || number <= 0 {
-		return fmt.Errorf("%q is not an issue number; want a positive integer like 42", issues[0])
+		return usagef("%q is not an issue number; want a positive integer like 42", issues[0])
 	}
 
 	// Creates a checkout and starts an agent, so it must be told where — by
@@ -67,7 +67,7 @@ func startCommand(args []string, out io.Writer) error {
 		// shell reaching this has no way forward that the error does not name.
 		// Only this failure: --repo answers a missing context and nothing else.
 		if errors.Is(err, herdrapi.ErrNoContext) {
-			err = fmt.Errorf("%w; name it with --repo <path>", err)
+			err = withCode(exitUsage, fmt.Errorf("%w; name it with --repo <path>", err))
 		}
 	}
 	if err != nil {
@@ -112,7 +112,7 @@ func startCommand(args []string, out io.Writer) error {
 	}})
 	fmt.Fprint(out, execute.Render(results))
 	if execute.Counts(results)[execute.StatusFailed] > 0 {
-		return fmt.Errorf("started no agent for #%d; the worktree at %s is yours to keep or remove", number, branch)
+		return codef(exitNeedsHuman, "started no agent for #%d; the worktree at %s is yours to keep or remove", number, branch)
 	}
 
 	if err := deliverBrief(s.client, pane, brief(number, branch)); err != nil {
@@ -297,7 +297,7 @@ func submitBrief(client *herdrapi.Client, pane string) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf(
+			return codef(exitNeedsHuman,
 				"the brief was typed into %s and %s was pressed %s over %s, but herdr still reports that "+
 					"agent as %s — the brief is most likely still sitting in its input box; press %s "+
 					"yourself with `herdr pane send-keys %s %s`, and if the pane is showing something "+
