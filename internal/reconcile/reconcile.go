@@ -104,6 +104,14 @@ type State struct {
 	// AgentPanes holds what the agent in each pane is doing, keyed by pane id,
 	// across all workspaces. A pane absent from the map hosts no agent.
 	AgentPanes map[string]AgentState
+	// HerdrAbsent reports that herdr is not running, so the checkouts came from
+	// git and there are no workspaces to be had.
+	//
+	// It is a recorded fact rather than an inference from an empty Workspaces,
+	// because those are not the same state: a repository whose checkouts herdr
+	// has simply not opened yet is exactly what adopt exists for, and reading
+	// that as "herdr is gone" would stop the plugin working on first run.
+	HerdrAbsent bool
 	// ReleaseAgents permits a prune to take a finished agent's pane away by
 	// closing the workspace it sits in, which is the only way herdr frees an
 	// agent. Off by default, and it never reaches an agent that is still
@@ -192,6 +200,13 @@ func Only(actions []Action, kinds ...Kind) []Action {
 // adopt opens a workspace for every worktree herdr is not already holding open.
 // A bare worktree has no working tree to put in a workspace.
 func adopt(state State) []Action {
+	// Both halves of this need herdr: adopting opens a workspace, and there is
+	// nothing to open one in. Left ungated, every checkout reads as unadopted
+	// and the whole repository is planned for a herdr that is not listening.
+	if state.HerdrAbsent {
+		return nil
+	}
+
 	var actions []Action
 	for _, w := range state.Worktrees {
 		if w.IsBare || w.WorkspaceID != "" {

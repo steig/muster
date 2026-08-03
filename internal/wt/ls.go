@@ -747,6 +747,45 @@ func prJSON(pr *PR) *PRJSON {
 	return &PRJSON{State: jsonout.String(pr.State)}
 }
 
+// listRows is the repository's rows from whichever source can answer.
+//
+// A nil client means herdr is not running, so the checkouts come from git and
+// every herdr-shaped column stays empty. That is not the degradation the
+// workspace-list failure below refuses: an absent herdr has no workspaces,
+// where a herdr that failed to answer has some and will not say which, and
+// only the second reads as a session with nothing open.
+func listRows(client *herdrapi.Client, root string) ([]Row, error) {
+	if client == nil {
+		checkouts, err := gitx.Worktrees(root)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]Row, 0, len(checkouts))
+		for _, w := range checkouts {
+			rows = append(rows, Row{
+				Main:   !w.IsLinked,
+				Branch: w.Branch,
+				Dir:    filepath.Base(w.Path),
+			})
+		}
+		return rows, nil
+	}
+
+	worktrees, err := client.WorktreeList(root)
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees: %w", err)
+	}
+
+	// Not degraded to an empty status column: that is the same row a worktree
+	// with no workspace prints, so a herdr that failed to answer would read as
+	// a session with nothing open.
+	workspaces, err := client.WorkspaceList()
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces: %w", err)
+	}
+	return Rows(worktrees, workspaces), nil
+}
+
 // Ls lists every worktree of the repository containing dir, with the workspace,
 // pane and agent state herdr has for each.
 //
@@ -764,27 +803,22 @@ func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) 
 		}
 	}
 
-	worktrees, err := client.WorktreeList(root)
+	rows, err := listRows(client, root)
 	if err != nil {
-		return fmt.Errorf("list worktrees: %w", err)
+		return err
 	}
-
-	// Not degraded to an empty status column: that is the same row a worktree
-	// with no workspace prints, so a herdr that failed to answer would read as
-	// a session with nothing open.
-	workspaces, err := client.WorkspaceList()
-	if err != nil {
-		return fmt.Errorf("list workspaces: %w", err)
-	}
-
-	rows := Rows(worktrees, workspaces)
 	// Filtered before the lookups, not after: a pane costs a round trip, and a
 	// row that will not be printed is not worth one.
 	if opts.Blocked {
 		rows = OnlyBlocked(rows)
 	}
-	WithPanes(client, rows)
-	WithAgentSeqs(client, rows)
+	// Every one of these is a herdr call and there is no herdr to make it to.
+	// Skipped rather than attempted-and-tolerated: a nil client would panic,
+	// and the columns are already empty because the facts do not exist.
+	if client != nil {
+		WithPanes(client, rows)
+		WithAgentSeqs(client, rows)
+	}
 	if opts.LookupReport != nil {
 		WithReports(rows, opts.LookupReport)
 	}

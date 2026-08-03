@@ -308,13 +308,46 @@ A few things worth knowing before step 5 surprises you:
 - **herdr 0.7.0+** — this is a plugin; it talks to herdr over its local socket.
   Every measured behaviour behind `report` and `gate` was tested against **0.7.5**
   and nothing checks the running version, so prefer 0.7.5+ if you intend to use
-  the hand-off pair.
+  the hand-off pair. **`ls`, `prune` and `prune-apply` do not need it** — see
+  [Without herdr](#without-herdr).
 - **git**
 - **jq** — for reading action output out of the plugin log, as above.
 - **gh**, *authenticated* *(optional)* — only used to read pull request state.
   Without it, the only removals left are the ones a deleted upstream authorises
   (see [How removal is decided](docs/pruning.md)), and a
   repository that uses pull requests will prune almost nothing.
+
+## Without herdr
+
+The removal rules are entirely git and gh — uncommitted work, commits base does
+not have, a deleted upstream, a merged pull request. None of them is a herdr
+question. So the commands built on them run with herdr absent:
+
+```sh
+$ worktender ls
+*  main                    -  -  -  -  worktender
+   120-json-stops-here     -  -  -  -  -
+   worktree/brave-valley   -  -  -  -  brave-valley-66f8
+```
+
+The workspace, pane, agent and counter columns are empty because **those facts
+do not exist**, not because they could not be read — with no herdr there are no
+workspaces and no agents. `prune` and `prune-apply` reach exactly the verdicts
+they would otherwise, and `prune-apply` removes what it says it will.
+
+The commands whose whole job is herdr — `start`, `dispatch`, `sync`, `gate` —
+exit **2**, the environment class, and say what is missing. Not a usage error:
+the command was spelled correctly and the machine could not answer it.
+
+One caveat worth stating plainly. With herdr running, `prune` refuses a worktree
+whose pane hosts a working agent. Without herdr that guard cannot run — but
+there is nothing for it to protect, because an agent lives in a pane inside a
+workspace, and both are herdr's. The guards that matter to *your* work —
+uncommitted changes, unmerged commits — are git's, and they are untouched.
+
+Note this is about herdr not *running*. Installed as a herdr plugin, herdr is
+present by definition; what this covers is the binary invoked from a plain
+shell.
 
 ## Actions
 

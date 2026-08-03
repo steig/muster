@@ -121,6 +121,43 @@ type session struct {
 	dir    string
 }
 
+// herdrNeed says whether a command can do its job with herdr absent. A named
+// type rather than a second bool: `newSession(true, false)` at a call site says
+// nothing about which switch is which, and these two are easy to swap.
+type herdrNeed bool
+
+const (
+	// herdrRequired is for the commands whose whole job is herdr — opening
+	// workspaces, starting agents, reading a pane.
+	herdrRequired herdrNeed = true
+	// herdrOptional is for the commands whose guards are entirely git and gh.
+	// They run with herdr absent, reporting empty workspace, pane and agent
+	// columns, because those facts do not exist rather than could not be read.
+	herdrOptional herdrNeed = false
+)
+
+// dialHerdrIfPresent returns a live client, or a nil one when herdr is not
+// running and the caller said it could manage without.
+//
+// A nil client is the signal the layers below read: reconcile.Collector sources
+// the checkouts from git instead, and wt.Ls leaves the herdr columns empty. It
+// is deliberately nil rather than a stub that errors, so a caller that forgets
+// to handle it panics in a test rather than degrading in front of a user.
+//
+// Exit 2 — the environment class — when herdr is genuinely needed. Not a usage
+// error: the command was spelled correctly and the machine could not answer it.
+func dialHerdrIfPresent(need herdrNeed) (*herdrapi.Client, error) {
+	client, err := herdrapi.New()
+	if err == nil {
+		return client, nil
+	}
+	if need == herdrRequired {
+		return nil, withCode(exitEnvironment, fmt.Errorf(
+			"%w; this command needs herdr running. `ls`, `prune` and `prune-apply` do not", err))
+	}
+	return nil, nil
+}
+
 // newSession resolves which repository to work on.
 //
 // allowFallback decides what happens when herdr supplied no invocation context.
@@ -130,8 +167,12 @@ type session struct {
 //
 // A malformed context is fatal either way: it is a bug to surface, not a state
 // to default around.
-func newSession(allowFallback bool) (*session, error) {
-	client, err := herdrapi.New()
+//
+// With herdr absent there is never a context, so the fallback is the only path
+// that resolves anything at all — which is why the two axes are separate: a
+// command can require a named repository and still not require herdr.
+func newSession(allowFallback bool, need herdrNeed) (*session, error) {
+	client, err := dialHerdrIfPresent(need)
 	if err != nil {
 		return nil, err
 	}
@@ -181,8 +222,8 @@ func newSession(allowFallback bool) (*session, error) {
 // .` from a subdirectory behaves the same as naming the root. Nothing here falls
 // back: a path that is not a repository is an error, because the whole point of
 // naming one is to stop the resolution from wandering.
-func newSessionIn(repo string) (*session, error) {
-	client, err := herdrapi.New()
+func newSessionIn(repo string, need herdrNeed) (*session, error) {
+	client, err := dialHerdrIfPresent(need)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +399,7 @@ func lsCommand(args []string, out io.Writer) error {
 	}
 
 	// Read-only: usable from a plain shell.
-	s, err := newSession(true)
+	s, err := newSession(true, herdrOptional)
 	if err != nil {
 		return err
 	}
@@ -392,7 +433,7 @@ func syncCommand(args []string, out io.Writer) error {
 	}
 
 	// Opens workspaces and starts agents, so it must be told where.
-	s, err := newSession(false)
+	s, err := newSession(false, herdrRequired)
 	if err != nil {
 		return err
 	}
@@ -471,9 +512,9 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	var s *session
 	var err error
 	if *repo != "" {
-		s, err = newSessionIn(*repo)
+		s, err = newSessionIn(*repo, herdrOptional)
 	} else {
-		s, err = newSession(!apply)
+		s, err = newSession(!apply, herdrOptional)
 	}
 	if err != nil {
 		return err

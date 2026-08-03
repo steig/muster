@@ -640,3 +640,89 @@ func TestPruneNamesAWorkspaceWhoseCheckoutHasVanished(t *testing.T) {
 		}
 	}
 }
+
+// noHerdr puts the process in the state a plain shell is in: no socket, no
+// invocation context. herdrapi.New reads the first and LoadContext the second,
+// and both must be absent or the degraded path is not the one under test.
+func noHerdr(t *testing.T) {
+	t.Helper()
+	t.Setenv("HERDR_SOCKET_PATH", "")
+	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+}
+
+// The listing works with herdr absent: the checkouts come from git and every
+// herdr column is empty, because those facts do not exist rather than could
+// not be read.
+func TestLsWorksWithoutHerdr(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.AddWorktree("wip", "wip")
+	noHerdr(t)
+	t.Chdir(repo.Root)
+
+	var out strings.Builder
+	if err := lsCommand(nil, &out); err != nil {
+		t.Fatalf("ls without herdr: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "wip") {
+		t.Errorf("the linked worktree should be listed:\n%s", got)
+	}
+	if !strings.Contains(got, "main") {
+		t.Errorf("the main checkout should be listed:\n%s", got)
+	}
+}
+
+// Every prune guard is git or gh, so the verdicts do not need herdr and never
+// did. Only the enumeration ever came from it.
+func TestPruneWorksWithoutHerdr(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("done", "done")
+	repo.CommitIn(checkout, "done.txt", "work")
+	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+	herdrtest.FakeGhPRState(t, "MERGED")
+	noHerdr(t)
+	t.Chdir(repo.Root)
+
+	var out strings.Builder
+	if err := pruneCommand(nil, &out, false); err != nil {
+		t.Fatalf("prune without herdr: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "would remove") {
+		t.Errorf("prune should still reach a verdict without herdr:\n%s", out.String())
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("prune removed a worktree; it must only list")
+	}
+}
+
+// The commands whose whole job is herdr say so, on the environment exit code
+// rather than the usage one: the command was spelled correctly and the machine
+// could not answer it.
+func TestHerdrOnlyCommandsExitEnvironmentWithoutHerdr(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
+	for _, args := range [][]string{
+		{"sync"},
+		{"start", "42"},
+		{"dispatch", "--pane", "w1:p1", "--name", "worker"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			noHerdr(t)
+			t.Chdir(repo.Root)
+
+			err := run(args, &strings.Builder{})
+			if err == nil {
+				t.Fatalf("run(%q) succeeded with no herdr", args)
+			}
+			if got := exitCode(err); got != exitEnvironment {
+				t.Errorf("run(%q) = exit %d (%v), want exitEnvironment (%d)", args, got, err, exitEnvironment)
+			}
+			if !strings.Contains(err.Error(), "herdr") {
+				t.Errorf("the error should name what is missing: %v", err)
+			}
+		})
+	}
+}

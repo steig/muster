@@ -54,7 +54,14 @@ func DefaultProjectsDir() string {
 }
 
 // Collect reads git, herdr, gh, and the transcript directory into a State.
+//
+// A nil Client means herdr is not running. The checkouts then come from git and
+// the state carries no workspaces, panes or agents — see collectWithoutHerdr.
 func (c *Collector) Collect() (State, error) {
+	if c.Client == nil {
+		return c.collectWithoutHerdr()
+	}
+
 	base := gitx.BaseRef(c.Root)
 
 	worktrees, err := c.Client.WorktreeList(c.Root)
@@ -137,6 +144,53 @@ func (c *Collector) Collect() (State, error) {
 		})
 	}
 
+	return state, nil
+}
+
+// collectWithoutHerdr fills a State from git alone.
+//
+// The prune guards are already entirely git and gh — dirty, own commits,
+// merged-into-base, upstream gone, pull request state — so the verdicts do not
+// need herdr and never did. The one fact that was only ever herdr's is the
+// enumeration, and gitx.Worktrees answers it.
+//
+// Every workspace-shaped field is left empty rather than faked, and that is
+// what makes the result honest rather than merely non-empty: with no workspaces
+// there is nothing to adopt into and nothing to staff, and with no AgentPanes
+// the prune guard that spares a checkout an agent is standing in cannot fire.
+// The last one matters — it is a guard that has been disarmed, not one that
+// passed — but there is no agent to spare, because agents live in herdr's panes
+// and herdr is not running.
+func (c *Collector) collectWithoutHerdr() (State, error) {
+	base := gitx.BaseRef(c.Root)
+
+	checkouts, err := gitx.Worktrees(c.Root)
+	if err != nil {
+		return State{}, err
+	}
+
+	state := State{Root: c.Root, Base: base, AgentPanes: map[string]AgentState{}, HerdrAbsent: true}
+	for _, w := range checkouts {
+		wt := Worktree{
+			Path:     w.Path,
+			Branch:   w.Branch,
+			IsLinked: w.IsLinked,
+			IsBare:   w.IsBare,
+		}
+		if w.IsLinked {
+			wt.Dirty = gitx.IsDirty(w.Path)
+			wt.OwnCommits = gitx.OwnCommits(w.Path, base)
+			wt.HasTranscript = c.hasTranscript(w.Path)
+			if w.Branch != "" {
+				wt.MergedIntoBase = gitx.IsMergedInto(c.Root, w.Branch, base)
+				wt.UpstreamGone = gitx.UpstreamGone(c.Root, w.Branch)
+				if c.LookupPR != nil {
+					wt.PR = c.LookupPR(w.Branch)
+				}
+			}
+		}
+		state.Worktrees = append(state.Worktrees, wt)
+	}
 	return state, nil
 }
 

@@ -327,6 +327,14 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason st
 // checkout open in, empty when there is none. Paths are compared normalised, or
 // re-asking herdr buys nothing.
 func (e *Executor) workspaceHolding(checkout string) (string, error) {
+	// With herdr absent there are no workspaces, so nothing holds anything.
+	// This is the one guard that reads as weakened by herdr's absence, and it
+	// is not: a workspace is a herdr object, and an agent lives in a pane
+	// inside one. With no herdr there is no agent whose ground this could be.
+	if e.Client == nil {
+		return "", nil
+	}
+
 	workspaces, err := e.Client.WorkspaceList()
 	if err != nil {
 		return "", err

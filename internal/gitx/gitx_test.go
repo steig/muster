@@ -280,3 +280,62 @@ func TestUpstreamGoneIgnoresAnEmptyBranch(t *testing.T) {
 		t.Error("no branch name means no upstream to be gone")
 	}
 }
+
+// The enumeration herdr normally answers, asked of git instead. Every prune
+// guard is already git or gh; this is the one fact that was only ever herdr's,
+// and without it nothing else could run with herdr absent.
+func TestWorktreesEnumeratesFromGit(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	linked := repo.AddWorktree("wip", "wip")
+
+	list, err := gitx.Worktrees(repo.Root)
+	if err != nil {
+		t.Fatalf("Worktrees: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("want the main checkout and one linked, got %d: %+v", len(list), list)
+	}
+
+	main := list[0]
+	if main.IsLinked {
+		t.Error("porcelain lists the main checkout first; it is not linked")
+	}
+	if gitx.Resolve(main.Path) != gitx.Resolve(repo.Root) {
+		t.Errorf("main path = %q, want %q", main.Path, repo.Root)
+	}
+
+	wt := list[1]
+	if !wt.IsLinked {
+		t.Error("the second checkout is a linked worktree")
+	}
+	if gitx.Resolve(wt.Path) != gitx.Resolve(linked) {
+		t.Errorf("linked path = %q, want %q", wt.Path, linked)
+	}
+	if wt.Branch != "wip" {
+		t.Errorf("branch = %q, want wip (refs/heads/ stripped)", wt.Branch)
+	}
+}
+
+// A detached checkout has no `branch` stanza line at all. Empty is the same
+// absence herdr reports as a null branch, so the reconciler above sees one
+// shape whichever source filled it.
+func TestWorktreesLeavesADetachedCheckoutWithNoBranch(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("detached", "detached")
+	repo.GitIn(checkout, "checkout", "--detach")
+
+	list, err := gitx.Worktrees(repo.Root)
+	if err != nil {
+		t.Fatalf("Worktrees: %v", err)
+	}
+	for _, w := range list {
+		if gitx.Resolve(w.Path) != gitx.Resolve(checkout) {
+			continue
+		}
+		if w.Branch != "" {
+			t.Errorf("a detached checkout has no branch, got %q", w.Branch)
+		}
+		return
+	}
+	t.Fatalf("the detached checkout is missing from the listing: %+v", list)
+}

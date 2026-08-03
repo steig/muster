@@ -8,6 +8,36 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Added
+
+- **`ls`, `prune` and `prune-apply` now run with herdr absent.** (#122) Every
+  removal guard is already entirely git and gh — uncommitted work, commits base
+  does not have, a deleted upstream, a merged pull request — so the verdicts
+  never needed herdr. The one fact that did was the enumeration, which came from
+  herdr's `worktree.list`; `gitx.Worktrees` now answers it from
+  `git worktree list --porcelain` when there is no herdr to ask.
+
+  The workspace, pane, agent and counter columns come back empty, and that is
+  the honest answer rather than a degraded one: with no herdr those facts do not
+  exist, where a herdr that failed to answer has them and will not say which.
+  The distinction is recorded as `State.HerdrAbsent` rather than inferred from
+  an empty workspace list, because a repository whose checkouts herdr has simply
+  not opened yet is exactly what `adopt` exists for — reading that as "herdr is
+  gone" would stop the plugin working on first run.
+
+  `start`, `dispatch`, `sync` and `gate` exit **2**, the environment class, and
+  name what is missing. Not a usage error: the command was spelled correctly and
+  the machine could not answer it.
+
+  One guard genuinely cannot run: the one sparing a checkout an agent is
+  standing in. There is nothing for it to protect — an agent lives in a pane
+  inside a workspace, and both are herdr's — and the guards protecting *work*
+  are git's and untouched. `README.md` says so rather than leaving it implied.
+
+  This is about herdr not *running*. Installed as a plugin herdr is present by
+  definition, so a way to install the binary without herdr is what would make
+  this reachable by anyone new; that part is not in this change.
+
 ### Fixed
 
 - **`on-event` and `startup` no longer accept arguments silently.** (#69) They

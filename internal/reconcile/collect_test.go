@@ -814,3 +814,66 @@ func TestCollectStillFailsOnOtherPaneErrors(t *testing.T) {
 		t.Fatal("an unrecognised pane.list failure must still fail the collection")
 	}
 }
+
+// Herdr absent: the checkouts come from git and every workspace-shaped fact is
+// empty. The prune guards are already entirely git and gh, so the verdicts do
+// not change — only the enumeration had ever needed herdr.
+func TestCollectWithoutHerdrReadsTheWorktreesFromGit(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("wip", "wip")
+
+	c := &reconcile.Collector{Client: nil, Root: repo.Root, ProjectsDir: t.TempDir()}
+	state, err := c.Collect()
+	if err != nil {
+		t.Fatalf("Collect with no herdr: %v", err)
+	}
+
+	if len(state.Worktrees) != 2 {
+		t.Fatalf("want the main checkout and one linked, got %d: %+v", len(state.Worktrees), state.Worktrees)
+	}
+	if len(state.Workspaces) != 0 {
+		t.Errorf("herdr is not running; there are no workspaces: %+v", state.Workspaces)
+	}
+	if len(state.AgentPanes) != 0 {
+		t.Errorf("herdr is not running; there are no agents: %+v", state.AgentPanes)
+	}
+
+	var linked *reconcile.Worktree
+	for i := range state.Worktrees {
+		if gitx.Resolve(state.Worktrees[i].Path) == gitx.Resolve(checkout) {
+			linked = &state.Worktrees[i]
+		}
+	}
+	if linked == nil {
+		t.Fatalf("the linked checkout is missing: %+v", state.Worktrees)
+	}
+	if linked.Branch != "wip" {
+		t.Errorf("branch = %q, want wip", linked.Branch)
+	}
+	if linked.WorkspaceID != "" {
+		t.Errorf("no herdr means no workspace id, got %q", linked.WorkspaceID)
+	}
+}
+
+// With no workspaces there is nothing to adopt into and nothing to staff, so a
+// herdr-free pass must plan neither. Adopting would ask a herdr that is not
+// there; staffing would start an agent in a pane that does not exist.
+func TestReconcileWithoutHerdrPlansNoAdoptOrStaff(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.AddWorktree("wip", "wip")
+
+	c := &reconcile.Collector{Client: nil, Root: repo.Root, ProjectsDir: t.TempDir()}
+	state, err := c.Collect()
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	for _, a := range reconcile.Reconcile(state) {
+		switch a.Kind {
+		case reconcile.KindAdopt:
+			t.Errorf("nothing to adopt into with herdr absent: %+v", a)
+		case reconcile.KindStaff:
+			t.Errorf("nothing to staff with herdr absent: %+v", a)
+		}
+	}
+}
