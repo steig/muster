@@ -177,6 +177,29 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ### Changed
 
+- **`--json` on `start`, `dispatch`, `report` and `gate`.** It reached `ls`,
+  `doctor`, `sync`, `prune` and `prune-apply` — the *inspection* commands —
+  while the four an agent actually orchestrates with had none. The plugin
+  described itself as driven by your agent rather than by you, and its
+  machine-readable surface stopped exactly where the agent's work started.
+
+  **`gate --json` is the one that was missing something an exit code cannot
+  supply.** With `--any` over five workers, *which one released* is the whole
+  answer, and no number can carry it. The document names it in `target`, carries
+  the envelope in `report`, and lists every worker waited on in `waiting` — each
+  with the baseline its channels already held when the gate opened, which is how
+  a coordinator that gated too late tells that case from a worker that never
+  reported.
+
+  **These four write their document on the failure paths too**, unlike the
+  reconcile commands: a `blocked` still has to say whose. Everything they would
+  have printed for a human moves to stderr, including `report`'s envelope, which
+  is one of the two channels a gate reads and may not simply vanish.
+
+  Each carries `exit_code` beside its content. Redundant with `$?` on purpose —
+  a document read off a pipe is routinely separated from its exit status, and
+  the two disagreeing is then a visible bug rather than a silent one.
+
 - **Five exit codes instead of two, keyed to what the caller does next.**
   ⚠️ **Breaking:** `1` narrows from *any failure* to *usage error*. Anything
   checking `!= 0` is unaffected; anything checking `== 1` changes meaning.

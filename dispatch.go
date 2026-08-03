@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/steig/worktender/internal/execute"
+	"github.com/steig/worktender/internal/jsonout"
 	"github.com/steig/worktender/internal/reconcile"
 )
 
@@ -31,6 +32,7 @@ func dispatchCommand(args []string, out io.Writer) error {
 	model := fs.String("model", "", "model to pass to the agent")
 	permissionMode := fs.String("permission-mode", "", "agent permission mode")
 	resume := fs.Bool("resume", false, "continue the pane's existing transcript")
+	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return usagef("%v; %s", err, dispatchUsage)
@@ -69,11 +71,33 @@ func dispatchCommand(args []string, out io.Writer) error {
 		AgentArgs:   agentArgs,
 	}})
 
-	fmt.Fprint(out, execute.Render(results))
-	if execute.Counts(results)[execute.StatusFailed] > 0 {
-		return fmt.Errorf("dispatch to %s failed", *pane)
+	notes := out
+	if *asJSON {
+		notes = os.Stderr
 	}
-	return nil
+	fmt.Fprint(notes, execute.Render(results))
+
+	doc := &dispatchJSON{
+		PaneID:      *pane,
+		WorkspaceID: jsonout.String(workspace),
+		AgentName:   *name,
+		Staffing:    execute.JSON(results),
+	}
+	var failed error
+	if execute.Counts(results)[execute.StatusFailed] > 0 {
+		failed = fmt.Errorf("dispatch to %s failed", *pane)
+	} else {
+		// Only a dispatch that actually staffed earns a gate command; naming one
+		// for an agent that never started would be an instruction to wait for
+		// nothing.
+		doc.GateCommand = jsonout.String(fmt.Sprintf("%s gate --target %s --until done", selfPath(), *name))
+	}
+	if *asJSON {
+		if err := jsonout.Write(out, doc.finish(failed)); err != nil {
+			return err
+		}
+	}
+	return failed
 }
 
 // agentArgsFor turns dispatch's flags into agent arguments.

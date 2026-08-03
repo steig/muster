@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"strings"
@@ -1287,4 +1288,149 @@ func TestGateFailuresCarryDistinctExitCodes(t *testing.T) {
 			t.Errorf("unresolvable target = exit %d, want exitUsage (%d); retrying a mistyped name never resolves it", got, exitUsage)
 		}
 	})
+}
+
+// decodeGateJSON parses the document a gate wrote, failing the test if stdout
+// was not exactly one JSON document — the failure a consumer would hit first.
+func decodeGateJSON(t *testing.T, out string) gateJSON {
+	t.Helper()
+	var doc gateJSON
+	dec := json.NewDecoder(strings.NewReader(out))
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("stdout is not a JSON document: %v\n%s", err, out)
+	}
+	if dec.More() {
+		t.Fatalf("stdout carried more than one document; a consumer reads the first and misses the rest:\n%s", out)
+	}
+	return doc
+}
+
+// `--json` exists because an exit code cannot say WHICH worker a `--any` gate
+// was about, and that is the whole answer when the caller has five running.
+func TestGateJSONNamesWhichWorker(t *testing.T) {
+	f := newGateWorkers(t, "a", "b", "c")
+	go f.worker("b").prints(report{status: "done", pr: 7, note: "landed"})
+
+	out, err, _ := f.gate(t, "--any", "a,b,c", "--until", "done", "--json")
+	if err != nil {
+		t.Fatalf("gate should have released: %v\n%s", err, out)
+	}
+
+	doc := decodeGateJSON(t, out)
+	if doc.Outcome != gateOutcomeReleased {
+		t.Errorf("outcome = %q, want %q", doc.Outcome, gateOutcomeReleased)
+	}
+	if doc.ExitCode != exitOK {
+		t.Errorf("exit_code = %d, want %d", doc.ExitCode, exitOK)
+	}
+	if doc.Target == nil || doc.Target.Name != "b" {
+		t.Fatalf("target should name b, got %+v", doc.Target)
+	}
+	if doc.Target.PaneID == "" {
+		t.Error("target carried no pane_id; a coordinator needs it to dispatch again")
+	}
+	if doc.Report == nil || doc.Report.Status != "done" {
+		t.Fatalf("report = %+v, want status done", doc.Report)
+	}
+	if doc.Report.PR == nil || *doc.Report.PR != 7 {
+		t.Errorf("pr = %v, want 7", doc.Report.PR)
+	}
+	if len(doc.Waiting) != 3 {
+		t.Errorf("waiting covers %d workers, want the 3 that were gated on", len(doc.Waiting))
+	}
+	if doc.Error != nil {
+		t.Errorf("error should be null on a release, got %q", *doc.Error)
+	}
+}
+
+// The document is written on the failure paths too. A gate that only produced
+// output on success would leave its consumer parsing stderr prose for exactly
+// the cases the exit codes exist to distinguish.
+func TestGateJSONIsWrittenOnEveryOutcome(t *testing.T) {
+	t.Run("blocked", func(t *testing.T) {
+		f := newGateWorkers(t, "a", "b")
+		go f.worker("b").prints(report{status: "blocked", note: "needs a decision"})
+
+		out, err, _ := f.gate(t, "--any", "a,b", "--json")
+		if err == nil {
+			t.Fatal("the gate released on a blocked worker")
+		}
+		doc := decodeGateJSON(t, out)
+		if doc.Outcome != gateOutcomeBlocked {
+			t.Errorf("outcome = %q, want %q", doc.Outcome, gateOutcomeBlocked)
+		}
+		if doc.ExitCode != exitNeedsHuman {
+			t.Errorf("exit_code = %d, want exitNeedsHuman (%d)", doc.ExitCode, exitNeedsHuman)
+		}
+		if doc.Target == nil || doc.Target.Name != "b" {
+			t.Errorf("target should name the blocked worker, got %+v", doc.Target)
+		}
+		if doc.Error == nil {
+			t.Error("error should carry the message that went to stderr")
+		}
+	})
+
+	t.Run("timeout belongs to no single worker", func(t *testing.T) {
+		f := newGateWorkers(t, "a", "b")
+		f.worker("a").tokens = stored(t, report{status: "done", pr: 4, note: "the previous slice"})
+
+		out, err, _ := f.gate(t, "--any", "a,b", "--timeout", "400ms", "--json")
+		if err == nil {
+			t.Fatal("the gate released on a report that predates it")
+		}
+		doc := decodeGateJSON(t, out)
+		if doc.Outcome != gateOutcomeTimeout {
+			t.Errorf("outcome = %q, want %q", doc.Outcome, gateOutcomeTimeout)
+		}
+		if doc.ExitCode != exitNoAnswer {
+			t.Errorf("exit_code = %d, want exitNoAnswer (%d)", doc.ExitCode, exitNoAnswer)
+		}
+		if doc.Target != nil {
+			t.Errorf("a timeout is about no one worker; target = %+v", doc.Target)
+		}
+		// The baseline is the whole reason a gate started too late looks like a
+		// gate that was ignored, and the document has to show it.
+		var a *gateTargetJSON
+		for i := range doc.Waiting {
+			if doc.Waiting[i].Name == "a" {
+				a = &doc.Waiting[i]
+			}
+		}
+		if a == nil || a.Baseline == nil {
+			t.Fatalf("a's baseline should be carried, got %+v", a)
+		}
+		if a.Baseline.Status != "done" {
+			t.Errorf("baseline status = %q, want the previous task's done", a.Baseline.Status)
+		}
+	})
+
+	t.Run("a target that cannot resolve still produces a document", func(t *testing.T) {
+		f := newGateWorkers(t, "a")
+
+		out, err, _ := f.gate(t, "--any", "a,ghost", "--json")
+		if err == nil {
+			t.Fatal("the gate waited on a target that cannot report")
+		}
+		doc := decodeGateJSON(t, out)
+		if doc.ExitCode != exitUsage {
+			t.Errorf("exit_code = %d, want exitUsage (%d)", doc.ExitCode, exitUsage)
+		}
+		if doc.Error == nil {
+			t.Error("error should say which target could not be resolved")
+		}
+	})
+}
+
+// The two channels must agree. A document claiming exit 0 beside a process
+// exiting 3 is worse than either alone, because a consumer trusting the wrong
+// one has no way to notice.
+func TestGateJSONExitCodeMatchesTheProcess(t *testing.T) {
+	f := newGateWorkers(t, "a")
+	go f.worker("a").prints(report{status: "blocked", note: "stuck"})
+
+	out, err, _ := f.gate(t, "--target", "a", "--json")
+	doc := decodeGateJSON(t, out)
+	if doc.ExitCode != exitCode(err) {
+		t.Errorf("document says exit %d, process would exit %d", doc.ExitCode, exitCode(err))
+	}
 }
