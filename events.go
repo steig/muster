@@ -87,6 +87,10 @@ func renamedEnvNotice() string {
 	return ""
 }
 
+// onEventUsage is what an invocation of the event hook may look like, which is
+// the command and nothing else.
+const onEventUsage = "usage: worktender on-event (herdr invokes this; it takes no arguments)"
+
 // onEventCommand is the whole event fast path.
 //
 // An event is a trigger, never a fact. The payload is read for exactly one
@@ -94,7 +98,20 @@ func renamedEnvNotice() string {
 // pipeline `sync` runs runs again over the whole repository, reading live
 // state. An event payload is herdr's snapshot from before this process existed,
 // so it is stale on arrival by construction.
-func onEventCommand(out io.Writer) error {
+func onEventCommand(args []string, out io.Writer) error {
+	// Refused before the opt-in is read, because a malformed invocation is
+	// malformed either way and answering it with the events-off notice would
+	// report the argument as accepted. Nothing is reached to do it: rejecting
+	// argv runs no herdr call and loads no payload, which is what the opt-in
+	// guards.
+	//
+	// herdr invokes this with a fixed array and no arguments — the payload
+	// arrives in the environment — so nothing that reaches here legitimately
+	// has any.
+	if len(args) > 0 {
+		return usagef("unexpected argument %q; %s", args[0], onEventUsage)
+	}
+
 	// Checked before anything else is parsed, so a plugin that has not been
 	// opted in does nothing whatsoever.
 	if !eventsEnabled() {

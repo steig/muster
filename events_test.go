@@ -99,7 +99,7 @@ func TestEventHandlerIsOffByDefault(t *testing.T) {
 	t.Setenv(eventsEnv, "")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("a disabled handler must exit 0, not fail: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestEventsGateFailsClosedOnAnUnrecognisedValueAndSaysSo(t *testing.T) {
 	t.Setenv(eventsEnv, "ture")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("an unrecognised value must decline, not fail: %v", err)
 	}
 
@@ -184,7 +184,7 @@ func TestEventsGateDoesNotScoldADeliberateOptOut(t *testing.T) {
 	t.Setenv(eventsEnv, "off")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("opting out must not fail: %v", err)
 	}
 
@@ -209,7 +209,7 @@ func TestEventHandlerRefusesTheOldEnvNameAndSaysSo(t *testing.T) {
 			t.Setenv(legacy, "1")
 
 			var out strings.Builder
-			if err := onEventCommand(&out); err != nil {
+			if err := onEventCommand(nil, &out); err != nil {
 				t.Fatalf("the old name must decline, not fail: %v", err)
 			}
 
@@ -233,7 +233,7 @@ func TestEventHandlerActsWhenOptedIn(t *testing.T) {
 	t.Setenv("WORKTENDER_EVENTS", "1")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("onEvent: %v", err)
 	}
 
@@ -265,7 +265,7 @@ func TestEventHandlerNeverPrunes(t *testing.T) {
 	t.Setenv("WORKTENDER_EVENTS", "1")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("onEvent: %v", err)
 	}
 
@@ -290,7 +290,7 @@ func TestEventHandlerMakesNoGhCalls(t *testing.T) {
 	t.Setenv("WORKTENDER_EVENTS", "1")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("onEvent: %v", err)
 	}
 
@@ -313,7 +313,7 @@ func TestEventHandlerScopesFromPayloadNotContext(t *testing.T) {
 	t.Setenv("WORKTENDER_EVENTS", "1")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("onEvent: %v", err)
 	}
 
@@ -360,7 +360,7 @@ func TestEventHandlerActsOnAWorktreeOutsideTheRepoRoot(t *testing.T) {
 	t.Setenv(eventsEnv, "1")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("onEvent: %v", err)
 	}
 
@@ -409,7 +409,7 @@ func TestEventHandlerDerivesRootFromAnOutOfRootCheckout(t *testing.T) {
 	t.Setenv(eventsEnv, "1")
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("onEvent: %v", err)
 	}
 
@@ -444,7 +444,7 @@ func TestASecondHandlerCoalescesIntoTheRunningPass(t *testing.T) {
 	}
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("coalescing must not be an error: %v", err)
 	}
 
@@ -484,7 +484,7 @@ func TestAMarkDuringAPassTriggersAnotherPass(t *testing.T) {
 	})
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("onEvent: %v", err)
 	}
 
@@ -508,7 +508,7 @@ func TestEventHandlerRejectsAMalformedEnvelope(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_EVENT", "worktree.opened")
 	t.Setenv("HERDR_PLUGIN_EVENT_JSON", `{"event":`)
 
-	if err := onEventCommand(&strings.Builder{}); err == nil {
+	if err := onEventCommand(nil, &strings.Builder{}); err == nil {
 		t.Fatal("a malformed envelope must not be treated as absent")
 	}
 }
@@ -524,7 +524,7 @@ func TestEventHandlerIgnoresAnUnhandledKind(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_EVENT_JSON", `{"event":"layout_updated","data":{"type":"layout_updated"}}`)
 
 	var out strings.Builder
-	if err := onEventCommand(&out); err != nil {
+	if err := onEventCommand(nil, &out); err != nil {
 		t.Fatalf("an unhandled event kind must not fail: %v", err)
 	}
 	if called(t, server, "worktree.open") {

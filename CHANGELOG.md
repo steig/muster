@@ -8,6 +8,22 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+### Fixed
+
+- **`on-event` and `startup` no longer accept arguments silently.** (#69) They
+  were the last two commands that took whatever they were given and exited `0`.
+  Every other command now rejects an unknown flag or a stray argument with a
+  usage error; these two dropped their arguments before they were ever read,
+  so a scoped invocation was indistinguishable from an unscoped one — on the
+  two commands that can start coding agents without being asked.
+
+  Nothing legitimate is affected: herdr invokes both with a fixed array and no
+  arguments, the event payload arriving in the environment rather than on the
+  command line. The refusal comes *before* the `WORKTENDER_EVENTS` opt-in is
+  read, because a malformed invocation is malformed either way and answering
+  one with the events-off notice reports the argument as accepted. It reaches
+  nothing the opt-in guards: no herdr call, no payload load.
+
 ### Added
 
 - **`ls` and `prune` now report a workspace whose checkout has vanished.** (#75)

@@ -90,10 +90,10 @@ func run(args []string, out io.Writer) error {
 		return gateCommand(args[1:], out)
 	case "on-event":
 		// Invoked by herdr, never by hand. Off unless opted in.
-		return onEventCommand(out)
+		return onEventCommand(args[1:], out)
 	case "startup":
 		// Invoked once by herdr after the server is ready. Off unless opted in.
-		return startupCommand(out)
+		return startupCommand(args[1:], out)
 	default:
 		return usagef("unknown command %q; %s", args[0], usage)
 	}

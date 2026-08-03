@@ -118,7 +118,7 @@ func TestStartupIsOffByDefault(t *testing.T) {
 	t.Setenv(eventsEnv, "")
 
 	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
+	if err := startupCommand(nil, &out); err != nil {
 		t.Fatalf("a disabled startup command must exit 0, not fail: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestStartupRefusesTheOldEnvNameAndSaysSo(t *testing.T) {
 			t.Setenv(legacy, "1")
 
 			var out strings.Builder
-			if err := startupCommand(&out); err != nil {
+			if err := startupCommand(nil, &out); err != nil {
 				t.Fatalf("the old name must decline, not fail: %v", err)
 			}
 
@@ -170,7 +170,7 @@ func TestStartupAdoptsAWorktreeThatAppearedWhileHerdrWasDown(t *testing.T) {
 	t.Setenv(eventsEnv, "1")
 
 	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
+	if err := startupCommand(nil, &out); err != nil {
 		t.Fatalf("startup: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestStartupReconcilesEveryOpenRepository(t *testing.T) {
 	t.Setenv(eventsEnv, "1")
 
 	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
+	if err := startupCommand(nil, &out); err != nil {
 		t.Fatalf("startup: %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestStartupReconcilesEachRepositoryOnce(t *testing.T) {
 	t.Setenv(eventsEnv, "1")
 
 	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
+	if err := startupCommand(nil, &out); err != nil {
 		t.Fatalf("startup: %v", err)
 	}
 
@@ -263,7 +263,7 @@ func TestStartupTerminatesEvenWhileWorkKeepsArriving(t *testing.T) {
 		return worktreeListReply(r.repo, r.checkout, "wip", ""), nil
 	})
 
-	if err := startupCommand(io.Discard); err != nil {
+	if err := startupCommand(nil, io.Discard); err != nil {
 		t.Fatalf("startup: %v", err)
 	}
 
@@ -284,7 +284,7 @@ func TestStartupMakesNoGhCalls(t *testing.T) {
 	herdrtest.FakeGh(t, "touch "+sentinel+"; "+herdrtest.GhPRScript("OPEN"))
 	t.Setenv(eventsEnv, "1")
 
-	if err := startupCommand(io.Discard); err != nil {
+	if err := startupCommand(nil, io.Discard); err != nil {
 		t.Fatalf("startup: %v", err)
 	}
 
@@ -309,7 +309,7 @@ func TestStartupNeverPrunes(t *testing.T) {
 	t.Setenv(eventsEnv, "1")
 
 	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
+	if err := startupCommand(nil, &out); err != nil {
 		t.Fatalf("startup: %v", err)
 	}
 
@@ -359,7 +359,7 @@ func TestStartupSkipsWorkspacesThatAreNotWorktrees(t *testing.T) {
 	t.Setenv(eventsEnv, "1")
 
 	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
+	if err := startupCommand(nil, &out); err != nil {
 		t.Fatalf("startup: %v", err)
 	}
 
@@ -392,7 +392,7 @@ func TestStartupCoalescesPerRepository(t *testing.T) {
 	}
 
 	var out strings.Builder
-	if err := startupCommand(&out); err != nil {
+	if err := startupCommand(nil, &out); err != nil {
 		t.Fatalf("coalescing must not be an error: %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestStartupKeepsGoingWhenOneRepositoryFails(t *testing.T) {
 	})
 
 	var out strings.Builder
-	err := startupCommand(&out)
+	err := startupCommand(nil, &out)
 	if err == nil {
 		t.Fatalf("a failed repository must reach the exit code; output:\n%s", out.String())
 	}
