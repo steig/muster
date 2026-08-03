@@ -371,7 +371,7 @@ $ worktender prune --repo . --json
 $ worktender doctor --json
 {
   "checks": [
-    { "name": "version", "value": "0.7.0 @f074c65", "state": "warn", "note": "origin/main is at @a1b2c3d; run `worktender update`" },
+    { "name": "version", "value": "0.8.0 @f074c65", "state": "warn", "note": "origin/main is at @a1b2c3d; run `worktender update`" },
     { "name": "herdr",   "value": "0.7.5",          "state": "ok",   "note": null },
     { "name": "gh",      "value": "not authenticated", "state": "warn", "note": "reads as \"no pull request\", so prune will keep almost everything" },
     { "name": "events",  "value": "unset",          "state": "off",  "note": null }
