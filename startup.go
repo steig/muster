@@ -10,6 +10,9 @@ import (
 	"github.com/steig/worktender/internal/repolock"
 )
 
+// startupUsage is what an invocation of the startup one-shot may look like.
+const startupUsage = "usage: worktender startup (herdr invokes this; it takes no arguments)"
+
 // startupCommand is what herdr's [[startup]] entry runs once, after the server
 // is ready. Nothing here loops, sleeps, or stays resident: it is one reconcile
 // pass per repository and then the process exits.
@@ -18,7 +21,15 @@ import (
 // interval when herdr was not running — a worktree added from a plain shell, a
 // workspace restored without its agent. That gap opens exactly once, at
 // startup, which is when this runs.
-func startupCommand(out io.Writer) error {
+func startupCommand(args []string, out io.Writer) error {
+	// Refused ahead of the opt-in, for the reason on-event refuses it there:
+	// answering a bad invocation with the events-off notice reports the
+	// argument as accepted, and rejecting argv reaches nothing the opt-in
+	// guards.
+	if len(args) > 0 {
+		return usagef("unexpected argument %q; %s", args[0], startupUsage)
+	}
+
 	// Startup shares the [[events]] opt-in rather than adding a switch of its
 	// own: both start coding agents without being asked, and a second variable
 	// would let someone opt out of one trigger while the other kept firing.

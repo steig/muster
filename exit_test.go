@@ -107,6 +107,14 @@ func TestUnparseableArgumentsExitUsage(t *testing.T) {
 		{"start", "--nonesuch"},
 		{"start", "not-a-number"},
 		{"start"},
+		// herdr invokes these two with a fixed array and no arguments, so
+		// nothing legitimate reaches them with any. They accepted whatever
+		// they were given and exited 0 — which, on the commands that can
+		// start agents, reads as an invocation that was understood.
+		{"on-event", "--nonesuch"},
+		{"on-event", "stray"},
+		{"startup", "--nonesuch"},
+		{"startup", "stray"},
 	} {
 		err := run(args, &strings.Builder{})
 		if err == nil {
