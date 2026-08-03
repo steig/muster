@@ -360,12 +360,37 @@ absent means. This costs one connect per invocation — microseconds against a
 live socket, an immediate "no such file" against none — and it buys the
 guarantee that degrading is never a guess.
 
-A dial can also fail without settling anything — a timeout, a permission
-denial, an endpoint too long to address. That is **not** absence, and worktender
-will not degrade on it: every command stops with exit 2 rather than assume. Only
-two answers count as proof that herdr is gone — no socket at the path, or a
-socket nobody is accepting on. Anything else is "cannot tell", and "cannot tell"
-resolving to "not there" is how the guard gets disarmed.
+**Exactly one outcome counts as proof that herdr is gone: there is no socket at
+the path.** A running herdr always has its socket on disk, and that is the
+ordinary state of a machine that does not run herdr — the case this exists for.
+
+Every other failure is "cannot tell", and worktender stops with exit 2 rather
+than assume, because "cannot tell" resolving to "not there" is how the guard
+gets disarmed.
+
+That includes a **refused connection**, which is the tempting one: a socket file
+with nobody accepting reads as a herdr that died. It is not proof, because it is
+not only produced by a dead herdr. Dialling, measured on both platforms:
+
+| what is at the path | macOS | Linux |
+| --- | --- | --- |
+| nothing | `ENOENT` | `ENOENT` |
+| a directory or an ordinary file | `ENOTSOCK` | `ECONNREFUSED` |
+| a socket, no listener | `ECONNREFUSED` | `ECONNREFUSED` |
+| **a live listener whose accept queue is full** | **`ECONNREFUSED`** | timeout |
+
+The last row settles it. On macOS a herdr that is running, listening and merely
+backed up refuses the connection, and nothing cheap tells that apart from a
+socket with nobody behind it — so treating `ECONNREFUSED` as proof would let a
+busy herdr read as gone, which is the whole failure this section exists to
+prevent. Retrying does not help: a herdr under sustained load stays refused.
+`ENOENT` is also the only rule that gives the same verdict on both platforms for
+every row, so the destructive path cannot unlock on one and not the other.
+
+The cost is the third row: a herdr killed without cleaning up leaves its socket
+behind, and worktender then refuses rather than degrading. That is the right way
+round — refusing prints an error you can act on, degrading wrongly deletes a
+checkout — and the error names the stale socket to remove.
 
 Two consequences worth knowing:
 

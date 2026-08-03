@@ -38,11 +38,20 @@ install` tracks branch HEAD rather than a tag — the version in
   beside a running herdr, `ls` now shows the workspace and agent columns
   populated rather than empty.
 
-  Only two dial outcomes count as proof — nothing at the path, or a socket
-  nobody is accepting on. A dial that fails without settling the question, a
-  timeout most of all, is fatal for every command rather than degraded through:
-  "cannot tell" resolving to "not there" would reopen the same hole one layer
-  down.
+  Exactly one dial outcome counts as proof: no socket at the path. A running
+  herdr always has one on disk. Every other failure is fatal for every command
+  rather than degraded through, because "cannot tell" resolving to "not there"
+  would reopen the same hole one layer down.
+
+  A refused connection is explicitly *not* proof, and that is measured rather
+  than assumed: on macOS a live listener whose accept queue is full refuses the
+  connection with the same `ECONNREFUSED` a socket with nobody behind it gives,
+  so degrading on it would let a busy herdr read as gone. It is also the only
+  classification that agrees across platforms — dialling a directory gives
+  `ENOTSOCK` on macOS and `ECONNREFUSED` on Linux, so any broader rule unlocks
+  the destructive path on one platform and not the other. The cost is that a
+  herdr killed without unlinking its socket makes worktender refuse rather than
+  degrade; the error names the socket to remove.
 
   `start`, `dispatch`, `sync` and `gate` exit **2**, the environment class, and
   name what is missing. Not a usage error: the command was spelled correctly and

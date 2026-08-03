@@ -5,7 +5,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/steig/worktender/internal/herdrapi"
 )
@@ -69,9 +71,9 @@ func TestProbeReportsHerdrDownWhenNothingIsListening(t *testing.T) {
 	}
 }
 
-// A shell that outlived the herdr that exported the variable. New is satisfied
-// by the string; only a dial is not.
-func TestProbeReportsHerdrDownOnAStaleSocketPath(t *testing.T) {
+// A shell that outlived the herdr that exported the variable, and whose socket
+// went with it. New is satisfied by the string; only a dial is not.
+func TestProbeReportsHerdrDownWhenTheNamedSocketIsGone(t *testing.T) {
 	// Not t.TempDir: its names run past the ~104-byte cap darwin puts on a
 	// socket address, and the dial then fails with EINVAL — which is correctly
 	// classed as "could not tell" and would test the wrong branch.
@@ -126,13 +128,16 @@ func TestDefaultSocketPathFollowsXDGConfigHome(t *testing.T) {
 	}
 }
 
-// A dial that did not finish is not an answer. Only ENOENT and ECONNREFUSED
-// prove nothing is there; a timeout, a permission denial or an unaddressable
-// endpoint leave the question open, and a caller that degrades on the open
-// question removes a checkout an agent may be standing in.
+// A dial that did not finish is not an answer. Only a missing socket proves
+// nothing is there; everything else leaves the question open, and a caller that
+// degrades on the open question removes a checkout an agent may be standing in.
+//
+// A directory in place of a socket is the case that pins the platforms
+// together: dialling one fails with ENOTSOCK on darwin and ECONNREFUSED on
+// linux, so a classifier reading errnos other than ENOENT as proof gives two
+// different verdicts for one on-disk state — and gives the permissive one on
+// linux only.
 func TestProbeSeparatesProvenAbsenceFromAFailedDial(t *testing.T) {
-	// A directory in place of a socket: the dial cannot succeed and cannot
-	// prove absence either.
 	dir, err := os.MkdirTemp("", "hp")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
@@ -149,9 +154,50 @@ func TestProbeSeparatesProvenAbsenceFromAFailedDial(t *testing.T) {
 	}
 }
 
-// The stale socket file a herdr that exited leaves behind: the path is there,
-// nobody is accepting. That is proof, and it is the case worth degrading on.
-func TestProbeReadsARefusedConnectionAsProvenAbsence(t *testing.T) {
+// A live herdr that is merely too busy to accept must never read as absent.
+//
+// On darwin a listening socket whose accept queue is full refuses the
+// connection outright — the same ECONNREFUSED a socket with nobody behind it
+// gives. That is why ECONNREFUSED is not proof: this herdr is up, holding
+// workspaces, with agents in its panes, and degrading here would plan to remove
+// the ground out from under them.
+func TestProbeDoesNotCallABackedUpHerdrAbsent(t *testing.T) {
+	socket := herdrHome(t)
+	t.Setenv(herdrapi.SocketEnv, "")
+	listen(t, socket)
+
+	// Fill the accept queue: the listener above never calls Accept.
+	var held []net.Conn
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	for i := 0; i < 512; i++ {
+		c, err := net.DialTimeout("unix", socket, 200*time.Millisecond)
+		if err != nil {
+			break
+		}
+		held = append(held, c)
+	}
+
+	// Whether the queue actually filled is a kernel tuning detail, so this
+	// asserts the only thing that must hold either way: a listener that is
+	// there is never reported as proven absence.
+	if _, err := herdrapi.Probe(); errors.Is(err, herdrapi.ErrNoHerdr) {
+		t.Fatalf("herdr is listening; a refused or slow dial must not read as absent: %v", err)
+	}
+}
+
+// The stale socket file a herdr killed without cleaning up leaves behind: the
+// path is there and nobody is accepting.
+//
+// It reads as absent to a person and is not proof to this code, because darwin
+// gives the identical ECONNREFUSED for a live listener with a full queue — see
+// TestProbeDoesNotCallABackedUpHerdrAbsent. So worktender refuses instead of
+// degrading, and says how to clear it. Refusing costs an error message;
+// degrading wrongly costs an agent's checkout.
+func TestProbeWillNotDegradeOnAStaleSocketItCannotTellFromABusyOne(t *testing.T) {
 	socket := herdrHome(t)
 	t.Setenv(herdrapi.SocketEnv, "")
 	ln := listen(t, socket)
@@ -176,7 +222,15 @@ func TestProbeReadsARefusedConnectionAsProvenAbsence(t *testing.T) {
 		t.Fatalf("the socket file should still be there: %v", err)
 	}
 
-	if _, err := herdrapi.Probe(); !errors.Is(err, herdrapi.ErrNoHerdr) {
-		t.Errorf("a socket path with nobody accepting is proven absence, got %v", err)
+	_, err := herdrapi.Probe()
+	if errors.Is(err, herdrapi.ErrNoHerdr) {
+		t.Errorf("indistinguishable from a busy listener on darwin, so it is not proof: %v", err)
+	}
+	if !errors.Is(err, herdrapi.ErrHerdrUnknown) {
+		t.Fatalf("want ErrHerdrUnknown, got %v", err)
+	}
+	// The state persists until somebody clears it, so the error has to say how.
+	if !strings.Contains(err.Error(), socket) {
+		t.Errorf("the error should name the socket to remove, got %v", err)
 	}
 }

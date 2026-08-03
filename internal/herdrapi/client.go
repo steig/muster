@@ -16,7 +16,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -128,13 +127,39 @@ var ErrHerdrUnknown = errors.New("cannot tell whether herdr is running")
 
 // absent reports whether a dial failure proves nothing is there.
 //
-// Two answers are proof. ENOENT: no socket file, so no listener ever bound one
-// — the ordinary state of a machine with no herdr. ECONNREFUSED: a socket file
-// left behind by a herdr that exited, with nobody accepting on it. Everything
-// else, timeouts most of all, is the dial not finishing rather than finishing
-// with a no.
+// Exactly one errno is proof: ENOENT. There is no socket at the path, so
+// nothing ever bound one — and a running herdr always has its socket on disk.
+// That is the ordinary state of a machine that does not run herdr, which is the
+// case this whole path exists for.
+//
+// Everything else is ErrHerdrUnknown, and ECONNREFUSED most deliberately of
+// all. It is tempting — a socket file with nobody accepting reads as a herdr
+// that exited — and it is wrong, because it is not the only thing that produces
+// it. Measured on both platforms, dialling:
+//
+//	                          darwin        linux
+//	no socket at the path     ENOENT        ENOENT
+//	a directory or a file     ENOTSOCK      ECONNREFUSED
+//	a socket, no listener     ECONNREFUSED  ECONNREFUSED
+//	a LIVE listener, queue full   ECONNREFUSED  timeout
+//
+// The last row is the one that settles it. On darwin a herdr that is running,
+// listening and merely backed up refuses the connection, and no cheaper check
+// tells that apart from a socket nobody is behind. Treating ECONNREFUSED as
+// proof would let a busy herdr read as gone — and proof of absence is what
+// re-enables removing a checkout an agent is standing in. Retrying does not
+// help: a herdr under sustained load stays refused.
+//
+// ENOENT alone also happens to be the only classification that gives the same
+// answer on both platforms for every row above, so the destructive path cannot
+// unlock on one and not the other.
+//
+// What this costs: a herdr killed without cleaning up leaves its socket behind,
+// and worktender then refuses rather than degrading. That is the right way
+// round — refusing prints an error a person can act on, degrading wrongly
+// deletes an agent's checkout — and Probe says how to clear it.
 func absent(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // Probe establishes whether herdr is actually there, by dialling and hanging up.
@@ -165,7 +190,12 @@ func Probe() (*Client, error) {
 		if absent(err) {
 			return nil, fmt.Errorf("%w: %w", ErrNoHerdr, err)
 		}
-		return nil, fmt.Errorf("%w: %w", ErrHerdrUnknown, err)
+		// The endpoint is there and would not talk. Naming the way out matters
+		// here in a way it does not for a timeout: the likeliest cause is a
+		// herdr that died without unlinking its socket, and that state persists
+		// until somebody clears it.
+		return nil, fmt.Errorf("%w: %w; if herdr is not running, remove %s and try again",
+			ErrHerdrUnknown, err, path)
 	}
 	_ = conn.Close()
 	return &Client{socketPath: path}, nil
