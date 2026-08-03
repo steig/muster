@@ -96,7 +96,7 @@ func TestRenderAlignsColumns(t *testing.T) {
 	err := wt.Render(&buf, []wt.Row{
 		{Main: true, Branch: "main", Dir: "repo"},
 		{Branch: "a-much-longer-branch", WorkspaceID: "w2", PaneID: "p1", AgentStatus: "idle", Dir: "wt"},
-	}, false)
+	}, wt.Columns{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestRenderEscapesABranchNameThatDrawsAsAnother(t *testing.T) {
 	var buf bytes.Buffer
 	if err := wt.Render(&buf, []wt.Row{
 		{Branch: branch, Dir: "wt"},
-	}, false); err != nil {
+	}, wt.Columns{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -372,7 +372,7 @@ func TestTheCounterTellsTwoIdleWorkersApart(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := wt.Render(&buf, rows, false); err != nil {
+	if err := wt.Render(&buf, rows, wt.Columns{}); err != nil {
 		t.Fatal(err)
 	}
 

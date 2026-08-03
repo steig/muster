@@ -315,7 +315,7 @@ func jsonFlag(fs *flag.FlagSet) *bool {
 	return fs.Bool("json", false, "write a machine-readable document instead of the table")
 }
 
-const lsUsage = "usage: worktender ls [--all-repos] [--blocked] [--pr] [--json]"
+const lsUsage = "usage: worktender ls [--all-repos] [--blocked] [--pr] [--reports] [--json]"
 
 func lsCommand(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
@@ -323,6 +323,7 @@ func lsCommand(args []string, out io.Writer) error {
 	withPR := fs.Bool("pr", false, "ask gh for each branch's pull request state")
 	allRepos := fs.Bool("all-repos", false, "list every repository herdr has a worktree workspace for, not only this one")
 	blocked := fs.Bool("blocked", false, "keep only the worktrees herdr reports a blocked agent in")
+	reports := fs.Bool("reports", false, "ask each staffed pane what its worker last reported")
 	asJSON := jsonFlag(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -332,6 +333,12 @@ func lsCommand(args []string, out io.Writer) error {
 		return usagef("unexpected argument %q; %s", fs.Arg(0), lsUsage)
 	}
 	opts := wt.Options{Blocked: *blocked, JSON: *asJSON}
+	if *reports {
+		// Unlike --pr this works across repositories: the lookup is one herdr
+		// call on a pane herdr already told us about, so there is no wrong
+		// repository to ask and nothing is scoped to one.
+		opts.LookupReport = paneReport
+	}
 
 	if *allRepos {
 		if *withPR {

@@ -138,7 +138,7 @@ func TestJSONCarriesRawValuesTheTableEscapes(t *testing.T) {
 	}
 
 	var table bytes.Buffer
-	if err := wt.Render(&table, rows, false); err != nil {
+	if err := wt.Render(&table, rows, wt.Columns{}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.ContainsRune(table.String(), '‮') {

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/wt"
 )
 
 // The metadata channel is how a report actually reaches a gate.
@@ -285,4 +286,31 @@ func confirmTokens(paneID string, want map[string]any, stored map[string]string)
 		}
 	}
 	return nil
+}
+
+// paneReport is the listing's report lookup: what the worker in a pane last
+// told its coordinator, read back off the pane's own herdr metadata.
+//
+// It lives here rather than in the listing because decoding the envelope is
+// this command's business — internal/wt renders a column and should not know
+// the token layout, the note chunking, or which slots go back through a
+// validator.
+//
+// A pane that carries no report is not an error. It is the ordinary answer for
+// a worker that has not reported yet, and the caller distinguishes it from an
+// unreadable pane by Found rather than by err.
+func paneReport(paneID string) (wt.Report, error) {
+	client, err := herdrapi.New()
+	if err != nil {
+		return wt.Report{}, err
+	}
+	info, err := client.PaneGet(paneID)
+	if err != nil {
+		return wt.Report{}, err
+	}
+	r, _, ok := decodeReport(info.Pane.Tokens)
+	if !ok {
+		return wt.Report{}, nil
+	}
+	return wt.Report{Found: true, Status: r.status, PR: r.pr, Note: r.note}, nil
 }

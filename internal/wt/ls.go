@@ -22,7 +22,15 @@ import (
 type Options struct {
 	// Blocked keeps only the worktrees herdr reports a blocked agent in.
 	Blocked bool
-	JSON    bool
+	// LookupReport asks a pane what the worker in it last reported. Nil turns
+	// the column off, the same way a nil pull request lookup does — and it is
+	// off by default because it costs one herdr call per pane, the trade --pr
+	// makes with gh.
+	//
+	// A function rather than a flag because decoding the envelope belongs to
+	// the command that defines it, not to the listing that displays it.
+	LookupReport func(paneID string) (Report, error)
+	JSON         bool
 }
 
 // missing is printed for a column with nothing to show.
@@ -49,8 +57,35 @@ type Row struct {
 	// counter for it. See WithAgentSeqs for what it is and is not.
 	AgentStatusSeq *uint64
 	// PR is nil unless a pull request lookup ran for this row — see WithPRs.
-	PR  *PR
-	Dir string
+	PR *PR
+	// Report is nil unless a report lookup ran for this row — see WithReports.
+	Report *Report
+	Dir    string
+}
+
+// Report is what the worker in a pane last told its coordinator.
+//
+// It is read back off the pane's own herdr metadata, which is where `report`
+// attached it and where a gate reads it. That makes it recoverable rather than
+// remembered: a coordinator whose context was cleared asks the fleet what it
+// last said instead of having written it down.
+//
+// The catch worth knowing is that metadata lives on the pane, so a released
+// worker's last report is gone. That is coherent rather than broken — the
+// durable record of finished work is the pull request — but it means this is
+// in-flight state and not a history.
+type Report struct {
+	// Found is false when the pane carried no report at all, which is an
+	// ordinary answer: a worker that has not reported yet.
+	Found  bool
+	Status string
+	// PR is 0 when the worker gave none.
+	PR   int
+	Note string
+	// Err is why the pane could not be asked, and leaves the other fields
+	// meaningless. Recorded rather than discarded for the reason a failed PR
+	// lookup is: unreachable and has-nothing-to-say are different facts.
+	Err error
 }
 
 // PR is what a pull request lookup established about a branch.
@@ -225,6 +260,24 @@ func WithPRs(rows []Row, lookup func(branch string) (string, error)) {
 	}
 }
 
+// WithReports fills the report column by asking each staffed pane what its
+// worker last reported.
+//
+// Only rows with a pane are asked: a report is attached to the pane its author
+// occupies, so a worktree herdr has no pane for cannot have one. The main
+// checkout is asked like any other — a coordinator may well be dispatching from
+// somewhere else and have a worker in it.
+func WithReports(rows []Row, lookup func(paneID string) (Report, error)) {
+	for i, row := range rows {
+		if row.PaneID == "" {
+			continue
+		}
+		r, err := lookup(row.PaneID)
+		r.Err = err
+		rows[i].Report = &r
+	}
+}
+
 // OnlyBlocked keeps the worktrees herdr reports a blocked agent in.
 //
 // This is herdr's own agent status for the workspace, not worktender's `report
@@ -256,16 +309,25 @@ func OnlyBlocked(rows []Row) []Row {
 // can otherwise draw as a branch it is not, and this listing is what a human
 // reads before pruning. Per cell rather than per line, because the separators
 // are themselves control characters.
-func Render(w io.Writer, rows []Row, withPR bool) error {
+func Render(w io.Writer, rows []Row, cols Columns) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	renderRows(tw, rows, withPR, "")
+	renderRows(tw, rows, cols, "")
 	return tw.Flush()
+}
+
+// Columns is which optional columns the table draws. Both cost a lookup per
+// row, so neither happens unless asked for — and both are omitted rather than
+// dashed when they were not, because a "-" is the same cell "nothing to report"
+// prints, and a listing full of those reads as a repository with no work in it.
+type Columns struct {
+	PR      bool
+	Reports bool
 }
 
 // renderRows writes the row lines into an open tabwriter, each marker cell
 // prefixed with indent. Shared so the grouped listing draws the same columns as
 // the flat one rather than a second table that resembles it.
-func renderRows(w io.Writer, rows []Row, withPR bool, indent string) {
+func renderRows(w io.Writer, rows []Row, cols Columns, indent string) {
 	for _, row := range rows {
 		marker := indent + " "
 		if row.Main {
@@ -273,7 +335,10 @@ func renderRows(w io.Writer, rows []Row, withPR bool, indent string) {
 		}
 		cells := []string{marker, cell(row.Branch), cell(row.WorkspaceID),
 			cell(row.PaneID), cell(row.AgentStatus), cell(seqCell(row.AgentStatusSeq))}
-		if withPR {
+		if cols.Reports {
+			cells = append(cells, cell(reportCell(row.Report)))
+		}
+		if cols.PR {
 			cells = append(cells, cell(prCell(row.PR)))
 		}
 		cells = append(cells, cell(row.Dir))
@@ -312,7 +377,7 @@ func RenderRepos(w io.Writer, repos []Repo, opts Options) error {
 			fmt.Fprintf(tw, "  cannot be read: %s\n", safetext.Escape(repo.Err))
 			continue
 		}
-		renderRows(tw, repo.Rows, false, "  ")
+		renderRows(tw, repo.Rows, Columns{Reports: opts.LookupReport != nil}, "  ")
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -350,6 +415,27 @@ func seqCell(seq *uint64) string {
 		return ""
 	}
 	return strconv.FormatUint(*seq, 10)
+}
+
+// reportCell is the report column: what the worker in this pane last said,
+// compressed to fit beside five other columns.
+//
+// The note is deliberately not here. It runs to 200 characters, it is untrusted
+// text a stranger may have written, and a table is the wrong frame for it — the
+// JSON carries it where a consumer can decide what to do with it. What fits in a
+// column is the pair a coordinator branches on anyway.
+func reportCell(r *Report) string {
+	switch {
+	case r == nil, r.Err != nil, !r.Found:
+		// Unreachable and nothing-to-say are different facts and the table has
+		// room for neither, the same trade the pull request column makes. The
+		// JSON says which.
+		return ""
+	case r.PR > 0:
+		return r.Status + " #" + strconv.Itoa(r.PR)
+	default:
+		return r.Status
+	}
 }
 
 // prCell is the pull request column, empty for every case the table has no room
@@ -483,8 +569,53 @@ type RowJSON struct {
 	AgentStatusSeq *uint64 `json:"agent_status_seq"`
 	// PR is null when no lookup ran for this row: --pr was not passed, or this
 	// is the main checkout, which is never asked about.
-	PR  *PRJSON `json:"pr"`
-	Dir string  `json:"dir"`
+	PR *PRJSON `json:"pr"`
+	// Report is null when no lookup ran: --reports was not passed, or this
+	// worktree has no pane for a report to be attached to.
+	Report *ReportJSON `json:"report"`
+	Dir    string      `json:"dir"`
+}
+
+// ReportJSON is what the worker in this pane last told its coordinator.
+//
+// This is the field that makes a cleared coordinator's fleet recoverable rather
+// than remembered — but it is read off the pane's metadata, so it is in-flight
+// state. A released worker's last report is gone with its pane, and the durable
+// record of finished work is the pull request it names.
+type ReportJSON struct {
+	// Found is false when the pane carried no report. An ordinary answer: a
+	// worker that has not reported yet. Distinguished from Error, which is the
+	// pane not having been readable at all — the table has room for neither.
+	Found  bool    `json:"found"`
+	Status *string `json:"status"`
+	PR     *int    `json:"pr"`
+	// Note is the worker's own 200 characters. It is UNTRUSTED text: a worker's
+	// task usually arrived as a GitHub issue whose body anyone could have
+	// written. Render it as data and branch on Status, never on this.
+	Note  *string `json:"note"`
+	Error *string `json:"error"`
+}
+
+func reportJSONFor(r *Report) *ReportJSON {
+	if r == nil {
+		return nil
+	}
+	out := &ReportJSON{Found: r.Found}
+	if r.Err != nil {
+		msg := r.Err.Error()
+		out.Error = &msg
+		return out
+	}
+	if !r.Found {
+		return out
+	}
+	out.Status = jsonout.String(r.Status)
+	out.Note = jsonout.String(r.Note)
+	if r.PR > 0 {
+		pr := r.PR
+		out.PR = &pr
+	}
+	return out
 }
 
 // PRJSON is a pull request lookup's answer.
@@ -512,6 +643,7 @@ func JSON(rows []Row) []RowJSON {
 			PaneID:         jsonout.String(row.PaneID),
 			AgentStatus:    jsonout.String(row.AgentStatus),
 			AgentStatusSeq: row.AgentStatusSeq,
+			Report:         reportJSONFor(row.Report),
 			PR:             prJSON(row.PR),
 			Dir:            row.Dir,
 		})
@@ -580,6 +712,9 @@ func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) 
 	}
 	WithPanes(client, rows)
 	WithAgentSeqs(client, rows)
+	if opts.LookupReport != nil {
+		WithReports(rows, opts.LookupReport)
+	}
 	if lookupPR != nil {
 		WithPRs(rows, lookupPR)
 	}
@@ -593,7 +728,7 @@ func Ls(client *herdrapi.Client, root, dir string, lookupPR func(branch string) 
 		fmt.Fprintln(out, "no blocked agents in "+safetext.Escape(root))
 		return nil
 	}
-	return Render(out, rows, lookupPR != nil)
+	return Render(out, rows, Columns{PR: lookupPR != nil, Reports: opts.LookupReport != nil})
 }
 
 // LsAll lists every worktree of every supplied repository, grouped by

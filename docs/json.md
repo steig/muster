@@ -232,6 +232,44 @@ and not an answer.
 observe it. The plugin has no resident process — see
 [Events](events.md) — and this field adds none.
 
+### `report`, and what it can and cannot tell you
+
+`--reports` asks each staffed pane what the worker in it last told its
+coordinator, read back off the pane's own herdr metadata — the same place
+`report` attached it and a gate reads it.
+
+```sh
+$ worktender ls --reports
+* main                      w21  w21:p1  idle     1057            worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  1055  planned   1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     812   done #4   257-erasure-comments
+```
+
+```json
+"report": { "found": true, "status": "done", "pr": 4, "note": "landed", "error": null }
+```
+
+- **`found`** is false when the pane carried no report. An ordinary answer — a
+  worker that has not reported yet — and a different fact from **`error`**,
+  which is the pane not being readable at all. The table has room for neither
+  and prints an empty cell for both.
+- **`note`** is the worker's own 200 characters and is **untrusted text**: the
+  task usually arrived as a GitHub issue whose body anyone could have written.
+  It is in the document because a human reading one wants it. Branch on
+  `status`, never on this. The note is deliberately not in the table.
+- **`report`** is null, rather than an object, when no lookup ran — `--reports`
+  was not passed, or the worktree has no pane for a report to be attached to.
+
+**This is in-flight state, not a history.** Metadata lives on the pane, so a
+released worker's last report is gone with it. That is coherent rather than
+broken: the durable record of finished work is the pull request the report
+names, and `--pr` is the column for that. What this recovers is what the fleet
+is *currently* saying — which is the half a coordinator loses when its context
+is cleared, and the half it should not have been writing down.
+
+Unlike `--pr` this works with `--all-repos`: the lookup is one herdr call
+against a pane herdr already named, so there is no wrong repository to ask.
+
 ## `ls --all-repos --json`
 
 Across repositories the answer is **grouped**, and `worktrees` is null:

@@ -72,6 +72,24 @@ $ worktender ls --pr
   fix/257-erasure-comments  w1K  w1K:p1  idle     812   MERGED  257-erasure-comments
 ```
 
+`--reports` adds a column carrying what the worker in each pane last told its
+coordinator, read back off the pane's own metadata — the same place `report`
+attached it and a gate reads it:
+
+```sh
+$ worktender ls --reports
+* main                      w21  w21:p1  idle     1057            worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  1055  planned   1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     812   done #4   257-erasure-comments
+```
+
+This is what a coordinator asks after its context is cleared, instead of having
+written the fleet down. **It is in-flight state and not a history** — metadata
+lives on the pane, so a released worker's last report is gone with it. The
+durable record of finished work is the pull request it named, which is `--pr`.
+The 200-character note is not in the table; it is untrusted text and it is in
+the JSON, where a consumer can decide what to do with it.
+
 Agents in six repositories are six invocations and six directories to remember
 to visit, so `--all-repos` lists every repository herdr has a worktree
 workspace for — from anywhere, including outside a repository entirely. One
