@@ -497,7 +497,7 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 		if err != nil {
 			return err
 		}
-		err = s.perform(o, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), false)
+		err = s.perform(o, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep, reconcile.KindGhost), false)
 		return firstError(err, o.flush(s.root))
 	}
 
@@ -517,7 +517,7 @@ func pruneCommand(args []string, out io.Writer, apply bool) error {
 	if err != nil {
 		return err
 	}
-	err = s.perform(o, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep), true)
+	err = s.perform(o, reconcile.Only(actions, reconcile.KindPrune, reconcile.KindKeep, reconcile.KindGhost), true)
 	return firstError(err, o.flush(s.root))
 }
 

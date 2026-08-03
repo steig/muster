@@ -61,6 +61,10 @@ type Row struct {
 	// Report is nil unless a report lookup ran for this row — see WithReports.
 	Report *Report
 	Dir    string
+	// Ghost marks a row that is a herdr workspace rather than a worktree: the
+	// checkout it is held open on is not in git's worktree list. It has no
+	// branch, because there is no checkout left to have one.
+	Ghost bool
 }
 
 // Report is what the worker in a pane last told its coordinator.
@@ -128,6 +132,42 @@ func Rows(worktrees *herdrapi.WorktreeListResponse, workspaces *herdrapi.Workspa
 			}
 		}
 		rows = append(rows, row)
+	}
+	return append(rows, ghostRows(worktrees, workspaces)...)
+}
+
+// ghostRows are the workspaces herdr holds open on a checkout git no longer
+// lists — the state where a listing built only from worktrees says nothing at
+// all, which reads as a clean repository on exactly the question this listing
+// exists to answer.
+//
+// Scoped by the repository the worktree list was answered for, because
+// workspace.list is session-wide: without the filter every other repository's
+// worktrees would arrive here as ghosts of this one.
+func ghostRows(worktrees *herdrapi.WorktreeListResponse, workspaces *herdrapi.WorkspaceListResponse) []Row {
+	if workspaces == nil {
+		return nil
+	}
+	known := make(map[string]bool, len(worktrees.Worktrees))
+	for _, w := range worktrees.Worktrees {
+		known[gitx.Resolve(w.Path)] = true
+	}
+	root := gitx.Resolve(worktrees.Source.RepoRoot)
+
+	var rows []Row
+	for _, ws := range workspaces.Workspaces {
+		if ws.Worktree == nil || gitx.Resolve(ws.Worktree.RepoRoot) != root {
+			continue
+		}
+		if known[gitx.Resolve(ws.Worktree.CheckoutPath)] {
+			continue
+		}
+		rows = append(rows, Row{
+			WorkspaceID: ws.WorkspaceID,
+			AgentStatus: string(ws.AgentStatus),
+			Dir:         filepath.Base(ws.Worktree.CheckoutPath),
+			Ghost:       true,
+		})
 	}
 	return rows
 }
@@ -330,8 +370,14 @@ type Columns struct {
 func renderRows(w io.Writer, rows []Row, cols Columns, indent string) {
 	for _, row := range rows {
 		marker := indent + " "
-		if row.Main {
+		switch {
+		case row.Main:
 			marker = indent + "*"
+		case row.Ghost:
+			// The marker column rather than a seventh one: this row is rare, the
+			// table is already the widest thing this tool prints, and a column
+			// that is blank on every ordinary listing earns nothing.
+			marker = indent + "?"
 		}
 		cells := []string{marker, cell(row.Branch), cell(row.WorkspaceID),
 			cell(row.PaneID), cell(row.AgentStatus), cell(seqCell(row.AgentStatusSeq))}
@@ -592,6 +638,14 @@ type RowJSON struct {
 	// worktree has no pane for a report to be attached to.
 	Report *ReportJSON `json:"report"`
 	Dir    string      `json:"dir"`
+	// Ghost is true on a row that is a herdr workspace rather than a worktree:
+	// herdr holds it open on a checkout git's worktree list does not have.
+	// `branch` is null on such a row because there is no checkout left to have
+	// one, and `dir` is the basename of the path herdr still believes in.
+	//
+	// It is diagnosis, never a removal: closing the workspace is a different
+	// authority from removing a worktree, and this plugin does not take it.
+	Ghost bool `json:"ghost"`
 }
 
 // ReportJSON is what the worker in this pane last told its coordinator.
@@ -664,6 +718,7 @@ func JSON(rows []Row) []RowJSON {
 			Report:         reportJSONFor(row.Report),
 			PR:             prJSON(row.PR),
 			Dir:            row.Dir,
+			Ghost:          row.Ghost,
 		})
 	}
 	return out

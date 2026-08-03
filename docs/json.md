@@ -64,7 +64,9 @@ $ worktender ls --pr --json
       "agent_status": "idle",
       "agent_status_seq": 1057,
       "pr": null,
-      "dir": "worktender"
+      "report": null,
+      "dir": "worktender",
+      "ghost": false
     },
     {
       "main": false,
@@ -74,7 +76,9 @@ $ worktender ls --pr --json
       "agent_status": null,
       "agent_status_seq": null,
       "pr": { "state": null, "error": "gh pr list worktree/brave-valley: gh: To get started with GitHub CLI, please run: gh auth login" },
-      "dir": "brave-valley-66f8"
+      "report": null,
+      "dir": "brave-valley-66f8",
+      "ghost": false
     }
   ],
   "repositories": null
@@ -101,6 +105,28 @@ object exists rather than a string:
 
 `pane_id` is the pane `dispatch --pane` takes, which is what makes this listing
 something to act on rather than only display.
+
+### `ghost`
+
+`ghost` is `true` on an entry that is a **herdr workspace rather than a
+worktree**: herdr is still holding it open on a checkout git's worktree list
+does not have, which is what removing a directory out from under it leaves
+behind. `branch` is `null` on such an entry, because there is no checkout left
+to have one, and `dir` is the basename of the path herdr still believes in. The
+table marks the same row `?`.
+
+It is diagnosis and never a removal, in the JSON as in the table. Closing a
+workspace is a different authority from removing a worktree, and this plugin
+does not take it: there is no checkout left to test for uncommitted work, so the
+strongest guard here is not unsatisfied but *unavailable*, and the workspace's
+panes may still hold a live agent whose conversation closing it would destroy.
+`prune` reports the same entry and removes nothing.
+
+Before this existed the state was in no listing at all. `Reconcile` walks
+worktrees to adopt and to prune, and walks workspaces only to read through to a
+worktree, so a workspace that outlived its checkout was visited by nothing —
+and `prune` printing `nothing to do` is the same output a clean repository
+gets.
 
 ### `agent_status_seq`, and why it is not a time
 
@@ -300,7 +326,9 @@ $ worktender ls --all-repos --blocked --json
           "agent_status": "blocked",
           "agent_status_seq": 812,
           "pr": null,
-          "dir": "77-cross-repo"
+          "report": null,
+          "dir": "77-cross-repo",
+          "ghost": false
         }
       ]
     },
@@ -393,7 +421,7 @@ $ worktender doctor --json
       "worktrees": 3,
       "agents": { "working": 1, "blocked": 1, "idle": 1 },
       "blocked": [
-        { "main": false, "branch": "79-stuck", "workspace_id": "w7", "pane_id": null, "agent_status": "blocked", "agent_status_seq": null, "pr": null, "dir": "79-stuck" }
+        { "main": false, "branch": "79-stuck", "workspace_id": "w7", "pane_id": null, "agent_status": "blocked", "agent_status_seq": null, "pr": null, "report": null, "dir": "79-stuck", "ghost": false }
       ]
     }
   ],

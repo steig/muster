@@ -124,6 +124,17 @@ const (
 	// KindKeep is explanatory and never executed: it records why a worktree
 	// that looked prunable was spared, rather than silently omitting it.
 	KindKeep Kind = "keep"
+	// KindGhost is explanatory and never executed: a herdr workspace whose
+	// checkout git no longer has.
+	//
+	// Diagnosis only, deliberately. Closing a workspace is a different
+	// authority from removing a worktree and cannot inherit the prune guards:
+	// there is no checkout left to test for uncommitted work, so the strongest
+	// guard this plugin has is not merely unsatisfied but unavailable. A ghost
+	// can also still host a live agent, and closing its workspace destroys that
+	// conversation. If a removal is ever added it wants its own command rather
+	// than a widening of prune-apply.
+	KindGhost Kind = "ghost"
 )
 
 // Action is one decision. Reason is human-facing and always populated.
@@ -151,12 +162,13 @@ type Action struct {
 }
 
 // Reconcile returns everything the repository needs, in execution order:
-// adoptions, then staffing, then prunes.
+// adoptions, then staffing, then prunes. Ghosts come last and execute nothing.
 func Reconcile(state State) []Action {
 	var actions []Action
 	actions = append(actions, adopt(state)...)
 	actions = append(actions, staff(state)...)
 	actions = append(actions, prune(state)...)
+	actions = append(actions, ghosts(state)...)
 	return actions
 }
 
@@ -205,6 +217,13 @@ func staff(state State) []Action {
 	var actions []Action
 	for _, ws := range state.Workspaces {
 		if !ws.IsLinked || len(ws.PaneIDs) == 0 || hasAgent(state, ws) {
+			continue
+		}
+		// A workspace whose checkout git no longer has is a ghost, and there is
+		// no directory left to start an agent in. Before this, the join simply
+		// missed and staffing planned an agent for a vanished path on an empty
+		// branch — see ghosts.
+		if _, live := byPath[pathKey(ws.CheckoutPath)]; !live {
 			continue
 		}
 
@@ -291,6 +310,39 @@ func prune(state State) []Action {
 		actions = append(actions, Action{
 			Kind: KindPrune, Path: w.Path, Branch: w.Branch,
 			WorkspaceID: w.WorkspaceID, ReleasesAgents: occupied, Reason: reason,
+		})
+	}
+	return actions
+}
+
+// ghosts reports every workspace herdr holds open on a checkout git no longer
+// has.
+//
+// It is the one pass that walks workspaces looking for what is missing rather
+// than worktrees looking for what is there. adopt and prune both iterate
+// state.Worktrees, and staff iterates workspaces but only ever reads through to
+// a worktree — so a workspace that outlived its checkout was visited by none of
+// them and fell out of the model entirely. `prune` then reported nothing, which
+// reads as "you are clean" on precisely the state this plugin exists to name.
+//
+// The mirror of the workspace that vanished underneath the collector: this one
+// stayed while its checkout went.
+//
+// The verdict is diagnosis, never removal — see KindGhost.
+func ghosts(state State) []Action {
+	byPath := worktreesByPath(state)
+
+	var actions []Action
+	for _, ws := range state.Workspaces {
+		if _, live := byPath[pathKey(ws.CheckoutPath)]; live {
+			continue
+		}
+		actions = append(actions, Action{
+			Kind:        KindGhost,
+			Path:        ws.CheckoutPath,
+			WorkspaceID: ws.ID,
+			Reason: "herdr holds this workspace open on a checkout git no longer has; " +
+				"close it in herdr once you are sure nothing in its panes is worth keeping",
 		})
 	}
 	return actions
