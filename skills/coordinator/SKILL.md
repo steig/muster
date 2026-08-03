@@ -167,6 +167,22 @@ typed, so nothing tells the four-minute slice from the forty-minute one. Gate on
 all of them with `--any`, act on whichever releases, then gate on the rest. The
 timeout is for the wait, not for each worker.
 
+## Coming back after a clear
+
+Do not write the fleet down. Ask it.
+
+- **`ls --all-repos --reports --json`** — every worker herdr has open, what each
+  last reported, and the counter beside its status.
+- **The pull requests** — the durable record of what actually landed. A `done`
+  is a claim; the PR is the fact.
+
+What is *not* recoverable is your own judgement: why the work was sliced this
+way, and what you already verified and need not check again. That is the only
+thing worth putting in a handoff, and it is why the handoff is short.
+
+`--reports` is in-flight state. A released worker's last report went with its
+pane, and that is fine — by then its work is a pull request or it is nothing.
+
 ## Handoffs
 
 Write one at every seam — before dispatching, and before your own context is

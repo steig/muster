@@ -80,7 +80,7 @@ func TestTheLsFigureHasAsManyColumnsAsTheRenderer(t *testing.T) {
 	if err := wt.Render(&real, []wt.Row{{
 		Main: true, Branch: "main", WorkspaceID: "w21", PaneID: "w21:p1",
 		AgentStatus: "idle", AgentStatusSeq: &seq, Dir: "worktender",
-	}}, false); err != nil {
+	}}, wt.Columns{}); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	want := len(strings.Fields(strings.TrimSpace(real.String())))

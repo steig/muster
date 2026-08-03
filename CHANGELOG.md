@@ -175,6 +175,37 @@ install` tracks branch HEAD rather than a tag — the version in
   naming one worker twice — an agent name and its own pane id both resolve — is
   refused rather than watched twice.
 
+- **`ls --reports`: what each worker last told its coordinator.** The
+  coordinator skill instructs a handoff "before your own context is cleared",
+  and there was nowhere structured to write one. The tempting fix was a
+  `.coordinator` store, which would have made this plugin stateful — `ls` is a
+  projection over git and herdr, not a database.
+
+  It was also unnecessary, because most of what a coordinator would write down
+  is **already persisted and simply was not reachable**. `report` attaches the
+  envelope to the worker's own pane as herdr metadata and a gate reads it back,
+  so every worker's last report was sitting there, readable from nowhere but
+  inside a running gate.
+
+  So the fleet is asked rather than remembered. `ls --all-repos --reports
+  --json` returns what everything is currently saying; the pull requests are the
+  durable record of what landed. A handoff shrinks to the one thing neither can
+  supply — why the work was sliced that way and what has already been verified.
+
+  **In-flight state, not a history:** metadata lives on the pane, so a released
+  worker's last report goes with it. Coherent rather than broken, and stated in
+  the docs so nobody builds a fleet history on it.
+
+  The note stays out of the table. It is 200 characters of untrusted text and a
+  column is the wrong frame; the JSON carries it, and `found` is kept distinct
+  from `error` because a worker that has not reported and a pane that could not
+  be read are different facts.
+
+  Explicitly **not** a channel agents write to and read from each other. That
+  reopens the threat model `docs/dispatch.md` closes: a worker relaying a
+  stranger's issue text into a peer's context as trusted instruction. This is
+  single-reader and derived.
+
 - **The hand-written site pages fail loudly when they lie.** `docs/*.md` is
   rendered by `site/build.py` and cannot drift; `site/pages/*.html` is
   hand-written for the narrative material that has no markdown source, and was
