@@ -240,9 +240,9 @@ coordinator, read back off the pane's own herdr metadata — the same place
 
 ```sh
 $ worktender ls --reports
-* main                      w21  w21:p1  idle     1057            worktender
-  feat/1-reconcile-execute  w22  w22:p1  working  1055  planned   1-reconcile-execute
-  fix/257-erasure-comments  w1K  w1K:p1  idle     812   done #4   257-erasure-comments
+* main                      w21  w21:p1  idle     1057  -        worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  1055  planned  1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     812   done #4  257-erasure-comments
 ```
 
 ```json
@@ -252,7 +252,9 @@ $ worktender ls --reports
 - **`found`** is false when the pane carried no report. An ordinary answer — a
   worker that has not reported yet — and a different fact from **`error`**,
   which is the pane not being readable at all. The table has room for neither
-  and prints an empty cell for both.
+  and prints `-` for both — the same `-` a worktree with no pane to ask prints,
+  which makes it three absences in one cell on the column where the difference
+  is between a fleet that is quiet and a listing that never reached it.
 - **`note`** is the worker's own 200 characters and is **untrusted text**: the
   task usually arrived as a GitHub issue whose body anyone could have written.
   It is in the document because a human reading one wants it. Branch on
