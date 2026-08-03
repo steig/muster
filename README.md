@@ -354,15 +354,30 @@ repository as having no workspaces and no agents while herdr held four of them,
 and `prune-apply` would then delete a checkout an agent was working in.
 
 So worktender connects to `$HERDR_SOCKET_PATH` when herdr named one, and
-otherwise to herdr's default session at `$XDG_CONFIG_HOME/herdr/herdr.sock`
-(`~/.config/herdr/herdr.sock`). Nothing answering there is what herdr being
-absent means. This costs one connect per invocation — microseconds against a
-live socket, an immediate "no such file" against none — and it buys the
-guarantee that degrading is never a guess.
+otherwise to every endpoint a herdr on this machine could be listening on — the
+default session at `$XDG_CONFIG_HOME/herdr/herdr.sock` (`~/.config/herdr/`), and
+one per named session at `.../herdr/sessions/<name>/herdr.sock`. This costs one
+connect per invocation — microseconds against a live socket, an immediate "no
+such file" against none — and it buys the guarantee that degrading is never a
+guess.
+
+Enumerating the named sessions matters for the same reason dialling does. A
+plain shell beside `herdr --session work`, with no default session running,
+would otherwise find nothing at the default path and call that proof — and
+`prune-apply` would delete a checkout that session's agent was working in. The
+mirror reaches it too: a stale `HERDR_SOCKET_PATH` from a session that has
+exited, while another herdr runs. A name that resolves to nothing is evidence
+about the name, so worktender falls through it and keeps looking.
 
 **Exactly one outcome counts as proof that herdr is gone: there is no socket at
-the path.** A running herdr always has its socket on disk, and that is the
-ordinary state of a machine that does not run herdr — the case this exists for.
+any of them.** A running herdr always has its socket on disk, and none anywhere
+is the ordinary state of a machine that does not run herdr — the case this
+exists for.
+
+If **two** sessions are running and nothing says which, worktender stops and
+asks you to set `HERDR_SOCKET_PATH`. Guessing is not the smaller error: the
+wrong session lists the wrong workspaces, so a checkout with a live agent in it
+reads as held by nobody — the same failure through a different door.
 
 Every other failure is "cannot tell", and worktender stops with exit 2 rather
 than assume, because "cannot tell" resolving to "not there" is how the guard
@@ -394,11 +409,15 @@ checkout — and the error names the stale socket to remove.
 
 Two consequences worth knowing:
 
-- Run worktender from your terminal while herdr is up and you get the **full**
-  listing, workspace and agent columns included, without exporting anything.
-- A **named** session (`herdr --session work`) listens elsewhere, and a plain
-  shell will not find it. herdr still exports the variable into that session's
-  own panes; from outside one, export `HERDR_SOCKET_PATH` yourself.
+- Run worktender from your terminal while herdr is up — default session or
+  named — and you get the **full** listing, workspace and agent columns
+  included, without exporting anything.
+- On **Windows** herdr is addressed by a named pipe rather than a socket under a
+  config directory, and worktender does not know how that pipe is named. So it
+  cannot establish absence there and refuses instead of degrading: `ls`, `prune`
+  and `prune-apply` need `HERDR_SOCKET_PATH`, which herdr sets for the commands
+  it runs. Run as a herdr plugin, Windows is unaffected. Making the degraded
+  path work from a bare Windows shell needs pipe discovery and is not done here.
 
 ### The one guard that cannot run
 

@@ -16,6 +16,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -69,40 +71,70 @@ func New() (*Client, error) {
 
 // DefaultSocketPath is where herdr's default session listens when nothing named
 // an endpoint: $XDG_CONFIG_HOME/herdr/herdr.sock, falling back to
-// ~/.config/herdr. Verified against herdr 0.7.5, whose `session list` reports
-// exactly this path for the `default` session and relocates it wholesale when
-// XDG_CONFIG_HOME moves.
-//
-// Note it is ~/.config even on darwin, where os.UserConfigDir would say
-// ~/Library/Application Support. herdr uses the XDG layout on every platform,
-// so following the Go helper here would look for the socket where herdr never
-// puts it.
+// ~/.config/herdr. Empty when the layout is not known — see herdrHome.
 //
 // This is the one place worktender knows herdr's file layout rather than its
-// wire protocol, and it is a guess about a *default*. A named session
-// (`herdr --session work`) listens elsewhere and is not found by it — herdr
-// still exports SocketEnv into that session's panes, so the only invocation
-// this misses is a plain shell against a named session, which has to export the
-// variable itself.
+// wire protocol.
 func DefaultSocketPath() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(home, ".config")
+	home := herdrHome()
+	if home == "" {
+		return ""
 	}
-	return filepath.Join(base, "herdr", "herdr.sock")
+	return filepath.Join(home, "herdr.sock")
 }
 
-// SocketPath is the endpoint to try: the one herdr named if it started us,
-// otherwise the default session's. Empty when neither can be determined.
+// SocketPath is the endpoint herdr named, or the default session's when it
+// named none. Empty when neither can be determined.
+//
+// It answers "which one endpoint" and is therefore not enough on its own to
+// conclude that herdr is absent — see SessionSocketPaths and Probe.
 func SocketPath() string {
 	if path := os.Getenv(SocketEnv); path != "" {
 		return path
 	}
 	return DefaultSocketPath()
+}
+
+// SessionSocketPaths is every endpoint a herdr on this machine could be
+// listening on: the default session's, then one per named session, sorted.
+//
+// Named sessions are real and they are not at the default path. Verified
+// against herdr 0.7.5: `herdr --session work status` reports
+// $XDG_CONFIG_HOME/herdr/sessions/work/herdr.sock, alongside the default
+// session's socket in the same tree.
+//
+// Enumerating them is what stops "the endpoint I know about is missing" from
+// being read as "herdr is not running" — the same inference error as trusting
+// the environment variable, one level down. A plain shell beside
+// `herdr --session work`, with no default session, dials the default path,
+// gets ENOENT, and would otherwise call that proof and let prune-apply remove a
+// checkout that session's agent is standing in.
+//
+// Only session sockets, not every socket in the tree: herdr keeps a
+// herdr-client.sock beside the server's, and a plugin checkout can hold
+// unrelated sockets of its own — git's fsmonitor daemon leaves one. Treating
+// those as evidence of a running herdr would make worktender refuse for ever on
+// a machine that has none.
+func SessionSocketPaths() []string {
+	home := herdrHome()
+	if home == "" {
+		return nil
+	}
+
+	paths := []string{filepath.Join(home, "herdr.sock")}
+	entries, err := os.ReadDir(filepath.Join(home, "sessions"))
+	if err != nil {
+		// No named sessions is the ordinary case and reads as an unreadable
+		// directory; either way there is nothing more to enumerate.
+		return paths
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			paths = append(paths, filepath.Join(home, "sessions", e.Name(), "herdr.sock"))
+		}
+	}
+	sort.Strings(paths[1:])
+	return paths
 }
 
 // ErrNoHerdr reports that nothing is listening on herdr's endpoint.
@@ -176,29 +208,85 @@ func absent(err error) bool {
 // applies to a socket that exists with a listener too backed up to accept, and
 // no cheaper check tells that apart from a healthy one — which is why that case
 // comes back as ErrHerdrUnknown rather than as absence.
+//
+// When herdr named an endpoint, that endpoint is the whole question: herdr told
+// us where it is, so a live one is it and a broken one is a broken herdr. The
+// single exception is ENOENT, which means the variable is stale rather than
+// authoritative — a shell outliving the session that exported it — and a stale
+// name is no evidence about the machine, so the search falls through to it.
+//
+// With nothing named, absence has to be established against every endpoint a
+// herdr could be listening on, not just the default one. See SessionSocketPaths.
 func Probe() (*Client, error) {
-	path := SocketPath()
-	if path == "" {
-		return nil, fmt.Errorf("%w: no %s is set and there is no home directory to find herdr's socket under",
+	if named := os.Getenv(SocketEnv); named != "" {
+		conn, err := dialHerdr(named)
+		if err == nil {
+			_ = conn.Close()
+			return &Client{socketPath: named}, nil
+		}
+		if !absent(err) {
+			// The endpoint is there and would not talk. Naming the way out
+			// matters here in a way it does not for a timeout: the likeliest
+			// cause is a herdr that died without unlinking its socket, and that
+			// state persists until somebody clears it.
+			return nil, fmt.Errorf("%w: %w; if herdr is not running, remove %s and try again",
+				ErrHerdrUnknown, err, named)
+		}
+	}
+	return probeSessions()
+}
+
+// probeSessions dials every endpoint a herdr could be on and insists the answer
+// be unambiguous.
+//
+// Absence is proven only by having looked everywhere and found nothing at all:
+// at least one endpoint examined, and every one of them missing. Nothing to
+// examine is not an empty search — it is not knowing where to look, which is
+// windows, and it refuses.
+//
+// Two live sessions refuse as well, and that is the point rather than an
+// awkwardness. Guessing between them is not a smaller error than guessing that
+// herdr is absent: connecting to the wrong session lists the wrong workspaces,
+// so the checkout an agent is standing in reads as held by nobody and
+// prune-apply removes it. Same failure, different door.
+func probeSessions() (*Client, error) {
+	paths := SessionSocketPaths()
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("%w: no %s is set and herdr's endpoint cannot be located on this platform",
 			ErrHerdrUnknown, SocketEnv)
 	}
 
-	conn, err := dialHerdr(path)
-	if err != nil {
-		// The dial error already names the path; repeating it would print it
-		// twice, and these paths are long.
-		if absent(err) {
-			return nil, fmt.Errorf("%w: %w", ErrNoHerdr, err)
+	var (
+		live      []string
+		firstErr  error
+		allAbsent = true
+	)
+	for _, path := range paths {
+		conn, err := dialHerdr(path)
+		if err == nil {
+			_ = conn.Close()
+			live = append(live, path)
+			continue
 		}
-		// The endpoint is there and would not talk. Naming the way out matters
-		// here in a way it does not for a timeout: the likeliest cause is a
-		// herdr that died without unlinking its socket, and that state persists
-		// until somebody clears it.
-		return nil, fmt.Errorf("%w: %w; if herdr is not running, remove %s and try again",
-			ErrHerdrUnknown, err, path)
+		if !absent(err) {
+			allAbsent = false
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
-	_ = conn.Close()
-	return &Client{socketPath: path}, nil
+
+	switch {
+	case len(live) == 1:
+		return &Client{socketPath: live[0]}, nil
+	case len(live) > 1:
+		return nil, fmt.Errorf("%w: %d herdr sessions are running (%s); set %s to say which one",
+			ErrHerdrUnknown, len(live), strings.Join(live, ", "), SocketEnv)
+	case !allAbsent:
+		return nil, fmt.Errorf("%w: %w; if herdr is not running, remove the stale socket and try again",
+			ErrHerdrUnknown, firstErr)
+	}
+	return nil, fmt.Errorf("%w: nothing is listening on %s", ErrNoHerdr, strings.Join(paths, " or "))
 }
 
 // NewWithSocket points a Client at an explicit endpoint. Tests use it to talk

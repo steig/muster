@@ -32,11 +32,27 @@ install` tracks branch HEAD rather than a tag — the version in
   about whether herdr is running. Read as absence, a terminal beside a live
   herdr reports no workspaces and no agents, the guard sparing a checkout an
   agent is standing in never fires, and `prune-apply` force-removes it. The
-  endpoint is `$HERDR_SOCKET_PATH` when herdr named one and herdr's default
-  session at `$XDG_CONFIG_HOME/herdr/herdr.sock` otherwise; nothing answering
-  there is what absence means. A pleasant side effect: run from a plain shell
-  beside a running herdr, `ls` now shows the workspace and agent columns
-  populated rather than empty.
+  The endpoint is `$HERDR_SOCKET_PATH` when herdr named one, and otherwise every
+  endpoint a herdr could be on: the default session at
+  `$XDG_CONFIG_HOME/herdr/herdr.sock` and one per named session under
+  `.../herdr/sessions/`. Absence means nothing answering at any of them —
+  enumerating the named ones is the same inference error one level down, since a
+  plain shell beside `herdr --session work` would otherwise find nothing at the
+  default path and call that proof. A stale `HERDR_SOCKET_PATH` naming a socket
+  that is gone falls through to the search rather than ending it, for the same
+  reason. Two sessions running and nothing saying which is refused rather than
+  guessed: the wrong session lists the wrong workspaces, which is the original
+  failure through a different door. A pleasant side effect: run from a plain
+  shell beside a running herdr, default or named, `ls` now shows the workspace
+  and agent columns populated rather than empty.
+
+  On Windows herdr is a named pipe rather than a socket under a config
+  directory, and worktender does not know its name — so absence cannot be
+  established and is not assumed. It refuses there unless `HERDR_SOCKET_PATH`
+  is set, which herdr sets for the commands it runs, leaving the plugin path
+  unaffected. Previously the unix layout was used on every platform, so a path
+  that never exists on Windows returned ENOENT and unlocked the degraded path
+  unconditionally.
 
   Exactly one dial outcome counts as proof: no socket at the path. A running
   herdr always has one on disk. Every other failure is fatal for every command

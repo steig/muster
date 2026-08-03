@@ -142,6 +142,34 @@ func HerdrDown(t *testing.T) {
 	isolateHerdrHome(t)
 }
 
+// StaleHerdrSocket leaves a socket at herdr's default endpoint with nothing
+// accepting on it, which is what a herdr killed without cleaning up leaves
+// behind. Call it after HerdrDown.
+//
+// It builds the third state, the one that is neither: dialling gives
+// ECONNREFUSED rather than ENOENT, so herdr is not proven absent — and on
+// darwin that is the same answer a herdr too busy to accept gives. Callers must
+// refuse rather than degrade.
+func StaleHerdrSocket(t *testing.T) {
+	t.Helper()
+
+	socket := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "herdr", "herdr.sock")
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		t.Fatalf("socket dir: %v", err)
+	}
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen %s: %v", socket, err)
+	}
+	// Stop accepting but leave the inode: Go unlinks it on Close by default,
+	// and a plain file in its place fails with ENOTSOCK, which is a different
+	// error from the one this is building.
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+}
+
 // HerdrUnnamed is a running herdr that did not start this process: the state of
 // the user's own terminal, where HERDR_SOCKET_PATH is unset and herdr is
 // nonetheless up, holding workspaces with agents in their panes.

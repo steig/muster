@@ -72,7 +72,12 @@ func TestProbeReportsHerdrDownWhenNothingIsListening(t *testing.T) {
 }
 
 // A shell that outlived the herdr that exported the variable, and whose socket
-// went with it. New is satisfied by the string; only a dial is not.
+// went with it, on a machine running no herdr at all. New is satisfied by the
+// string; only a dial is not.
+//
+// Absence here rests on every endpoint being missing, not on the named one
+// being missing — see TestProbeFallsThroughAStaleVariableToARunningSession for
+// the case that separates those.
 func TestProbeReportsHerdrDownWhenTheNamedSocketIsGone(t *testing.T) {
 	// Not t.TempDir: its names run past the ~104-byte cap darwin puts on a
 	// socket address, and the dial then fails with EINVAL — which is correctly
@@ -87,11 +92,86 @@ func TestProbeReportsHerdrDownWhenTheNamedSocketIsGone(t *testing.T) {
 	t.Setenv(herdrapi.SocketEnv, filepath.Join(dir, "gone.sock"))
 
 	if _, err := herdrapi.Probe(); !errors.Is(err, herdrapi.ErrNoHerdr) {
-		t.Errorf("a named socket with nothing behind it is herdr down, got %v", err)
+		t.Errorf("nothing is listening anywhere, so this is herdr down, got %v", err)
 	}
 	// The contrast that makes the point: New is happy with the same env.
 	if _, err := herdrapi.New(); err != nil {
 		t.Errorf("New only reads the variable, so it should be satisfied: %v", err)
+	}
+}
+
+// The residual the fixed blocker left behind, one level down: a herdr running
+// as a named session, and nothing at the default path.
+//
+// A plain shell has no HERDR_SOCKET_PATH, so the search starts at the default
+// socket and finds nothing there. Reading that as proof would be the original
+// bug in a narrower doorway — degrade, and prune-apply force-removes a checkout
+// that session's agent is standing in. Absence has to mean no endpoint anywhere.
+func TestProbeFindsAHerdrRunningOnlyAsANamedSession(t *testing.T) {
+	home := herdrHome(t)
+	t.Setenv(herdrapi.SocketEnv, "")
+	// The default session is not running: only `work` is.
+	listen(t, filepath.Join(filepath.Dir(home), "sessions", "work", "herdr.sock"))
+
+	client, err := herdrapi.Probe()
+	if err != nil {
+		t.Fatalf("a named session is running; Probe must find it, got %v", err)
+	}
+	if client == nil {
+		t.Fatal("want a live client for the named session")
+	}
+}
+
+// The mirror: a stale HERDR_SOCKET_PATH from an exited session, while another
+// herdr is running. The variable names a path that is gone, which is evidence
+// about the variable and none about the machine, so the search falls through.
+func TestProbeFallsThroughAStaleVariableToARunningSession(t *testing.T) {
+	home := herdrHome(t)
+	listen(t, home)
+
+	gone, err := os.MkdirTemp("", "hp")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(gone) })
+	t.Setenv(herdrapi.SocketEnv, filepath.Join(gone, "exited.sock"))
+
+	if _, err := herdrapi.Probe(); err != nil {
+		t.Fatalf("herdr is running; a stale variable must not read as absence, got %v", err)
+	}
+}
+
+// Two sessions running and nothing saying which. Guessing is not the smaller
+// error: the wrong session lists the wrong workspaces, so a checkout with a
+// live agent in it reads as held by nobody and prune-apply removes it.
+func TestProbeRefusesToGuessBetweenTwoRunningSessions(t *testing.T) {
+	home := herdrHome(t)
+	t.Setenv(herdrapi.SocketEnv, "")
+	listen(t, home)
+	listen(t, filepath.Join(filepath.Dir(home), "sessions", "work", "herdr.sock"))
+
+	_, err := herdrapi.Probe()
+	if !errors.Is(err, herdrapi.ErrHerdrUnknown) {
+		t.Fatalf("want ErrHerdrUnknown rather than a guess, got %v", err)
+	}
+	if !strings.Contains(err.Error(), herdrapi.SocketEnv) {
+		t.Errorf("the error should say how to disambiguate, got %v", err)
+	}
+}
+
+// A socket beside herdr's that is not a session endpoint must not count as one.
+// herdr keeps a herdr-client.sock next to the server's, and a plugin checkout
+// can hold unrelated sockets — git's fsmonitor daemon leaves one. Counting
+// those as a running herdr would make worktender refuse for ever on a machine
+// that has none.
+func TestProbeIgnoresSocketsThatAreNotSessionEndpoints(t *testing.T) {
+	home := herdrHome(t)
+	t.Setenv(herdrapi.SocketEnv, "")
+	listen(t, filepath.Join(filepath.Dir(home), "herdr-client.sock"))
+	listen(t, filepath.Join(filepath.Dir(home), "plugins", "fsmonitor.ipc"))
+
+	if _, err := herdrapi.Probe(); !errors.Is(err, herdrapi.ErrNoHerdr) {
+		t.Errorf("no session endpoint is listening, so herdr is down, got %v", err)
 	}
 }
 
@@ -232,5 +312,32 @@ func TestProbeWillNotDegradeOnAStaleSocketItCannotTellFromABusyOne(t *testing.T)
 	// The state persists until somebody clears it, so the error has to say how.
 	if !strings.Contains(err.Error(), socket) {
 		t.Errorf("the error should name the socket to remove, got %v", err)
+	}
+}
+
+// Not knowing where to look is not an empty search.
+//
+// This is the rule windows runs on: herdr is a named pipe there, worktender
+// does not know its name, so herdrHome is empty and there is no endpoint to
+// examine. Absence is proven by having looked and found nothing, so zero places
+// to look must refuse — otherwise the degraded path unlocks unconditionally on
+// a platform release.yml ships and CI does not run.
+//
+// Reached here through the same code by leaving no home to derive the layout
+// from, because a windows runner is not available to assert it directly.
+func TestProbeRefusesWhenThereIsNowhereToLook(t *testing.T) {
+	t.Setenv(herdrapi.SocketEnv, "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+
+	if got := herdrapi.SessionSocketPaths(); len(got) != 0 {
+		t.Fatalf("no layout is derivable, so there is nothing to enumerate, got %v", got)
+	}
+	_, err := herdrapi.Probe()
+	if errors.Is(err, herdrapi.ErrNoHerdr) {
+		t.Errorf("nowhere to look is not proof that nothing is there: %v", err)
+	}
+	if !errors.Is(err, herdrapi.ErrHerdrUnknown) {
+		t.Fatalf("want ErrHerdrUnknown, got %v", err)
 	}
 }

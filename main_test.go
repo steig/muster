@@ -750,6 +750,43 @@ func TestPruneApplyRemovesAWorktreeWithoutHerdr(t *testing.T) {
 	}
 }
 
+// The destructive command must refuse when herdr's state is merely unknown, not
+// only when herdr is proven absent.
+//
+// What makes it refuse is an ordering inside dialHerdrIfPresent: the
+// ErrHerdrUnknown case sits ahead of the `need == herdrRequired` case and
+// returns unconditionally, so prune-apply — which is herdrOptional — takes it
+// too. Nothing else holds that ordering. Folding the unknown check into the
+// herdrRequired branch would compile, pass every other test, and quietly put
+// back a prune-apply that degrades on a dial it could not finish.
+//
+// A socket with no listener is the cheapest way to produce the state: not
+// ENOENT, so not proof, and on darwin indistinguishable from a herdr too busy
+// to accept.
+func TestPruneApplyRefusesWhenHerdrCannotBeEstablished(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("done", "done")
+	repo.CommitIn(checkout, "done.txt", "work")
+	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+	herdrtest.FakeGhPRState(t, "MERGED")
+
+	noHerdr(t)
+	herdrtest.StaleHerdrSocket(t)
+	t.Chdir(repo.Root)
+
+	var out strings.Builder
+	err := pruneCommand(nil, &out, true)
+	if err == nil {
+		t.Fatalf("prune-apply degraded on a dial that established nothing:\n%s", out.String())
+	}
+	if got := exitCode(err); got != exitEnvironment {
+		t.Errorf("exit %d (%v), want exitEnvironment (%d)", got, err, exitEnvironment)
+	}
+	if !repo.Exists(checkout) {
+		t.Fatal("removed a checkout without establishing that herdr is not running")
+	}
+}
+
 // The state that separates a probe from an environment variable, and the reason
 // the probe had to exist.
 //
