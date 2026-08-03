@@ -337,13 +337,61 @@ they would otherwise, and `prune-apply` removes what it says it will.
 
 The commands whose whole job is herdr — `start`, `dispatch`, `sync`, `gate` —
 exit **2**, the environment class, and say what is missing. Not a usage error:
-the command was spelled correctly and the machine could not answer it.
+the command was spelled correctly and the machine could not answer it. So do
+`ls --blocked` and `ls --reports`: both ask what agents are doing, and an empty
+answer would read as *no agent is blocked* rather than as *no way to tell*.
+`ls --all-repos` is the same — its scope is herdr's open workspaces.
 
-One caveat worth stating plainly. With herdr running, `prune` refuses a worktree
-whose pane hosts a working agent. Without herdr that guard cannot run — but
-there is nothing for it to protect, because an agent lives in a pane inside a
-workspace, and both are herdr's. The guards that matter to *your* work —
-uncommitted changes, unmerged commits — are git's, and they are untouched.
+### How absence is established
+
+By **dialling herdr's socket**, not by looking at `HERDR_SOCKET_PATH`.
+
+The distinction is the one this whole section rests on. herdr exports that
+variable into the plugin commands and panes it starts, and **not** into your own
+terminal — so its absence is the normal state of a shell whether or not herdr is
+running behind it. Treating that as "no herdr" in your terminal would report a
+repository as having no workspaces and no agents while herdr held four of them,
+and `prune-apply` would then delete a checkout an agent was working in.
+
+So worktender connects to `$HERDR_SOCKET_PATH` when herdr named one, and
+otherwise to herdr's default session at `$XDG_CONFIG_HOME/herdr/herdr.sock`
+(`~/.config/herdr/herdr.sock`). Nothing answering there is what herdr being
+absent means. This costs one connect per invocation — microseconds against a
+live socket, an immediate "no such file" against none — and it buys the
+guarantee that degrading is never a guess.
+
+A dial can also fail without settling anything — a timeout, a permission
+denial, an endpoint too long to address. That is **not** absence, and worktender
+will not degrade on it: every command stops with exit 2 rather than assume. Only
+two answers count as proof that herdr is gone — no socket at the path, or a
+socket nobody is accepting on. Anything else is "cannot tell", and "cannot tell"
+resolving to "not there" is how the guard gets disarmed.
+
+Two consequences worth knowing:
+
+- Run worktender from your terminal while herdr is up and you get the **full**
+  listing, workspace and agent columns included, without exporting anything.
+- A **named** session (`herdr --session work`) listens elsewhere, and a plain
+  shell will not find it. herdr still exports the variable into that session's
+  own panes; from outside one, export `HERDR_SOCKET_PATH` yourself.
+
+### The one guard that cannot run
+
+With herdr running, `prune` refuses a worktree whose pane hosts a working agent.
+With herdr genuinely down that guard cannot run — and there is then nothing for
+it to protect, because an agent lives in a pane inside a workspace, and both are
+herdr's. That argument is only sound because absence is established by a dial:
+it is reasoning about a herdr that is *not there*, and it would be worthless as
+reasoning about a herdr that merely went unnamed. The guards that matter to
+*your* work — uncommitted changes, unmerged commits — are git's, and they are
+untouched either way.
+
+One more thing that is not a guard but is worth stating: run from a plain shell,
+`prune-apply` holds no repository lock, because the lock lives in the plugin
+state directory herdr provides. Two prune-applies at once, or one racing a
+herdr-driven reconcile, are not serialised against each other. Every guard is
+re-checked at the moment of removal regardless, so the cost is repeated work
+rather than lost work.
 
 Note this is about herdr not *running*. Installed as a herdr plugin, herdr is
 present by definition; what this covers is the binary invoked from a plain

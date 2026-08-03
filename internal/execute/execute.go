@@ -327,10 +327,14 @@ func (e *Executor) pruneBlocked(action reconcile.Action) (workspaceID, reason st
 // checkout open in, empty when there is none. Paths are compared normalised, or
 // re-asking herdr buys nothing.
 func (e *Executor) workspaceHolding(checkout string) (string, error) {
-	// With herdr absent there are no workspaces, so nothing holds anything.
-	// This is the one guard that reads as weakened by herdr's absence, and it
-	// is not: a workspace is a herdr object, and an agent lives in a pane
-	// inside one. With no herdr there is no agent whose ground this could be.
+	// A nil client means the dial found nothing listening, so there are no
+	// workspaces and nothing holds anything.
+	//
+	// This is the guard that runs closest to the removal, and what makes the
+	// answer true is the probe rather than the nil: "we were not told where
+	// herdr is" would be the same nil and would not license it, because a plain
+	// shell is exactly where herdr goes unnamed while it runs. See
+	// herdrapi.Probe — nothing may set this nil without dialling first.
 	if e.Client == nil {
 		return "", nil
 	}

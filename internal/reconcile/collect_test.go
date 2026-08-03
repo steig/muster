@@ -831,11 +831,12 @@ func TestCollectWithoutHerdrReadsTheWorktreesFromGit(t *testing.T) {
 	if len(state.Worktrees) != 2 {
 		t.Fatalf("want the main checkout and one linked, got %d: %+v", len(state.Worktrees), state.Worktrees)
 	}
-	if len(state.Workspaces) != 0 {
-		t.Errorf("herdr is not running; there are no workspaces: %+v", state.Workspaces)
-	}
-	if len(state.AgentPanes) != 0 {
-		t.Errorf("herdr is not running; there are no agents: %+v", state.AgentPanes)
+	// The field the design note is about, and the only thing in this State that
+	// is not obvious from the code beside it: Workspaces is never assigned and
+	// AgentPanes is an empty literal four lines up, so asserting those would
+	// restate the constructor. HerdrAbsent is what adopt reads.
+	if !state.HerdrAbsent {
+		t.Error("the collector took the herdr-free path; the state has to record it")
 	}
 
 	var linked *reconcile.Worktree
@@ -855,10 +856,14 @@ func TestCollectWithoutHerdrReadsTheWorktreesFromGit(t *testing.T) {
 	}
 }
 
-// With no workspaces there is nothing to adopt into and nothing to staff, so a
-// herdr-free pass must plan neither. Adopting would ask a herdr that is not
-// there; staffing would start an agent in a pane that does not exist.
-func TestReconcileWithoutHerdrPlansNoAdoptOrStaff(t *testing.T) {
+// With herdr absent there is nothing to adopt into, so a herdr-free pass must
+// plan no adoptions: every checkout reads as unadopted, and ungated the whole
+// repository is planned against a herdr that is not listening.
+//
+// Only adopt is asserted. staff and ghosts both iterate state.Workspaces, which
+// is empty here whatever HerdrAbsent says, so asserting they plan nothing would
+// pass with reconcile's gate deleted — it would be testing the fixture.
+func TestReconcileWithoutHerdrPlansNoAdopt(t *testing.T) {
 	repo := herdrtest.NewRepo(t)
 	repo.AddWorktree("wip", "wip")
 
@@ -867,13 +872,16 @@ func TestReconcileWithoutHerdrPlansNoAdoptOrStaff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
+	if len(reconcile.Only(reconcile.Reconcile(state), reconcile.KindAdopt)) != 0 {
+		t.Errorf("nothing to adopt into with herdr absent: %+v", reconcile.Reconcile(state))
+	}
 
-	for _, a := range reconcile.Reconcile(state) {
-		switch a.Kind {
-		case reconcile.KindAdopt:
-			t.Errorf("nothing to adopt into with herdr absent: %+v", a)
-		case reconcile.KindStaff:
-			t.Errorf("nothing to staff with herdr absent: %+v", a)
-		}
+	// The same worktrees with herdr merely not having opened them yet is the
+	// state adopt exists for, and it must still fire — this is what makes
+	// HerdrAbsent a recorded fact rather than an inference from an empty
+	// Workspaces, which these two states share.
+	state.HerdrAbsent = false
+	if len(reconcile.Only(reconcile.Reconcile(state), reconcile.KindAdopt)) == 0 {
+		t.Error("an unopened checkout with herdr running is exactly what adopt is for")
 	}
 }

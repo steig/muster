@@ -25,14 +25,36 @@ install` tracks branch HEAD rather than a tag — the version in
   not opened yet is exactly what `adopt` exists for — reading that as "herdr is
   gone" would stop the plugin working on first run.
 
+  Absence is established by **dialling** herdr's socket, not by reading
+  `HERDR_SOCKET_PATH`. Those are different facts and the difference is the whole
+  safety argument: herdr exports that variable into the commands and panes it
+  starts and not into the user's own terminal, so its absence there says nothing
+  about whether herdr is running. Read as absence, a terminal beside a live
+  herdr reports no workspaces and no agents, the guard sparing a checkout an
+  agent is standing in never fires, and `prune-apply` force-removes it. The
+  endpoint is `$HERDR_SOCKET_PATH` when herdr named one and herdr's default
+  session at `$XDG_CONFIG_HOME/herdr/herdr.sock` otherwise; nothing answering
+  there is what absence means. A pleasant side effect: run from a plain shell
+  beside a running herdr, `ls` now shows the workspace and agent columns
+  populated rather than empty.
+
+  Only two dial outcomes count as proof — nothing at the path, or a socket
+  nobody is accepting on. A dial that fails without settling the question, a
+  timeout most of all, is fatal for every command rather than degraded through:
+  "cannot tell" resolving to "not there" would reopen the same hole one layer
+  down.
+
   `start`, `dispatch`, `sync` and `gate` exit **2**, the environment class, and
   name what is missing. Not a usage error: the command was spelled correctly and
-  the machine could not answer it.
+  the machine could not answer it. `ls --blocked`, `ls --reports` and
+  `ls --all-repos` join them: each asks what agents are doing, and an empty
+  answer would read as "no agent is blocked" rather than "no way to tell".
 
   One guard genuinely cannot run: the one sparing a checkout an agent is
   standing in. There is nothing for it to protect — an agent lives in a pane
   inside a workspace, and both are herdr's — and the guards protecting *work*
-  are git's and untouched. `README.md` says so rather than leaving it implied.
+  are git's and untouched. That holds only because absence is dialled for;
+  `README.md` says both parts rather than leaving either implied.
 
   This is about herdr not *running*. Installed as a plugin herdr is present by
   definition, so a way to install the binary without herdr is what would make

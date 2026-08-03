@@ -87,28 +87,13 @@ func (c *Collector) Collect() (State, error) {
 
 	for _, w := range worktrees.Worktrees {
 		branch := deref(w.Branch)
-		wt := Worktree{
+		wt := c.resolve(Worktree{
 			Path:        w.Path,
 			Branch:      branch,
 			IsLinked:    w.IsLinkedWorktree,
 			IsBare:      w.IsBare,
 			WorkspaceID: deref(w.OpenWorkspaceID),
-		}
-
-		// Only linked worktrees are staffed or pruned, so the per-checkout git
-		// and gh work is skipped for the main checkout.
-		if w.IsLinkedWorktree {
-			wt.Dirty = gitx.IsDirty(w.Path)
-			wt.OwnCommits = gitx.OwnCommits(w.Path, base)
-			wt.HasTranscript = c.hasTranscript(w.Path)
-			if branch != "" {
-				wt.MergedIntoBase = gitx.IsMergedInto(c.Root, branch, base)
-				wt.UpstreamGone = gitx.UpstreamGone(c.Root, branch)
-				if c.LookupPR != nil {
-					wt.PR = c.LookupPR(branch)
-				}
-			}
-		}
+		}, base)
 		state.Worktrees = append(state.Worktrees, wt)
 	}
 
@@ -147,6 +132,36 @@ func (c *Collector) Collect() (State, error) {
 	return state, nil
 }
 
+// resolve fills in the git and gh facts every guard turns on, given a worktree
+// whose identity — path, branch, linked, bare — the caller has already read off
+// whichever source enumerated it.
+//
+// One copy on purpose. The two collectors differ only in where the enumeration
+// came from, and the verdicts must not be able to drift apart: written twice, a
+// guard added to the herdr path would silently not exist on the git one, and
+// the difference would show up as a prune the other collector would have
+// refused.
+//
+// Only linked worktrees are staffed or pruned, so the per-checkout git and gh
+// work is skipped for the main checkout.
+func (c *Collector) resolve(wt Worktree, base string) Worktree {
+	if !wt.IsLinked {
+		return wt
+	}
+
+	wt.Dirty = gitx.IsDirty(wt.Path)
+	wt.OwnCommits = gitx.OwnCommits(wt.Path, base)
+	wt.HasTranscript = c.hasTranscript(wt.Path)
+	if wt.Branch != "" {
+		wt.MergedIntoBase = gitx.IsMergedInto(c.Root, wt.Branch, base)
+		wt.UpstreamGone = gitx.UpstreamGone(c.Root, wt.Branch)
+		if c.LookupPR != nil {
+			wt.PR = c.LookupPR(wt.Branch)
+		}
+	}
+	return wt
+}
+
 // collectWithoutHerdr fills a State from git alone.
 //
 // The prune guards are already entirely git and gh — dirty, own commits,
@@ -159,8 +174,9 @@ func (c *Collector) Collect() (State, error) {
 // there is nothing to adopt into and nothing to staff, and with no AgentPanes
 // the prune guard that spares a checkout an agent is standing in cannot fire.
 // The last one matters — it is a guard that has been disarmed, not one that
-// passed — but there is no agent to spare, because agents live in herdr's panes
-// and herdr is not running.
+// passed — and the only thing that makes disarming it safe is that the client
+// is nil because a dial found nothing, not because nobody named a socket. See
+// herdrapi.Probe.
 func (c *Collector) collectWithoutHerdr() (State, error) {
 	base := gitx.BaseRef(c.Root)
 
@@ -171,25 +187,12 @@ func (c *Collector) collectWithoutHerdr() (State, error) {
 
 	state := State{Root: c.Root, Base: base, AgentPanes: map[string]AgentState{}, HerdrAbsent: true}
 	for _, w := range checkouts {
-		wt := Worktree{
+		state.Worktrees = append(state.Worktrees, c.resolve(Worktree{
 			Path:     w.Path,
 			Branch:   w.Branch,
 			IsLinked: w.IsLinked,
 			IsBare:   w.IsBare,
-		}
-		if w.IsLinked {
-			wt.Dirty = gitx.IsDirty(w.Path)
-			wt.OwnCommits = gitx.OwnCommits(w.Path, base)
-			wt.HasTranscript = c.hasTranscript(w.Path)
-			if w.Branch != "" {
-				wt.MergedIntoBase = gitx.IsMergedInto(c.Root, w.Branch, base)
-				wt.UpstreamGone = gitx.UpstreamGone(c.Root, w.Branch)
-				if c.LookupPR != nil {
-					wt.PR = c.LookupPR(w.Branch)
-				}
-			}
-		}
-		state.Worktrees = append(state.Worktrees, wt)
+		}, base))
 	}
 	return state, nil
 }

@@ -38,7 +38,11 @@ func doctorCommand(args []string, out io.Writer) error {
 		return usagef("unexpected argument %q; %s", fs.Arg(0), doctorUsage)
 	}
 
-	client, clientErr := herdrapi.New()
+	// The same resolution every other command uses, or this reports an
+	// environment nothing else is looking at: read HERDR_SOCKET_PATH alone and
+	// doctor says "unreachable" in the very terminal where `ls` has just
+	// listed the live session's workspaces.
+	client, clientErr := herdrapi.Probe()
 	herdr := check{name: "herdr", value: "unreachable", state: stateFail}
 	if clientErr == nil {
 		herdr = herdrReachable(client)

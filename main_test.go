@@ -641,14 +641,16 @@ func TestPruneNamesAWorkspaceWhoseCheckoutHasVanished(t *testing.T) {
 	}
 }
 
-// noHerdr puts the process in the state a plain shell is in: no socket, no
-// invocation context. herdrapi.New reads the first and LoadContext the second,
-// and both must be absent or the degraded path is not the one under test.
+// noHerdr puts the machine in the state the degraded path is for: no herdr
+// running.
+//
+// Clearing HERDR_SOCKET_PATH is not enough to establish that and never was —
+// it is unset in every ordinary terminal, herdr running or not. HerdrDown also
+// points the default socket at an empty directory, so the probe dials something
+// and finds nothing. Its opposite number is herdrtest.HerdrUnnamed.
 func noHerdr(t *testing.T) {
 	t.Helper()
-	t.Setenv("HERDR_SOCKET_PATH", "")
-	t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
-	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	herdrtest.HerdrDown(t)
 }
 
 // The listing works with herdr absent: the checkouts come from git and every
@@ -665,12 +667,138 @@ func TestLsWorksWithoutHerdr(t *testing.T) {
 		t.Fatalf("ls without herdr: %v", err)
 	}
 
+	// Asserted on the parsed row rather than on the text containing "wip":
+	// every branch name here is also a directory basename, so a substring match
+	// cannot say which column it found — and the columns are the claim.
 	got := out.String()
-	if !strings.Contains(got, "wip") {
-		t.Errorf("the linked worktree should be listed:\n%s", got)
+	var linked string
+	for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
+		if strings.Contains(line, "wip") {
+			linked = line
+		}
 	}
-	if !strings.Contains(got, "main") {
-		t.Errorf("the main checkout should be listed:\n%s", got)
+	if linked == "" {
+		t.Fatalf("the linked worktree should be listed:\n%s", got)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(got), "*") {
+		t.Errorf("the main checkout should be listed and marked:\n%s", got)
+	}
+
+	// Marker, branch, workspace, pane, agent status, counter, dir. The four in
+	// the middle are herdr's, and with no herdr they are empty rather than
+	// unread — that is the whole claim the README's example block makes.
+	fields := strings.Fields(linked)
+	if len(fields) != 6 {
+		t.Fatalf("want branch, four herdr columns and a dir, got %d in %q", len(fields), linked)
+	}
+	if fields[0] != "wip" {
+		t.Errorf("branch column = %q, want wip", fields[0])
+	}
+	for i, column := range []string{"workspace", "pane", "agent status", "counter"} {
+		if fields[1+i] != "-" {
+			t.Errorf("%s column = %q, want empty with no herdr", column, fields[1+i])
+		}
+	}
+}
+
+// The listing is the one command that degrades; its two agent-shaped flags do
+// not. Answering them with no herdr would be a claim about a fleet this process
+// cannot see — "no blocked agents" is not the same answer as "no way to tell".
+func TestLsRefusesTheAgentFlagsWithoutHerdr(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	repo.AddWorktree("wip", "wip")
+
+	for _, flag := range []string{"--blocked", "--reports"} {
+		t.Run(flag, func(t *testing.T) {
+			noHerdr(t)
+			t.Chdir(repo.Root)
+
+			err := lsCommand([]string{flag}, &strings.Builder{})
+			if err == nil {
+				t.Fatalf("ls %s answered with no herdr to answer from", flag)
+			}
+			if got := exitCode(err); got != exitEnvironment {
+				t.Errorf("exit %d (%v), want exitEnvironment (%d)", got, err, exitEnvironment)
+			}
+		})
+	}
+}
+
+// prune-apply is named in the title, the CHANGELOG and the README as running
+// without herdr, and this is the invocation a plain-shell user types: no
+// --repo, no context to resolve from. It removes, so nothing else in the suite
+// reaches the nil-client path through pruneBlocked into removeCheckout.
+func TestPruneApplyRemovesAWorktreeWithoutHerdr(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("done", "done")
+	repo.CommitIn(checkout, "done.txt", "work")
+	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+	herdrtest.FakeGhPRState(t, "MERGED")
+	noHerdr(t)
+	t.Chdir(repo.Root)
+
+	var out strings.Builder
+	if err := pruneCommand(nil, &out, true); err != nil {
+		t.Fatalf("prune-apply without herdr: %v", err)
+	}
+
+	if repo.Exists(checkout) {
+		t.Errorf("the merged worktree should have been removed:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "removed") {
+		t.Errorf("the result should say it removed something:\n%s", out.String())
+	}
+}
+
+// The state that separates a probe from an environment variable, and the reason
+// the probe had to exist.
+//
+// A plain terminal has no HERDR_SOCKET_PATH whether or not herdr is running.
+// Read as absence, every workspace-shaped fact goes empty: the reconciler
+// cannot see the agent, plans a prune, and the execution-time re-check asks a
+// client that is nil and hears "nothing holds it" — so a checkout with a live
+// agent standing in it is removed with --force. Before the degraded path
+// existed this invocation refused outright, which is why this is the test that
+// has to hold.
+func TestPruneApplySparesACheckoutHerdrHoldsWhenTheVariableIsUnset(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+	checkout := repo.AddWorktree("done", "done")
+	repo.CommitIn(checkout, "done.txt", "work")
+	repo.Git("merge", "--no-ff", "-m", "merge done", "done")
+	herdrtest.FakeGhPRState(t, "MERGED")
+
+	// herdr up, holding this checkout, with a working agent in its pane —
+	// and it did not start this process, so it named no socket.
+	server := herdrtest.HerdrUnnamed(t)
+	server.HandleResult("worktree.list", worktreeListReply(repo, checkout, "done", "ws1"))
+	server.HandleResult("workspace.list", map[string]any{
+		"type": "workspace_list",
+		"workspaces": []map[string]any{{
+			"workspace_id": "ws1",
+			"worktree": map[string]any{
+				"repo_root": repo.RealRoot, "checkout_path": checkout, "is_linked_worktree": true,
+			},
+		}},
+	})
+	server.HandleResult("pane.list", map[string]any{
+		"type": "pane_list", "panes": []map[string]any{{"pane_id": "p1"}},
+	})
+	server.HandleResult("agent.list", map[string]any{
+		"type":   "agent_list",
+		"agents": []map[string]any{{"pane_id": "p1", "agent_status": "working", "agent_name": "worker"}},
+	})
+	t.Chdir(repo.Root)
+
+	var out strings.Builder
+	if err := pruneCommand([]string{"--repo", repo.Root}, &out, true); err != nil {
+		t.Fatalf("prune-apply: %v", err)
+	}
+
+	if !repo.Exists(checkout) {
+		t.Fatalf("removed a checkout a working agent is standing in:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "agent running") {
+		t.Errorf("the guard should say what spared it:\n%s", out.String())
 	}
 }
 
@@ -708,6 +836,10 @@ func TestHerdrOnlyCommandsExitEnvironmentWithoutHerdr(t *testing.T) {
 		{"sync"},
 		{"start", "42"},
 		{"dispatch", "--pane", "w1:p1", "--name", "worker"},
+		// Named in the CHANGELOG and the README alongside the other three.
+		// It used to reach 2 through exitCode's catch-all for unclassified
+		// errors, which is the documented outcome arrived at by accident.
+		{"gate", "--target", "worker"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
 			noHerdr(t)

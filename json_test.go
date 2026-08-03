@@ -12,12 +12,22 @@ import (
 // Every command that grew a --json must actually take it. A flag that parses
 // nowhere is the same as no flag, and each command owns its own flag set.
 func TestEveryJSONCommandAcceptsTheFlag(t *testing.T) {
+	repo := herdrtest.NewRepo(t)
+
 	for _, command := range []string{"ls", "doctor", "sync", "prune", "prune-apply"} {
 		t.Run(command, func(t *testing.T) {
-			// No herdr and no context, so these fail — the assertion is only
-			// that they failed for a reason other than the flag.
-			t.Setenv("HERDR_SOCKET_PATH", "")
-			t.Setenv("HERDR_PLUGIN_CONTEXT_JSON", "")
+			// Pinned to a fixture repository, not just to an absent herdr. The
+			// degraded path falls back to the process working directory, so
+			// without a t.Chdir the ones that survive would enumerate whatever
+			// checkout `go test` was run from — the maintainer's own, with a
+			// `gh pr list` per linked branch and the real transcript directory.
+			// Green on CI, where there is one checkout and no worktrees, and
+			// slow and machine-dependent on every machine this tool is for.
+			//
+			// The assertion is only that they failed, or did not, for a reason
+			// other than the flag.
+			herdrtest.HerdrDown(t)
+			t.Chdir(repo.Root)
 
 			err := run([]string{command, "--json"}, new(bytes.Buffer))
 			if err != nil && strings.Contains(err.Error(), "flag provided but not defined") {
@@ -134,7 +144,11 @@ func TestSyncJSONWritesTheReportEvenWhenAnActionFails(t *testing.T) {
 // consumer reading only stdout would otherwise see the checks and an empty
 // repository list — which is what a healthy herdr with nothing open looks like.
 func TestDoctorJSONSaysWhyItCouldNotFinish(t *testing.T) {
-	t.Setenv("HERDR_SOCKET_PATH", "")
+	// Clearing the variable is not enough to make herdr unreachable and never
+	// was: doctor now resolves the default socket like every other command, so
+	// on a machine with herdr running this test used to assert a failure that
+	// only happened on CI. HerdrDown makes the state real.
+	herdrtest.HerdrDown(t)
 
 	var out bytes.Buffer
 	if err := doctorCommand([]string{"--json"}, &out); err == nil {
