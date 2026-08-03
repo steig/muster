@@ -175,6 +175,26 @@ install` tracks branch HEAD rather than a tag — the version in
   naming one worker twice — an agent name and its own pane id both resolve — is
   refused rather than watched twice.
 
+- **The hand-written site pages fail loudly when they lie.** `docs/*.md` is
+  rendered by `site/build.py` and cannot drift; `site/pages/*.html` is
+  hand-written for the narrative material that has no markdown source, and was
+  pinned to nothing. Two things shipped wrong that way — an `ls` figure a
+  column-and-a-half out of date, and a `start` command the page selling the
+  plugin never mentioned — and nothing failed in between.
+
+  Four guards, each verified against the bug it exists to catch:
+
+  - the `ls` figure's column count, against what `internal/wt` actually renders
+  - every subcommand in `commands` mentioned somewhere in the pages or docs,
+    exempting the two herdr invokes rather than a person
+  - every `x.html#y` from a page, and every `x.md#y` from a doc, resolving to a
+    real heading — checked against the markdown source, so no Python is needed
+  - every hand-written page present in `build.py`'s nav, since one that is not
+    is rendered into nothing
+
+  Not generating the pages. They exist because narrative material has no
+  markdown source, and that stays true.
+
 ### Changed
 
 - **`--json` on `start`, `dispatch`, `report` and `gate`.** It reached `ls`,
