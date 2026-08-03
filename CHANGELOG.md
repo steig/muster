@@ -8,6 +8,10 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.8.0] — 2026-08-02
+
 ### Added
 
 - **`--release-agents` on `prune` and `prune-apply`, and a prune guard that
@@ -1009,7 +1013,7 @@ Renamed. Everything user-facing moved; nothing about how removal decides changed
 - A tool-call envelope never reached the pane, so `report` and `gate` could not
   meet. (#12)
 
-## [0.1.0]
+## [0.1.0] — 2026-07-31
 
 First tagged release, so the no-Go install path had something to download. (#2)
 
