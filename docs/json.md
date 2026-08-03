@@ -1,9 +1,25 @@
 # Machine-readable output
 
-`ls`, `doctor`, `sync`, `prune` and `prune-apply` take `--json`. It replaces the
-table rather than joining it: **one shape or the other on stdout, never both.**
-An action's output is read back out of the plugin log and parsed, so a document
-with a stray line above it is a document nobody can parse.
+Every command takes `--json`. It replaces the text rather than joining it:
+**one shape or the other on stdout, never both.** An action's output is read
+back out of the plugin log and parsed, so a document with a stray line above it
+is a document nobody can parse.
+
+The commands split into two groups, and they behave differently in one way worth
+knowing up front:
+
+- **`ls`, `doctor`, `sync`, `prune`, `prune-apply`** — inspection and
+  reconciliation. Documented below.
+- **`start`, `dispatch`, `report`, `gate`** — the four an agent orchestrates
+  with. **These write their document on the failure paths too**, because the
+  exit code alone cannot say *which* of five workers a `--any` gate was about,
+  and that is the whole answer. Everything they would have printed for a human
+  goes to stderr instead.
+
+Each of the four also carries **`exit_code`**: the code the process is about to
+leave with. It is redundant with `$?` and deliberately so — a document read off
+a pipe is routinely separated from its exit status, and the two disagreeing is
+then a visible bug rather than a silent one.
 
 > **The shape may move before 1.0.** It is a supported way to consume this
 > plugin, not a stability promise. Pin the version you built against.
@@ -359,6 +375,139 @@ $ worktender doctor --json
 - The scope is herdr's open worktree workspaces rather than wherever you are
   standing, so `doctor` answers from outside any repository at all — the same
   scope, and now the same read, that `ls --all-repos` lists in full.
+
+## `gate --json`
+
+The one where the exit code is not enough. With `--any` a coordinator needs to
+know *which* worker released, and that is not a thing a number can say.
+
+```sh
+$ worktender gate --any wt-42-a,wt-43-b --until done --json
+{
+  "outcome": "released",
+  "exit_code": 0,
+  "target": {
+    "name": "wt-43-b",
+    "pane_id": "w10:p1",
+    "workspace_id": "w10",
+    "baseline": null
+  },
+  "report": { "status": "done", "pr": 4, "note": "green" },
+  "waited_seconds": 252,
+  "timeout_seconds": 900,
+  "until": ["done"],
+  "require_pr": false,
+  "waiting": [
+    { "name": "wt-42-a", "pane_id": "w9:p1", "workspace_id": "w9", "baseline": null },
+    { "name": "wt-43-b", "pane_id": "w10:p1", "workspace_id": "w10", "baseline": null }
+  ],
+  "error": null
+}
+```
+
+- **`outcome`** is `released`, `blocked`, `timeout`, `worker_gone` or `error`.
+  Finer than the exit code on purpose: `timeout` and `worker_gone` are both
+  exit 4, and a coordinator deciding whether to redispatch may reasonably want
+  to know a pane *died* rather than that nobody answered in time.
+- **`target`** is the worker the outcome is about — which one released, which
+  reported blocked, which one's pane died. **Null on a timeout**, the one
+  outcome belonging to no single worker.
+- **`waiting`** is every worker covered, in the order named. Each carries the
+  **`baseline`** its channels already held when the gate opened, which the gate
+  ignored as a previous task's answer. That field is how a coordinator that
+  gated too late tells the case apart from a worker that never reported.
+- **`until`** and **`require_pr`** echo the request, because a document filed
+  away is unreadable without knowing what was asked of it.
+- **`note`** is carried for a human to read. It is still untrusted data, and
+  still not a thing the gate can be asked to match on — see
+  [Why the report has no free text](dispatch.md#why-the-report-has-no-free-text).
+
+## `start --json`
+
+```sh
+$ worktender start 42 --repo . --json
+{
+  "repository": "/Users/you/code/thing",
+  "issue": 42,
+  "branch": "42-fix-the-thing",
+  "workspace_id": "w9",
+  "pane_id": "w9:p1",
+  "agent_name": "wt-42-fix-the-thing-016aab",
+  "base": "origin/main",
+  "fork_point": "31db5d1c9b7e4a02f6c1d8e5a3b90f2c4d6e8a10",
+  "stacked": false,
+  "briefed": true,
+  "staffing": [ { "status": "done", "kind": "staff", "…": "…" } ],
+  "gate_command": "…/worktender gate --target wt-42-fix-the-thing-016aab --until done --require-pr",
+  "error": null,
+  "exit_code": 0
+}
+```
+
+- **`agent_name`** is not the branch. herdr's agent namespace spans every
+  repository at once, so the name carries a digest of the repository — and it is
+  what `gate` takes.
+- **`gate_command`** is that wait, assembled. Carried because the digest is not
+  something anyone should be retyping.
+- **`stacked`** is true when the fork point is not the base's own tip, so this
+  branch sits on commits the base does not have — the case worth noticing before
+  the base is squash-merged, which would land none of them. Same test the
+  printed `stacked:` warning makes.
+- **`briefed`** is a separate fact from an agent having started. herdr answering
+  ok means keystrokes were delivered, not that anything received them.
+- **Null fields are progress.** `branch` is null until the issue has been read,
+  `pane_id` until the worktree exists, `agent_name` until an agent started. On a
+  failure they say how far it got — and a `branch` and `workspace_id` with a null
+  `agent_name` is a checkout the caller now owns and must decide about.
+
+## `dispatch --json`
+
+```sh
+$ worktender dispatch --pane w9:p1 --name worker-one --json
+{
+  "pane_id": "w9:p1",
+  "workspace_id": "w9",
+  "agent_name": "worker-one",
+  "staffing": [ { "status": "done", "kind": "staff", "…": "…" } ],
+  "gate_command": "…/worktender gate --target worker-one --until done",
+  "error": null,
+  "exit_code": 0
+}
+```
+
+**`gate_command` is null when the dispatch failed.** Naming a wait for an agent
+that never started would be an instruction to wait for nothing.
+
+## `report --json`
+
+The envelope **as accepted**, which is not always the envelope as intended.
+
+```sh
+$ worktender report --status done --pr 4 --note green --json
+{
+  "status": "done",
+  "pr": 4,
+  "note": "green",
+  "note_length": 5,
+  "note_limit": 200,
+  "pane_id": "w9:p1",
+  "delivered": true,
+  "error": null,
+  "exit_code": 0
+}
+```
+
+- **`delivered`** is whether the metadata channel took it. **False with no
+  error** means the envelope printed and nothing else, which is what `report`
+  outside herdr looks like — a gate can still read it off the terminal, but only
+  while the line is in the buffer. That is not a failed report and it exits 0.
+- **`pane_id`** is null in the same case.
+- **`note_length`** against **`note_limit`** because the note is *refused*
+  rather than truncated when it is too long, and a worker building one
+  programmatically should not have to guess how this command counts runes.
+- The envelope still goes to a terminal in JSON mode, on **stderr**. It is one of
+  the two channels a gate reads, and a worker whose stdout its own tooling
+  captured would otherwise have reported to nobody.
 
 ## Call the binary, not the action
 

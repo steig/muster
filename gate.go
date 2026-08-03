@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/jsonout"
 )
 
 // gateDefaultTimeout bounds a wait nobody supplied a bound for. There is no
@@ -20,7 +22,7 @@ const gateDefaultTimeout = 15 * time.Minute
 // Unwrapped, because a wrapped envelope line is two lines to a parser.
 const gateReadSource = herdrapi.ReadSourceRecentUnwrapped
 
-const gateUsage = "usage: worktender gate --target <agent|pane> | --any <agent|pane>,... [--until planned|blocked|done] [--require-pr] [--timeout 15m]"
+const gateUsage = "usage: worktender gate --target <agent|pane> | --any <agent|pane>,... [--until planned|blocked|done] [--require-pr] [--timeout 15m] [--json]"
 
 // gateOptions is one gate invocation.
 type gateOptions struct {
@@ -31,6 +33,7 @@ type gateOptions struct {
 	until     []string
 	requirePR bool
 	timeout   time.Duration
+	asJSON    bool
 }
 
 // names is how a wait covering several workers refers to itself in a message
@@ -107,6 +110,7 @@ func parseGate(args []string) (gateOptions, error) {
 	timeout := flags.Duration("timeout", gateDefaultTimeout, "how long to wait before giving up")
 	var until statusFlag
 	flags.Var(&until, "until", "release on this status; repeat for more than one")
+	asJSON := jsonFlag(flags)
 
 	if err := flags.Parse(args); err != nil {
 		return gateOptions{}, usagef("%w; %s", err, gateUsage)
@@ -124,7 +128,7 @@ func parseGate(args []string) (gateOptions, error) {
 		// The gate's reason for existing is completion, so that is the default.
 		until = statusFlag{"done"}
 	}
-	return gateOptions{targets: targets, until: until, requirePR: *requirePR, timeout: *timeout}, nil
+	return gateOptions{targets: targets, until: until, requirePR: *requirePR, timeout: *timeout, asJSON: *asJSON}, nil
 }
 
 // satisfies is the whole predicate surface: a status from the closed set, and
@@ -172,20 +176,76 @@ type gateFresh struct {
 	report report
 }
 
+// runGate resolves the targets, waits, and renders in whichever of the two
+// shapes was asked for.
+//
+// The wait itself is gateWait, which returns its outcome rather than printing
+// it, because the document has to be written on the failure paths too — a
+// consumer that learns only the exit code learns nothing about *which* of
+// several workers it was about, and with `--any` that is the whole answer.
 func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
-	targets, err := resolveTargets(client, opts.targets)
-	if err != nil {
-		return err
+	// Progress lines are an aside, and an aside printed beside the document is
+	// exactly what breaks the consumer reading it.
+	notes := out
+	if opts.asJSON {
+		notes = os.Stderr
 	}
 
 	started := time.Now()
+	targets, err := resolveTargets(client, opts.targets)
+	if err != nil {
+		if opts.asJSON {
+			// No targets resolved, so there is nothing to list as waiting — but
+			// the caller asked for a document and an empty stdout is the one
+			// answer it cannot parse.
+			return writeGateJSON(out, gateDocument(opts, nil, gateOutcomeError, -1, nil, time.Since(started), err), err)
+		}
+		return err
+	}
+
+	outcome, about, released, err := gateWait(client, opts, targets, notes, started)
+	waited := time.Since(started)
+
+	if opts.asJSON {
+		return writeGateJSON(out, gateDocument(opts, targets, outcome, about, released, waited, err), err)
+	}
+
+	if err == nil && released != nil {
+		// Which worker released is the whole answer when the gate covered
+		// several: it is what the caller drops before waiting on the rest.
+		fmt.Fprintf(out, "gate: %s released after %s\n", targets[about].name, waited.Round(time.Second))
+		fmt.Fprint(out, renderReport(*released))
+	}
+	if err != nil && outcome == gateOutcomeBlocked && released != nil {
+		fmt.Fprint(out, renderReport(*released))
+	}
+	return err
+}
+
+// writeGateJSON writes the document and then returns the gate's own error, so
+// the exit code survives having produced output. A failure to write the
+// document replaces it: a consumer handed half a document is worse off than one
+// handed none.
+func writeGateJSON(out io.Writer, doc gateJSON, gateErr error) error {
+	if err := jsonout.Write(out, doc); err != nil {
+		return err
+	}
+	return gateErr
+}
+
+// gateWait is the wait. It returns what happened rather than printing it; only
+// the still-waiting progress lines go out from in here, because they are
+// meaningless after the fact.
+//
+// about indexes targets, and is -1 for an outcome belonging to no single worker.
+func gateWait(client *herdrapi.Client, opts gateOptions, targets []gateTarget, out io.Writer, started time.Time) (string, int, *report, error) {
 	deadline := started.Add(opts.timeout)
 
 	// Subscribe BEFORE reading the baselines, or a report landing between the
 	// two is in neither.
 	stream, err := client.Subscribe(gateSubscriptions(targets), deadline)
 	if err != nil {
-		return fmt.Errorf("gate %s: %w", opts.names(), err)
+		return gateOutcomeError, -1, nil, fmt.Errorf("gate %s: %w", opts.names(), err)
 	}
 	defer stream.Close()
 
@@ -205,10 +265,10 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 	for {
 		event, err := stream.Next()
 		if errors.Is(err, herdrapi.ErrStreamExpired) {
-			return gateExpired(opts, targets, time.Since(started))
+			return gateOutcomeTimeout, -1, nil, gateExpired(opts, targets, time.Since(started))
 		}
 		if err != nil {
-			return fmt.Errorf("gate %s: %w", opts.names(), err)
+			return gateOutcomeError, -1, nil, fmt.Errorf("gate %s: %w", opts.names(), err)
 		}
 
 		// Every target is asked what the frame means to it: herdr delivers some
@@ -236,18 +296,15 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 		// acted on: neither the order they were read in nor which worker the
 		// frame was about may decide the gate.
 		if i := slices.IndexFunc(fresh, func(f gateFresh) bool { return opts.satisfies(f.report) }); i >= 0 {
-			// Which worker released is the whole answer when the gate covered
-			// several: it is what the caller drops before waiting on the rest.
-			fmt.Fprintf(out, "gate: %s released after %s\n",
-				targets[fresh[i].target].name, time.Since(started).Round(time.Second))
-			fmt.Fprint(out, renderReport(fresh[i].report))
-			return nil
+			r := fresh[i].report
+			return gateOutcomeReleased, fresh[i].target, &r, nil
 		}
 		// A blocked worker does not reach `done` on its own, and the party that
 		// unblocks it is the coordinator sitting in this wait.
 		if i := slices.IndexFunc(fresh, func(f gateFresh) bool { return isBlocked(f.report) }); i >= 0 {
-			fmt.Fprint(out, renderReport(fresh[i].report))
-			return codef(exitNeedsHuman, "gate %s: the worker reported blocked after %s; it will not reach %s without you",
+			r := fresh[i].report
+			return gateOutcomeBlocked, fresh[i].target, &r, codef(exitNeedsHuman,
+				"gate %s: the worker reported blocked after %s; it will not reach %s without you",
 				targets[fresh[i].target].name, time.Since(started).Round(time.Second), strings.Join(opts.until, "|"))
 		}
 		for _, f := range fresh {
@@ -261,7 +318,7 @@ func runGate(client *herdrapi.Client, opts gateOptions, out io.Writer) error {
 		// deadline, which is the failure the gate exists to convert into a fast
 		// one.
 		if gone >= 0 {
-			return codef(exitNoAnswer, "gate %s: %s before it reported %s",
+			return gateOutcomeWorkerGone, gone, nil, codef(exitNoAnswer, "gate %s: %s before it reported %s",
 				targets[gone].name, goneWhy, strings.Join(opts.until, "|"))
 		}
 	}

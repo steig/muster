@@ -15,6 +15,7 @@ import (
 	"github.com/steig/worktender/internal/execute"
 	"github.com/steig/worktender/internal/gitx"
 	"github.com/steig/worktender/internal/herdrapi"
+	"github.com/steig/worktender/internal/jsonout"
 	"github.com/steig/worktender/internal/reconcile"
 )
 
@@ -38,6 +39,7 @@ func startCommand(args []string, out io.Writer) error {
 	base := fs.String("base", "", "ref to fork from; defaults to the repository's origin/HEAD")
 	repo := fs.String("repo", "", "repository to act on, instead of the one herdr is currently in")
 	focus := fs.Bool("focus", false, "switch to the new workspace")
+	asJSON := jsonFlag(fs)
 
 	issues, err := parseAround(fs, args)
 	if err != nil {
@@ -73,10 +75,24 @@ func startCommand(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "repository: %s\n", s.root)
+
+	// Everything `start` prints before the last line is progress. In JSON mode
+	// it is an aside, and an aside on stdout is what breaks the consumer.
+	notes := out
+	emit := func(*startJSON) error { return nil }
+	if *asJSON {
+		notes = os.Stderr
+		emit = func(doc *startJSON) error { return jsonout.Write(out, doc) }
+	}
+	doc := &startJSON{Repository: s.root, Issue: number}
+
+	fmt.Fprintf(notes, "repository: %s\n", s.root)
 
 	issue, err := issueFor(s.root, number)
 	if err != nil {
+		if wErr := emit(doc.finish(err)); wErr != nil {
+			return wErr
+		}
 		return err
 	}
 
@@ -90,13 +106,23 @@ func startCommand(args []string, out io.Writer) error {
 	// asked for rather than whatever the ref names by the time anyone looks.
 	forkPoint := gitx.Commit(s.root, forkFrom)
 
+	doc.Branch = jsonout.String(branch)
+	doc.Base = jsonout.String(forkFrom)
+	doc.ForkPoint = jsonout.String(forkPoint)
+	doc.Stacked = forkPoint != "" && forkPoint != gitx.Commit(s.root, baseRef)
+
 	created, err := s.client.WorktreeCreate(s.root, branch, forkFrom, branch, *focus)
 	if err != nil {
-		return fmt.Errorf("create worktree for #%d on %s: %w", number, branch, err)
+		err = fmt.Errorf("create worktree for #%d on %s: %w", number, branch, err)
+		if wErr := emit(doc.finish(err)); wErr != nil {
+			return wErr
+		}
+		return err
 	}
 	workspace, pane := created.Workspace.WorkspaceID, created.RootPane.PaneID
-	fmt.Fprintf(out, "worktree: %s on %s (workspace %s, pane %s)\n", branch, forkFrom, workspace, pane)
-	printForkPoint(out, forkFrom, forkPoint, baseRef, gitx.Commit(s.root, baseRef))
+	doc.WorkspaceID, doc.PaneID = jsonout.String(workspace), jsonout.String(pane)
+	fmt.Fprintf(notes, "worktree: %s on %s (workspace %s, pane %s)\n", branch, forkFrom, workspace, pane)
+	printForkPoint(notes, forkFrom, forkPoint, baseRef, gitx.Commit(s.root, baseRef))
 
 	// The same KindStaff action `sync` and `dispatch` build, so the pane
 	// re-check in execute.staff() covers this path by construction too.
@@ -110,18 +136,29 @@ func startCommand(args []string, out io.Writer) error {
 		AgentName:   agent,
 		AgentArgs:   agentArgsFor(*model, *permissionMode, os.Stderr),
 	}})
-	fmt.Fprint(out, execute.Render(results))
+	fmt.Fprint(notes, execute.Render(results))
+	doc.Staffing = execute.JSON(results)
 	if execute.Counts(results)[execute.StatusFailed] > 0 {
-		return codef(exitNeedsHuman, "started no agent for #%d; the worktree at %s is yours to keep or remove", number, branch)
-	}
-
-	if err := deliverBrief(s.client, pane, brief(number, branch)); err != nil {
+		err := codef(exitNeedsHuman, "started no agent for #%d; the worktree at %s is yours to keep or remove", number, branch)
+		if wErr := emit(doc.finish(err)); wErr != nil {
+			return wErr
+		}
 		return err
 	}
+	doc.AgentName = jsonout.String(agent)
 
-	fmt.Fprintf(out, "\nbriefed %s on #%d; wait for it with:\n  %s gate --target %s --until done --require-pr\n",
-		agent, number, selfPath(), agent)
-	return nil
+	if err := deliverBrief(s.client, pane, brief(number, branch)); err != nil {
+		if wErr := emit(doc.finish(err)); wErr != nil {
+			return wErr
+		}
+		return err
+	}
+	doc.Briefed = true
+
+	gate := fmt.Sprintf("%s gate --target %s --until done --require-pr", selfPath(), agent)
+	doc.GateCommand = jsonout.String(gate)
+	fmt.Fprintf(notes, "\nbriefed %s on #%d; wait for it with:\n  %s\n", agent, number, gate)
+	return emit(doc.finish(nil))
 }
 
 // printForkPoint records the commit the worktree was forked from, and says what
@@ -158,7 +195,7 @@ func printForkPoint(out io.Writer, forkFrom, forkPoint, baseRef, basePoint strin
 }
 
 const startUsage = "usage: worktender start <issue> [--model <model>] " +
-	"[--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus]"
+	"[--permission-mode <mode>] [--base <ref>] [--repo <path>] [--focus] [--json]"
 
 // parseAround parses flags written on either side of the positional arguments,
 // returning the positionals.

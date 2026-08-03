@@ -154,6 +154,14 @@ next move, and the four are genuinely different:
 them alike is what makes a coordinator either wake a human for a slow worker or
 silently redispatch one that is waiting on an answer only the human has.
 
+**Add `--json` when you are gating on more than one worker.** A code cannot say
+*which* of five released, and that is the whole answer. The document names it in
+`target`, carries the report in `report`, and repeats the code in `exit_code` —
+and it is written on the failure paths too, so a `blocked` still tells you whose.
+`start --json` and `dispatch --json` hand back `agent_name` and `gate_command`
+ready to run, which is better than reassembling a repository-scoped digest from
+prose. In JSON mode everything else moves to stderr.
+
 **Never pick a worker to block on.** `start` returns as soon as the brief is
 typed, so nothing tells the four-minute slice from the forty-minute one. Gate on
 all of them with `--any`, act on whichever releases, then gate on the rest. The

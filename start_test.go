@@ -596,6 +596,7 @@ func TestStartUsageIsAnOrderThatParses(t *testing.T) {
 	fs.String("base", "", "")
 	fs.String("repo", "", "")
 	fs.Bool("focus", false, "")
+	fs.Bool("json", false, "")
 
 	// The usage line with its placeholders filled in and its brackets dropped.
 	replacer := strings.NewReplacer(

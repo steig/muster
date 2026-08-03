@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/steig/worktender/internal/jsonout"
 	"github.com/steig/worktender/internal/safetext"
 )
 
@@ -66,14 +67,28 @@ type report struct {
 // A report is attached to the reporting worker's pane and to nothing else. It
 // is never pushed into the coordinator's pane.
 func reportCommand(args []string, out io.Writer) error {
-	r, err := parseReport(args)
+	r, asJSON, err := parseReport(args)
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(out, renderReport(r))
+	// The envelope still goes to the terminal in JSON mode, on stderr. It is
+	// one of the two channels a gate reads, and a worker whose stdout was
+	// captured by its own tooling would otherwise have reported to nobody.
+	envelope := out
+	if asJSON {
+		envelope = os.Stderr
+	}
+	fmt.Fprint(envelope, renderReport(r))
 
-	missingEnv, err := deliverReport(r)
-	if err != nil {
+	missingEnv, delivered := deliverReport(r)
+	pane := os.Getenv(paneEnv)
+	if asJSON {
+		doc := newReportEnvelopeJSON(r, pane, delivered == nil && missingEnv == "", noteLimit)
+		if wErr := jsonout.Write(out, doc.finish(delivered)); wErr != nil {
+			return wErr
+		}
+	}
+	if err := delivered; err != nil {
 		return err
 	}
 	// Not a failed report — the envelope above is correct — but outside herdr
@@ -85,7 +100,7 @@ func reportCommand(args []string, out io.Writer) error {
 	return nil
 }
 
-func parseReport(args []string) (report, error) {
+func parseReport(args []string) (report, bool, error) {
 	flags := flag.NewFlagSet("report", flag.ContinueOnError)
 	// We return errors instead of letting flag print its own usage.
 	flags.SetOutput(io.Discard)
@@ -95,20 +110,21 @@ func parseReport(args []string) (report, error) {
 	// from "supplied as nonsense", which are opposite verdicts here.
 	pr := flags.String("pr", "", "pull request number")
 	note := flags.String("note", "", fmt.Sprintf("at most %d characters", noteLimit))
+	asJSON := jsonFlag(flags)
 
 	if err := flags.Parse(args); err != nil {
-		return report{}, usagef("%w; %s", err, reportUsage)
+		return report{}, false, usagef("%w; %s", err, reportUsage)
 	}
 	// flag stops at the first non-flag argument, so leftovers are the shape of
 	// an unquoted note.
 	if rest := flags.Args(); len(rest) > 0 {
-		return report{}, usagef("unexpected argument %q; %s", rest[0], reportUsage)
+		return report{}, false, usagef("unexpected argument %q; %s", rest[0], reportUsage)
 	}
 
 	r := report{status: *status, note: *note}
 
 	if !isReportStatus(r.status) {
-		return report{}, fmt.Errorf("--status %q is not one of %s",
+		return report{}, false, fmt.Errorf("--status %q is not one of %s",
 			r.status, strings.Join(reportStatuses, "|"))
 	}
 
@@ -118,15 +134,15 @@ func parseReport(args []string) (report, error) {
 	if *pr != "" {
 		n, err := strconv.Atoi(*pr)
 		if err != nil || n <= 0 {
-			return report{}, fmt.Errorf("--pr %q is not a pull request number; want a positive integer like 4", *pr)
+			return report{}, false, fmt.Errorf("--pr %q is not a pull request number; want a positive integer like 4", *pr)
 		}
 		r.pr = n
 	}
 
 	if err := reportNote(r.note); err != nil {
-		return report{}, err
+		return report{}, false, err
 	}
-	return r, nil
+	return r, *asJSON, nil
 }
 
 // reportNote validates the one slot a hostile author can reach.

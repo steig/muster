@@ -107,9 +107,11 @@ This is herdr's own agent status, not a worker's `report --status blocked`,
 which is worktender's own envelope and reaches only whoever gated on it.
 `doctor` names blocked worktrees too, rather than folding them into a count.
 
-`ls`, `doctor`, `sync`, `prune` and `prune-apply` take `--json` if you are
-building on this rather than reading it — see
-[Machine-readable output](docs/json.md).
+**Every command takes `--json`** if you are building on this rather than
+reading it. `start`, `dispatch`, `report` and `gate` — the four an agent
+orchestrates with — write their document on the failure paths too, and carry the
+exit code in it, because with `--any` a number cannot say *which* of five
+workers the gate was about. See [Machine-readable output](docs/json.md).
 
 Everything is a subcommand of one binary, which herdr installs rather than
 putting on `PATH`. Resolve it once:
