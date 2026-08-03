@@ -78,9 +78,9 @@ attached it and a gate reads it:
 
 ```sh
 $ worktender ls --reports
-* main                      w21  w21:p1  idle     1057            worktender
-  feat/1-reconcile-execute  w22  w22:p1  working  1055  planned   1-reconcile-execute
-  fix/257-erasure-comments  w1K  w1K:p1  idle     812   done #4   257-erasure-comments
+* main                      w21  w21:p1  idle     1057  -        worktender
+  feat/1-reconcile-execute  w22  w22:p1  working  1055  planned  1-reconcile-execute
+  fix/257-erasure-comments  w1K  w1K:p1  idle     812   done #4  257-erasure-comments
 ```
 
 This is what a coordinator asks after its context is cleared, instead of having

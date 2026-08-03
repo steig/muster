@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -247,4 +248,101 @@ func TestEveryHandWrittenPageIsInTheNav(t *testing.T) {
 			t.Errorf("site/pages/%s is not in build.py's PAGES, so it is rendered into nothing", name)
 		}
 	}
+}
+
+// reportsFigure is the fleet the `ls --reports` figure draws: one worker that
+// has not reported, one that reported without a pull request, and one with
+// both.
+func reportsFigure() []wt.Row {
+	s1, s2, s3 := uint64(1057), uint64(1055), uint64(812)
+	rows := []wt.Row{
+		{Main: true, Branch: "main", WorkspaceID: "w21", PaneID: "w21:p1", AgentStatus: "idle", AgentStatusSeq: &s1, Dir: "worktender"},
+		{Branch: "feat/1-reconcile-execute", WorkspaceID: "w22", PaneID: "w22:p1", AgentStatus: "working", AgentStatusSeq: &s2, Dir: "1-reconcile-execute"},
+		{Branch: "fix/257-erasure-comments", WorkspaceID: "w1K", PaneID: "w1K:p1", AgentStatus: "idle", AgentStatusSeq: &s3, Dir: "257-erasure-comments"},
+	}
+	wt.WithReports(rows, func(pane string) (wt.Report, error) {
+		switch pane {
+		case "w22:p1":
+			return wt.Report{Found: true, Status: "planned", Note: "reading the issue"}, nil
+		case "w1K:p1":
+			return wt.Report{Found: true, Status: "done", PR: 4, Note: "landed"}, nil
+		}
+		return wt.Report{}, nil
+	})
+	return rows
+}
+
+// docs/*.md cannot drift from the site, which renders it — but it can drift
+// from the binary, and a table drawn by hand is where that shows. The
+// `ls --reports` figure showed a blank cell for the worker that had not
+// reported, where the renderer prints "-". Small, and on the one column the
+// surrounding section is about: a dash the reader is being told to distrust,
+// omitted from the figure that demonstrates it.
+//
+// Column by column rather than byte for byte. The figures indent by one space
+// where the tabwriter pads with two, and that is a legible figure rather than a
+// lie — but a cell that is present in one and absent in the other is not.
+func TestTheReportsFigureDrawsTheCellsTheRendererPrints(t *testing.T) {
+	var real strings.Builder
+	if err := wt.Render(&real, reportsFigure(), wt.Columns{Reports: true}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var want [][]string
+	for line := range strings.SplitSeq(strings.TrimRight(real.String(), "\n"), "\n") {
+		want = append(want, figureCells(line))
+	}
+
+	for _, path := range []string{"README.md", "docs/json.md"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		drawn := 0
+		for _, block := range fencedBlocks(string(raw)) {
+			lines := strings.Split(strings.TrimRight(block, "\n"), "\n")
+			if len(lines) == 0 || !strings.Contains(lines[0], "worktender ls --reports") {
+				continue
+			}
+			drawn++
+			got := lines[1:]
+			if len(got) != len(want) {
+				t.Errorf("%s draws %d rows, the renderer prints %d", path, len(got), len(want))
+				continue
+			}
+			for i, line := range got {
+				if cells := figureCells(line); !slices.Equal(cells, want[i]) {
+					t.Errorf("%s row %d draws %q, the renderer prints %q", path, i+1, cells, want[i])
+				}
+			}
+		}
+		if drawn == 0 {
+			t.Errorf("no `worktender ls --reports` figure in %s; if the figure went away this test is watching nothing, and if it moved it is unpinned", path)
+		}
+	}
+}
+
+// columnGap is what separates two cells: the tabwriter pads with two spaces, so
+// a single space is inside a cell — "done #4" is one column, not two.
+var columnGap = regexp.MustCompile(`\s{2,}`)
+
+// figureCells splits one table line into its cells, ignoring the main-checkout
+// marker. The marker is the one place a figure and the renderer legitimately
+// disagree on spacing, and it carries no fact the other columns do not.
+func figureCells(line string) []string {
+	line = strings.TrimSpace(strings.TrimPrefix(strings.TrimLeft(line, " "), "*"))
+	return columnGap.Split(line, -1)
+}
+
+// fencedBlocks returns the contents of every ``` block in a markdown file.
+func fencedBlocks(md string) []string {
+	parts := strings.Split(md, "```")
+	var blocks []string
+	// Odd indices are inside a fence. The first line of each is the info
+	// string — "sh", "json" — and is dropped with it.
+	for i := 1; i < len(parts); i += 2 {
+		if _, body, ok := strings.Cut(parts[i], "\n"); ok {
+			blocks = append(blocks, body)
+		}
+	}
+	return blocks
 }

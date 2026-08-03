@@ -8,7 +8,24 @@ install` tracks branch HEAD rather than a tag — the version in
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The report column was documented as printing an empty cell, and prints a
+  dash.** (#134) `docs/json.md` said of `found` and `error` that "the table has
+  room for neither and prints an empty cell for both". `reportCell` returns the
+  empty string for both, and `cell` maps that to `-` like every other absent
+  fact. Loose rather than wrong anywhere else in the document, but this is the
+  page whose *Why the table is not enough* section turns on one `-` meaning four
+  different things, so an "empty cell" reads as a fifth. It now says `-`, and
+  says that a worktree with no pane to ask prints the same one — three absences
+  in that column, on the distinction between a fleet that is quiet and a listing
+  that never reached it.
+
+  The `ls --reports` figure lied the same way, in both `README.md` and
+  `docs/json.md`: whitespace where the unreported worker's dash goes. Both
+  figures are now what the renderer prints, and `site_drift_test.go` renders the
+  fleet they depict and compares them cell by cell, so the next hand-drawn
+  column that disagrees with the binary fails rather than ships.
 
 ## [0.8.0] — 2026-08-02
 
