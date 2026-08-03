@@ -308,8 +308,8 @@ $ worktender prune --repo . --json
   workers wants to know which removals ended one.
 - **`results`** is one document for the whole command, even though `sync`
   reconciles in up to three passes. The exit code is unchanged — a failed action
-  still exits 1, and the report is written either way, because a consumer that
-  learns only "non-zero" learns nothing about which action failed.
+  still exits non-zero, and the report is written either way, because a consumer
+  that learns only the code learns nothing about *which* action failed.
 
 ## `doctor --json`
 
@@ -344,7 +344,8 @@ $ worktender doctor --json
   told.
 - **`repositories`** is `null`, not `[]`, when herdr could not be reached — an
   empty list is the answer for a herdr with nothing open, which is a different
-  fact. The reason is in **`error`**, and the command still exits 1.
+  fact. The reason is in **`error`**, and the command still exits 2 — herdr being
+  unreachable is the environment, not the call.
 - A repository that could not be read carries its own `error` and null counts,
   and costs the others nothing.
 - **`blocked`** names the worktrees rather than leaving them as one number among

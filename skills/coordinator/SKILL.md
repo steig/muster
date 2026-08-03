@@ -139,6 +139,21 @@ the only party who can unblock it. Waiting out the clock instead helps nobody â€
 and it is why `--any` covers the whole fleet: gated on one worker, you hear a
 `blocked` from any of the others only once you get to it.
 
+**Branch on the gate's exit code, never on its message.** The code names your
+next move, and the four are genuinely different:
+
+| Code | Meaning | Your move |
+| --- | --- | --- |
+| **0** | released; the predicate held | Check the PR it names. |
+| **3** | a worker reported `blocked` | Escalate to the human. Redispatching blocks again. |
+| **4** | timed out, or a pane died before reporting | No answer. Redispatch is reasonable. |
+| **1** | a target could not be resolved | Drop it and gate on the rest. herdr answers the same for a mistyped name and for an agent that has exited. |
+| **2** | herdr unreachable, or anything unclassified | The machine. Retry once you have fixed it. |
+
+**3 and 4 are the pair that matters.** They used to be one code, and treating
+them alike is what makes a coordinator either wake a human for a slow worker or
+silently redispatch one that is waiting on an answer only the human has.
+
 **Never pick a worker to block on.** `start` returns as soon as the brief is
 typed, so nothing tells the four-minute slice from the forty-minute one. Gate on
 all of them with `--any`, act on whichever releases, then gate on the rest. The
